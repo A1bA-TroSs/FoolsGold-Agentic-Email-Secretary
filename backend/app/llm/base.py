@@ -1,0 +1,239 @@
+"""Provider-agnostic contract, shared prompts, and tolerant JSON parsing.
+
+Every provider gets the same prompt and must return the same shape, so swapping
+Copilot for Claude for a local model changes one setting and nothing else.
+"""
+from __future__ import annotations
+
+import json
+import re
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any
+
+VALID_BUCKETS = {"action", "fyi", "noise"}
+_MAX_BODY_IN_PROMPT = 1200  # per email; enough to judge intent, cheap enough to batch
+
+
+@dataclass
+class Classification:
+    email_id: str
+    bucket: str = "fyi"
+    deadline: str | None = None
+    rationale: str = ""
+    matched: list[str] = field(default_factory=list)
+
+
+class ProviderUnavailable(RuntimeError):
+    """Raised when a provider cannot run at all (no key, not signed in, offline).
+    The caller falls back to structural scoring and shows the 'AI unavailable'
+    badge rather than blocking the UI."""
+
+
+class LLMProvider(ABC):
+    name: str = "base"
+    model: str = ""
+
+    @abstractmethod
+    async def complete(self, system: str, user: str) -> str:
+        """Single-turn text in, text out. The only thing a provider must implement."""
+
+    async def check(self) -> tuple[bool, str]:
+        try:
+            await self.complete("Reply with the single word: ok", "ping")
+            return True, "ok"
+        except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
+            return False, str(exc)
+
+    async def classify_batch(self, emails: list[dict[str, Any]], priorities: list[str]) -> list[Classification]:
+        if not emails:
+            return []
+        raw = await self.complete(CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities))
+        return parse_classifications(raw, [e["id"] for e in emails])
+
+    async def summarize(self, emails: list[dict[str, Any]], priorities: list[str]) -> str:
+        if not emails:
+            return "Nothing in the inbox needs you today."
+        return (await self.complete(DIGEST_SYSTEM, build_digest_prompt(emails, priorities))).strip()
+
+
+# --------------------------------------------------------------------------
+# prompts
+# --------------------------------------------------------------------------
+
+CLASSIFY_SYSTEM = """You are the triage half of an executive assistant reading someone else's inbox.
+
+For each email decide exactly one bucket:
+- "action"  - the recipient personally must do, decide, answer or attend something.
+- "fyi"     - genuinely useful to know, but nothing is required of the recipient.
+- "noise"   - newsletters, marketing, automated notifications, receipts, and anything
+              they would only ever look up later. Never mark something "noise" just
+              because it is long or automated if it carries a deadline for them.
+
+Also extract a deadline as YYYY-MM-DD when the email states or clearly implies one
+(a due date, a meeting date, an RSVP cut-off, "by Friday"). Use null otherwise.
+Resolve relative dates against the stated current date.
+
+List which of the user's active priorities the email relates to, using their exact
+wording. Empty list if none.
+
+Reply with a JSON array and nothing else. One object per email, same order as given:
+[{"id": "<id>", "bucket": "action|fyi|noise", "deadline": "YYYY-MM-DD or null",
+  "matched": ["priority", ...], "rationale": "<max 15 words>"}]"""
+
+DIGEST_SYSTEM = """You write one short morning briefing for a busy person, in the voice of
+a trusted assistant who has already read everything.
+
+Rules:
+- Lead with what is time-critical today. Deadlines and things that need a decision come first.
+- Group related mail into one line instead of listing each message.
+- Name people and concrete dates. No filler, no "you have several emails".
+- If nothing genuinely needs them today, say so plainly in one sentence.
+- Plain markdown, no heading, at most 8 bullet points."""
+
+
+def _fmt_email(email: dict[str, Any], index: int) -> str:
+    body = (email.get("body_text") or email.get("body_preview") or "")[:_MAX_BODY_IN_PROMPT]
+    to = email.get("to_recipients") or "[]"
+    cc = email.get("cc_recipients") or "[]"
+    return (
+        f"--- EMAIL {index} ---\n"
+        f"id: {email['id']}\n"
+        f"from: {email.get('from_name','')} <{email.get('from_address','')}>\n"
+        f"to: {to}\ncc: {cc}\n"
+        f"received: {email.get('received_at','')}\n"
+        f"importance: {email.get('importance','normal')}   attachments: {bool(email.get('has_attachments'))}\n"
+        f"subject: {email.get('subject','')}\n"
+        f"body:\n{body}\n"
+    )
+
+
+def build_classify_prompt(emails: list[dict[str, Any]], priorities: list[str]) -> str:
+    prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
+    blocks = "\n".join(_fmt_email(e, i + 1) for i, e in enumerate(emails))
+    return (
+        f"Current date: {date.today().isoformat()}\n\n"
+        f"The user's active priorities right now:\n{prio}\n\n"
+        f"Classify these {len(emails)} emails.\n\n{blocks}"
+    )
+
+
+def build_digest_prompt(emails: list[dict[str, Any]], priorities: list[str]) -> str:
+    prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
+    lines = []
+    for e in emails:
+        deadline = f" | due {e['deadline']}" if e.get("deadline") else ""
+        lines.append(
+            f"[{e.get('bucket','fyi')}{deadline}] {e.get('subject','')} "
+            f"-- from {e.get('from_name') or e.get('from_address')}: "
+            f"{(e.get('body_text') or e.get('body_preview') or '')[:400]}"
+        )
+    return (
+        f"Today is {date.today().isoformat()}.\n\n"
+        f"The user's active priorities:\n{prio}\n\n"
+        f"Mail in play:\n" + "\n\n".join(lines)
+    )
+
+
+# --------------------------------------------------------------------------
+# parsing
+# --------------------------------------------------------------------------
+
+def extract_json(raw: str) -> Any:
+    """Models wrap JSON in prose or fences more often than anyone admits.
+    Try the whole string, then a fenced block, then the outermost bracket pair."""
+    if raw is None:
+        raise ValueError("empty response")
+    text = raw.strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+
+    fence = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
+    if fence:
+        try:
+            return json.loads(fence.group(1))
+        except ValueError:
+            pass
+
+    for opener, closer in (("[", "]"), ("{", "}")):
+        start, end = text.find(opener), text.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except ValueError:
+                continue
+    raise ValueError(f"no JSON found in model response: {text[:200]!r}")
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _clean_deadline(value: Any) -> str | None:
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if value.lower() in ("null", "none", "n/a", ""):
+        return None
+    if not _DATE_RE.match(value):
+        return None
+    try:
+        # Shape alone is not enough: a model will happily emit 2026-13-45,
+        # which would render as a due date and score as nothing.
+        date.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+
+def parse_classifications(raw: str, expected_ids: list[str]) -> list[Classification]:
+    """Map the model's array back onto the emails we asked about.
+
+    Matches by id where the model echoed one, and falls back to positional
+    order otherwise -- but never invents a result for an email that got no
+    answer, so an email is retried next pass instead of silently mislabelled.
+    """
+    data = extract_json(raw)
+    if isinstance(data, dict):
+        for key in ("results", "emails", "classifications"):
+            if isinstance(data.get(key), list):
+                data = data[key]
+                break
+        else:
+            data = [data]
+    if not isinstance(data, list):
+        raise ValueError("expected a JSON array of classifications")
+
+    by_id: dict[str, dict] = {}
+    positional: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("id") or "").strip()
+        if item_id in expected_ids:
+            by_id[item_id] = item
+        else:
+            positional.append(item)
+
+    out: list[Classification] = []
+    for index, email_id in enumerate(expected_ids):
+        item = by_id.get(email_id)
+        if item is None:
+            if index < len(positional):
+                item = positional[index]
+            else:
+                continue
+        bucket = str(item.get("bucket") or "").strip().lower()
+        matched = item.get("matched") or []
+        out.append(
+            Classification(
+                email_id=email_id,
+                bucket=bucket if bucket in VALID_BUCKETS else "fyi",
+                deadline=_clean_deadline(item.get("deadline")),
+                rationale=str(item.get("rationale") or "")[:300],
+                matched=[str(m) for m in matched if m] if isinstance(matched, list) else [],
+            )
+        )
+    return out
