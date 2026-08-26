@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- Fool's Gold ----
+backend/.venv/
+frontend/dist/
+frontend/node_modules/
+node_modules/
+dist/
+*.db
+*.db-wal
+*.db-shm
+.foolsgold/
+secret.key
