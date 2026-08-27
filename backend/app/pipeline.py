@@ -99,6 +99,20 @@ def _structural_classifications(emails: list[dict[str, Any]], me: str) -> list[C
     return out
 
 
+def _soonest_obligation(c: Classification) -> str | None:
+    """What this email actually costs the user next.
+
+    A Co-op reminder can name a presentation in September and a progress report
+    due this Saturday. Ranking on whichever date the model happened to put in
+    `deadline` buries the one that is about to bite, so the email is scored on
+    the earliest thing it asks of you -- which is also the date the user would
+    name if you asked them why the mail matters."""
+    candidates = [t.due_date for t in c.tasks if t.due_date]
+    if c.deadline:
+        candidates.append(c.deadline)
+    return min(candidates) if candidates else None
+
+
 def _persist(classifications: list[Classification], emails_by_id: dict[str, dict], source: str, model: str) -> None:
     priorities = priority.active_priorities()
     me = user_address()
@@ -108,8 +122,22 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
         email = emails_by_id.get(c.email_id)
         if email is None:
             continue
+
+        # The to-dos read out of the body are the real answer to "what do I owe
+        # anyone?". Reconciled rather than inserted, so re-reading a message
+        # neither duplicates its commitments nor resurrects ones already dealt
+        # with. A structural pass carries no tasks and must not wipe the ones a
+        # previous model pass found, so an empty list from the fallback is
+        # skipped rather than synced.
+        if c.tasks or source == "llm":
+            db.sync_email_tasks(
+                c.email_id,
+                [{"title": t.title, "due_date": t.due_date} for t in c.tasks],
+            )
+
+        deadline = _soonest_obligation(c)
         score, matched = priority.score_email(
-            email, c.bucket, c.deadline, priorities,
+            email, c.bucket, deadline, priorities,
             llm_matched=c.matched, user_address=me, today=today,
             correspondents=correspondents,
             verdict=(feedback.get(c.email_id) or {}).get("verdict"),
@@ -118,7 +146,7 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
         db.save_classification({
             "email_id": c.email_id,
             "bucket": c.bucket,
-            "deadline": c.deadline,
+            "deadline": deadline,
             "rationale": c.rationale,
             "score": score,
             "matched": ",".join(matched),
@@ -186,6 +214,44 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
         }
 
 
+async def rescan(batch_limit: int = 100, max_passes: int = 40) -> dict[str, Any]:
+    """Re-read every cached message from scratch.
+
+    Classification is cached per email id and never revisited, which is right --
+    it is the expensive half. But it means a mailbox classified before the
+    to-do extractor existed will never grow to-dos on its own. This drops the
+    cached verdicts and asks again.
+
+    Costs one model round-trip per batch, so it is a button the user presses,
+    never something that runs by itself. `max_passes` is a runaway guard: every
+    pass writes a row for every email it was given (structurally, if the model
+    fails), so the backlog strictly shrinks and the loop terminates on its own.
+    """
+    with db.connect() as conn:
+        conn.execute("DELETE FROM classifications")
+        conn.commit()
+
+    total = 0
+    source = "none"
+    detail = ""
+    for _ in range(max_passes):
+        result = await classify_pending(limit=batch_limit)
+        if not result.get("classified"):
+            break
+        total += result["classified"]
+        source = result.get("source", source)
+        detail = result.get("detail") or detail
+
+    rescore_all()
+    return {
+        "classified": total,
+        "source": source,
+        "detail": detail,
+        "ai_available": _ai_status["available"],
+        "off": _ai_status["off"],
+    }
+
+
 def rescore_all() -> int:
     """Re-run scoring against the current priority list without re-calling the
     model. This is what makes editing your priorities feel instant."""
@@ -222,7 +288,7 @@ def rescore_all() -> int:
 # digest
 # --------------------------------------------------------------------------
 
-def _digest_candidates(limit: int = 25) -> list[dict[str, Any]]:
+def _digest_candidates(limit: int = 25, today: date | None = None) -> list[dict[str, Any]]:
     """Top-ranked mail that still needs the user. Anything already ticked off,
     muted or snoozed is excluded -- a briefing that lists things you have
     already dealt with trains you to ignore the briefing."""
@@ -239,7 +305,18 @@ def _digest_candidates(limit: int = 25) -> list[dict[str, Any]]:
             "ORDER BY c.score DESC LIMIT ?",
             (limit,),
         ).fetchall()
-    return [dict(r) for r in rows]
+
+    today = today or date.today()
+    out = []
+    for row in rows:
+        email = dict(row)
+        # A deadline a month past is not a deadline any more. Blanked here
+        # rather than filtered, because the mail may still be worth raising for
+        # other reasons -- it just must not be introduced as something due.
+        if priority.is_forgotten(email.get("deadline"), today):
+            email["deadline"] = None
+        out.append(email)
+    return out
 
 
 def _as_agenda_row(
@@ -268,13 +345,41 @@ def _as_agenda_row(
     }
 
 
+# Bump whenever the rules behind a briefing change. The digest is cached for a
+# calendar day, so without this a fix to what belongs in it is invisible until
+# tomorrow -- which is exactly how a briefing kept announcing a deadline from
+# 2022 hours after the code that produced it had been replaced.
+DIGEST_LOGIC_VERSION = 2
+
+
+def _with_current_verdicts(digest: dict[str, Any]) -> dict[str, Any]:
+    """Stamp each briefing row with what the user has since done about it.
+
+    The tick used to be derived in the frontend by looking the row's id up in
+    the mail list -- two different queries, so any row the list did not happen
+    to contain could never show as ticked. Clicking it posted the feedback and
+    nothing visibly happened, which reads as a dead checkbox. The briefing is
+    cached; the verdicts are not, so they are joined on at serve time and the
+    row carries its own state."""
+    items = digest.get("items") or []
+    if not items:
+        return digest
+    feedback = db.all_feedback()
+    for item in items:
+        item["verdict"] = (feedback.get(item.get("email_id")) or {}).get("verdict")
+    return digest
+
+
 def cached_digest(day: str | None = None) -> dict[str, Any] | None:
     day = day or date.today().isoformat()
     with db.connect() as conn:
         row = conn.execute("SELECT * FROM digests WHERE day = ?", (day,)).fetchone()
     if row is None:
         return None
-    return _unpack(dict(row))
+    cached = _unpack(dict(row))
+    if cached.get("logic_version") != DIGEST_LOGIC_VERSION:
+        return None            # built by older rules; rebuild rather than serve
+    return _with_current_verdicts(cached)
 
 
 def _unpack(row: dict[str, Any]) -> dict[str, Any]:
@@ -286,11 +391,13 @@ def _unpack(row: dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload, dict):
             row["headline"] = payload.get("headline", "")
             row["items"] = payload.get("items", [])
+            row["logic_version"] = payload.get("logic_version")
             return row
     except (ValueError, TypeError):
         pass
     row["headline"] = body
     row["items"] = []
+    row["logic_version"] = None      # pre-versioning markdown row
     return row
 
 
@@ -332,7 +439,9 @@ async def build_digest(force: bool = False) -> dict[str, Any]:
             headline, items = _fallback_agenda(emails)
             model = "structural"
 
-    payload = json.dumps({"headline": headline, "items": items})
+    payload = json.dumps({
+        "headline": headline, "items": items, "logic_version": DIGEST_LOGIC_VERSION,
+    })
     created = db.now_iso()
     with db.connect() as conn:
         conn.execute(
@@ -342,24 +451,45 @@ async def build_digest(force: bool = False) -> dict[str, Any]:
             (day, payload, model, created),
         )
         conn.commit()
-    return {"day": day, "headline": headline, "items": items, "model": model, "created_at": created}
+    return _with_current_verdicts({
+        "day": day, "headline": headline, "items": items, "model": model,
+        "created_at": created, "logic_version": DIGEST_LOGIC_VERSION,
+    })
 
 
-def _fallback_agenda(emails: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+def _fallback_agenda(
+    emails: list[dict[str, Any]], today: date | None = None
+) -> tuple[str, list[dict[str, Any]]]:
     """A useful checklist with no model at all: deadlines first, then actions.
 
     Every row still points at a real email, so the briefing stays clickable and
     tickable whether or not AI is available."""
-    today = date.today().isoformat()
+    today = (today or date.today()).isoformat()
+
+    def row_for(email: dict[str, Any]) -> dict[str, Any]:
+        """Say the truest thing about this row.
+
+        Previously only the first five dated emails got a date note and the
+        rest fell through to "needs a reply" -- so a message with a real
+        deadline was described as if it had none, while its chip still showed
+        one. What a row says now follows from the row, not from where it
+        happened to land in the list."""
+        deadline = email.get("deadline")
+        if not deadline:
+            return _as_agenda_row(email, note_key="needsReply")
+        if deadline == today:
+            return _as_agenda_row(email, note_key="dueToday")
+        return _as_agenda_row(email, note_key="dueOn", note_vars={"date": deadline})
+
     rows: list[dict[str, Any]] = []
     used: set[str] = set()
 
+    # Ascending, so the most pressing comes first -- but only among dates that
+    # still mean something. Without the filter in _digest_candidates the single
+    # oldest deadline in the mailbox led the briefing every single morning.
     dated = sorted((e for e in emails if e.get("deadline")), key=lambda e: e["deadline"])
     for e in dated[:5]:
-        if e["deadline"] == today:
-            rows.append(_as_agenda_row(e, note_key="dueToday"))
-        else:
-            rows.append(_as_agenda_row(e, note_key="dueOn", note_vars={"date": e["deadline"]}))
+        rows.append(row_for(e))
         used.add(e["id"])
 
     for e in emails:
@@ -367,7 +497,7 @@ def _fallback_agenda(emails: list[dict[str, Any]]) -> tuple[str, list[dict[str, 
             break
         if e["id"] in used or e.get("bucket") != "action":
             continue
-        rows.append(_as_agenda_row(e, note_key="needsReply"))
+        rows.append(row_for(e))
         used.add(e["id"])
 
     if not rows:

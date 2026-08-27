@@ -16,6 +16,22 @@ VALID_BUCKETS = {"action", "fyi", "noise"}
 _MAX_BODY_IN_PROMPT = 1200  # per email; enough to judge intent, cheap enough to batch
 
 
+MAX_TASKS_PER_EMAIL = 5
+_MAX_TASK_TITLE = 120
+
+
+@dataclass
+class ExtractedTask:
+    """One thing the recipient personally has to do, read out of the body.
+
+    This is the difference between "this email has a date on it" and "you owe
+    someone a progress report by the 30th". A single message routinely carries
+    several -- a presentation date, a report deadline, a slides upload -- and
+    the one `deadline` field can only ever hold one of them."""
+    title: str
+    due_date: str
+
+
 @dataclass
 class Classification:
     email_id: str
@@ -23,6 +39,7 @@ class Classification:
     deadline: str | None = None
     rationale: str = ""
     matched: list[str] = field(default_factory=list)
+    tasks: list[ExtractedTask] = field(default_factory=list)
 
 
 class ProviderUnavailable(RuntimeError):
@@ -82,11 +99,31 @@ Also extract a deadline as YYYY-MM-DD when the email states or clearly implies o
 (a due date, a meeting date, an RSVP cut-off, "by Friday"). Use null otherwise.
 Resolve relative dates against the stated current date.
 
+Then extract "tasks": the concrete things THIS RECIPIENT personally has to do,
+each with its own date. This is the important part, and it is not the same as the
+deadline field. One email often carries several separate obligations -- "submit
+the progress report by 30 August", "present on 12 September", "upload slides the
+day before" -- and each is its own line on their to-do list.
+
+Rules for tasks:
+- Write each title as an instruction to the user, starting with a verb, naming the
+  thing: "Submit the Co-op progress report", not "Progress report" and not
+  "Reminder about the progress report". Max 12 words.
+- Only include something the recipient must DO. An event they are merely told
+  about, a date in someone else's schedule, a deadline that has already passed for
+  a group they are not in -- none of those are tasks.
+- Every task needs a real date you can point at in the email. If the email says a
+  thing is due but never says when, leave it out.
+- Never invent or infer a date to make a task fit. Half a task is worse than none.
+- At most 5 per email. Empty list is the right answer for most mail, and always
+  the right answer for newsletters and marketing.
+
 List which of the user's active priorities the email relates to, using their exact
 wording. Empty list if none.
 
 Reply with a JSON array and nothing else. One object per email, same order as given:
 [{"id": "<id>", "bucket": "action|fyi|noise", "deadline": "YYYY-MM-DD or null",
+  "tasks": [{"title": "<verb-first, max 12 words>", "due": "YYYY-MM-DD"}],
   "matched": ["priority", ...], "rationale": "<max 15 words>"}]"""
 
 DIGEST_SYSTEM = """You write one short morning briefing for a busy person, in the voice of
@@ -296,6 +333,35 @@ def parse_classifications(raw: str, expected_ids: list[str]) -> list[Classificat
                 deadline=_clean_deadline(item.get("deadline")),
                 rationale=str(item.get("rationale") or "")[:300],
                 matched=[str(m) for m in matched if m] if isinstance(matched, list) else [],
+                tasks=parse_tasks(item.get("tasks")),
             )
         )
+    return out
+
+
+def parse_tasks(raw: Any) -> list[ExtractedTask]:
+    """Turn the model's task list into something safe to put on a calendar.
+
+    A task with no usable date is dropped rather than filed under today: a
+    to-do that silently appears on the wrong day is worse than one that never
+    appears, because the user will trust it."""
+    if not isinstance(raw, list):
+        return []
+    out: list[ExtractedTask] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        due = _clean_deadline(entry.get("due") or entry.get("due_date") or entry.get("deadline"))
+        if not title or not due:
+            continue
+        title = " ".join(title.split())[:_MAX_TASK_TITLE]
+        key = (title.lower(), due)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ExtractedTask(title=title, due_date=due))
+        if len(out) >= MAX_TASKS_PER_EMAIL:
+            break
     return out

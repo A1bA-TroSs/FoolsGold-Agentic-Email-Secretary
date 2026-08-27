@@ -38,7 +38,9 @@ export default function ConfirmMute({ open, sender, address, count, onCancel, on
 
         <p>
           {count > 0
-            ? <>{t('muteAffects')} <span className="count">{t('muteCount', { n: count })}</span></>
+            ? <>{t('muteAffects')} <span className="count">
+                {t(count === 1 ? 'muteCountOne' : 'muteCount', { n: count })}
+              </span></>
             : t('muteAffectsNone')}
         </p>
         <p>{t('muteReversible')}</p>

@@ -49,4 +49,9 @@ DEFAULT_SETTINGS = {
     "sync_max_messages": "300",
     "classify_batch_size": "10",
     "auto_digest": "true",
+    # Daily checklist reminders. Times are local wall-clock, HH:MM, and the
+    # Electron shell -- not this process -- is what actually posts them.
+    "notify_enabled": "true",
+    "notify_morning": "09:00",
+    "notify_evening": "21:00",
 }
