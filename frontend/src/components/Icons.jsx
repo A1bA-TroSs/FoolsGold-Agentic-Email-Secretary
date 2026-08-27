@@ -76,3 +76,29 @@ export const FlagIcon = () => (
     <path d="M5 5.2h10.5l-1.6 3.2 1.6 3.2H5z" />
   </svg>
 );
+
+export const CalendarIcon = () => (
+  <svg {...base}><rect x="3" y="4.5" width="18" height="16" rx="3" /><path d="M3 9.5h18M8 2.5v4M16 2.5v4" /></svg>
+);
+export const ChevronLeftIcon = () => (
+  <svg {...base}><path d="M14.5 5 8 12l6.5 7" /></svg>
+);
+export const ChevronRightIcon = () => (
+  <svg {...base}><path d="M9.5 5 16 12l-6.5 7" /></svg>
+);
+export const PlusIcon = () => (
+  <svg {...base}><path d="M12 5.5v13M5.5 12h13" /></svg>
+);
+export const TrashIcon = () => (
+  <svg {...base}><path d="M4 6.5h16M9.5 6.5V4.8A1.3 1.3 0 0 1 10.8 3.5h2.4a1.3 1.3 0 0 1 1.3 1.3v1.7" /><path d="M6.5 6.5 7.4 19a1.6 1.6 0 0 0 1.6 1.5h6a1.6 1.6 0 0 0 1.6-1.5l.9-12.5" /></svg>
+);
+export const BackIcon = () => (
+  <svg {...base}><path d="M10 5 3.5 12 10 19" /><path d="M3.5 12H20" /></svg>
+);
+export const BellIcon = () => (
+  <svg {...base}><path d="M18 8.8a6 6 0 1 0-12 0c0 6-2.2 7.7-2.2 7.7h16.4S18 14.8 18 8.8" /><path d="M13.7 20.2a2 2 0 0 1-3.4 0" /></svg>
+);
+
+export const HighlightIcon = () => (
+  <svg {...base}><path d="M12 3.2 14.6 9l6.4.6-4.8 4.2 1.4 6.2L12 16.8 6.4 20l1.4-6.2L3 9.6 9.4 9z" /></svg>
+);

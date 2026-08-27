@@ -77,6 +77,25 @@ _WEEKDAYS = {d: i for i, d in enumerate(
 # deadline extraction (structural fallback; the LLM does better when available)
 # --------------------------------------------------------------------------
 
+# A month. Past that a deadline is history, not a reminder: either it was met,
+# or it was missed and the world moved on. The scoring curve below already
+# stops *rewarding* an overdue date after three weeks; this is the separate,
+# blunter rule about when we stop *mentioning* it at all -- in the briefing, in
+# the reminders, and on the row chips. "496 days overdue" is not a to-do.
+FORGET_AFTER_DAYS = 30
+
+
+def is_forgotten(deadline: str | None, today: date | None = None) -> bool:
+    """True when a due date is too far past to be worth raising."""
+    if not deadline:
+        return False
+    try:
+        due = date.fromisoformat(str(deadline)[:10])
+    except (ValueError, TypeError):
+        return False
+    return (today or date.today()) - due > timedelta(days=FORGET_AFTER_DAYS)
+
+
 def extract_deadline(text: str, today: date | None = None) -> str | None:
     if not text:
         return None
@@ -141,25 +160,40 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
     return "fyi"
 
 
+def _recipient_addresses(value: Any) -> list[str]:
+    """Addresses out of a stored recipient list.
+
+    Sources hand us `[{"name": ..., "address": ...}]`, but this column is JSON
+    written by whichever source produced the message, and a bare list of
+    strings is the obvious other shape. Scoring runs inside classification, so
+    an AttributeError here does not merely mislabel one email -- it aborts the
+    batch. Take what is recognisable and ignore the rest."""
+    out = []
+    for rec in db.json_list(value):
+        if isinstance(rec, dict):
+            address = rec.get("address") or rec.get("emailAddress") or ""
+        elif isinstance(rec, str):
+            address = rec
+        else:
+            continue
+        address = str(address).strip().lower()
+        if address:
+            out.append(address)
+    return out
+
+
 def _addressed_directly(email: dict[str, Any], user_address: str) -> bool:
     """To: me is a far stronger signal than Cc: me -- this is the single most
     reliable structural cue an assistant has."""
     if not user_address:
         return False
-    user_address = user_address.lower()
-    for rec in db.json_list(email.get("to_recipients")):
-        if (rec.get("address") or "").lower() == user_address:
-            return True
-    return False
+    return user_address.lower() in _recipient_addresses(email.get("to_recipients"))
 
 
 def _cc_only(email: dict[str, Any], user_address: str) -> bool:
     if not user_address or _addressed_directly(email, user_address):
         return False
-    for rec in db.json_list(email.get("cc_recipients")):
-        if (rec.get("address") or "").lower() == user_address:
-            return True
-    return False
+    return user_address.lower() in _recipient_addresses(email.get("cc_recipients"))
 
 
 # --------------------------------------------------------------------------

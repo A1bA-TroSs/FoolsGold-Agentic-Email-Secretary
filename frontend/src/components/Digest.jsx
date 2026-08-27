@@ -1,6 +1,7 @@
 import { RefreshIcon } from './Icons.jsx';
 import { ThinkingNote } from './Loading.jsx';
 import { useT } from '../lib/i18n.js';
+import { dueChip } from '../lib/due.js';
 
 /* Today's briefing, as a checklist.
 
@@ -13,18 +14,6 @@ import { useT } from '../lib/i18n.js';
 
 function Tick() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5 6.2 12 13.5 4" /></svg>;
-}
-
-function dueChip(deadline, t) {
-  if (!deadline) return null;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const due = new Date(`${deadline}T00:00:00`);
-  const days = Math.round((due - today) / 86400000);
-  if (days < 0) return { label: t('overdueDays', { n: -days }), urgent: true };
-  if (days === 0) return { label: t('dueToday'), urgent: true };
-  if (days === 1) return { label: t('dueTomorrow'), urgent: true };
-  if (days <= 7) return { label: t('dueInDays', { n: days }), urgent: false };
-  return { label: t('dueOn', { date: deadline.slice(5) }), urgent: false };
 }
 
 export default function Digest({ digest, loading, onRefresh, onOpen, onDone, selectedId, checkedIds }) {
@@ -60,7 +49,12 @@ export default function Digest({ digest, loading, onRefresh, onOpen, onDone, sel
             <ul className="agenda">
               {items.map((it, i) => {
                 const due = dueChip(it.deadline, t);
-                const checked = checkedIds?.has(it.email_id) || false;
+                /* The row's own verdict is the truth, joined on by the
+                   backend. `checkedIds` is the optimistic overlay so the tick
+                   draws on the same frame you click, before the refetch. */
+                const checked = checkedIds?.has(it.email_id) ?? false
+                  ? true
+                  : it.verdict === 'done';
                 return (
                   <li
                     key={it.email_id}

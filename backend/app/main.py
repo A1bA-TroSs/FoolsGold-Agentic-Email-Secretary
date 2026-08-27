@@ -19,6 +19,7 @@ from . import db, pipeline
 from .config import APP_NAME, BACKEND_HOST, BACKEND_PORT, VERSION
 from .graph import auth as graph_auth
 from .routers import auth as auth_router
+from .routers import calendar as calendar_router
 from .routers import config as config_router
 from .routers import mail as mail_router
 from .sources.registry import get_source
@@ -66,6 +67,7 @@ app.add_middleware(
 
 app.include_router(auth_router.router)
 app.include_router(mail_router.router)
+app.include_router(calendar_router.router)
 app.include_router(config_router.router)
 
 

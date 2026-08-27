@@ -90,6 +90,44 @@ CREATE TABLE IF NOT EXISTS muted_senders (
     created_at TEXT
 );
 
+-- Checklist items the user typed in, as opposed to due dates we read out of
+-- mail. They share the calendar and the gestures; only the origin differs.
+CREATE TABLE IF NOT EXISTS tasks (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    due_date     TEXT NOT NULL,          -- YYYY-MM-DD, a local calendar day
+    note         TEXT,
+    status       TEXT NOT NULL DEFAULT 'open',   -- open | done
+    created_at   TEXT,
+    completed_at TEXT,
+    deleted_at   TEXT,                     -- set = in the removed box, not gone
+    email_id     TEXT,                     -- the message this was read out of
+    origin       TEXT NOT NULL DEFAULT 'user'   -- user | email
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);
+-- The indexes over email_id live in LATE_INDEXES, not here: this script runs
+-- before _migrate(), so on an upgraded database the column does not exist yet
+-- and naming it would fail the whole executescript.
+
+-- Email-derived due dates the user removed from the calendar. Deleting a
+-- calendar row means "this is not a deadline", which is a different statement
+-- from "I have done it" (feedback) and from "silence this sender" (mute), so
+-- it gets its own table instead of overloading either.
+CREATE TABLE IF NOT EXISTS calendar_hidden (
+    email_id   TEXT PRIMARY KEY,
+    created_at TEXT
+);
+
+-- The opposite of muting, and deliberately its own table rather than a column
+-- on muted_senders: they are independent statements. "Never rank this address"
+-- and "colour this address so I spot it" are not two values of one setting,
+-- and a sender can sensibly be un-muted back into a highlight it still holds.
+CREATE TABLE IF NOT EXISTS highlighted_senders (
+    address    TEXT PRIMARY KEY,
+    color      TEXT NOT NULL,
+    created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS digests (
     day        TEXT PRIMARY KEY,
     body       TEXT,
@@ -119,6 +157,17 @@ def connect() -> sqlite3.Connection:
 MIGRATIONS: list[tuple[str, str, str]] = [
     ("emails", "is_answered", "INTEGER DEFAULT 0"),
     ("emails", "is_flagged", "INTEGER DEFAULT 0"),
+    ("tasks", "deleted_at", "TEXT"),
+    ("tasks", "email_id", "TEXT"),
+    ("tasks", "origin", "TEXT NOT NULL DEFAULT 'user'"),
+]
+
+# Indexes added after the first release. CREATE INDEX IF NOT EXISTS is safe to
+# re-run, but it cannot run before _migrate() has added the columns it names.
+LATE_INDEXES = [
+    "CREATE INDEX IF NOT EXISTS idx_tasks_email ON tasks(email_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_from_email "
+    "ON tasks(email_id, title, due_date) WHERE email_id IS NOT NULL",
 ]
 
 
@@ -135,6 +184,8 @@ def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
+        for statement in LATE_INDEXES:
+            conn.execute(statement)
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings (key, value, encrypted) VALUES (?, ?, 0)",
@@ -299,6 +350,8 @@ def all_feedback() -> dict[str, dict[str, Any]]:
 # --------------------------------------------------------------------------
 
 def mute_sender(address: str) -> None:
+    """Silence an address. A highlight it holds is left in place: muting says
+    "not now", not "forget my colour", and unmuting brings the colour back."""
     address = (address or "").strip().lower()
     if not address:
         return
@@ -354,3 +407,276 @@ def json_list(value: Any) -> list:
         return json.loads(value)
     except (ValueError, TypeError):
         return []
+
+
+# --------------------------------------------------------------------------
+# tasks (user-created checklist items)
+# --------------------------------------------------------------------------
+
+def add_task(title: str, due_date: str, note: str | None = None,
+             email_id: str | None = None, origin: str = "user") -> dict[str, Any]:
+    with connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO tasks (title, due_date, note, status, created_at, email_id, origin) "
+            "VALUES (?, ?, ?, 'open', ?, ?, ?)",
+            (title, due_date, note, now_iso(), email_id, origin),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def sync_email_tasks(email_id: str, wanted: list[dict[str, Any]]) -> dict[str, int]:
+    """Make the extracted to-dos for one email match what was just read out of
+    it, without stepping on anything the user has touched.
+
+    Re-reading the same message has to be a no-op, so this is a reconcile, not
+    an insert:
+
+      * a commitment we already hold is left exactly as it is -- including one
+        the user has ticked off or removed, which must not come back;
+      * a commitment that is no longer in the mail is dropped, but only if it
+        is still open and untouched;
+      * anything the user wrote by hand is invisible here (email_id is NULL).
+    """
+    keys = {(t["title"], t["due_date"]) for t in wanted}
+    added = dropped = 0
+    with connect() as conn:
+        existing = conn.execute(
+            "SELECT id, title, due_date, status, deleted_at FROM tasks WHERE email_id = ?",
+            (email_id,),
+        ).fetchall()
+
+        for row in existing:
+            if (row["title"], row["due_date"]) in keys:
+                continue
+            # Gone from the mail. Only clear it away if the user never acted.
+            if row["status"] == "open" and row["deleted_at"] is None:
+                conn.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
+                dropped += 1
+
+        for task in wanted:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO tasks "
+                "(title, due_date, note, status, created_at, email_id, origin) "
+                "VALUES (?, ?, ?, 'open', ?, ?, 'email')",
+                (task["title"], task["due_date"], task.get("note"), now_iso(), email_id),
+            )
+            added += cursor.rowcount
+        conn.commit()
+    return {"added": added, "dropped": dropped}
+
+
+def email_task_ids() -> set[str]:
+    """Emails whose body has been read into to-dos. Their subject line no longer
+    needs a place on the calendar -- the to-dos say what is actually owed.
+
+    Deliberately counts removed and completed to-dos as well as open ones. If
+    the user deletes "Submit the Co-op progress report" from the 30th and the
+    email's own chip then appears on the 30th instead, the deletion has been
+    undone in disguise -- same date, vaguer label. Once we have read a message
+    into to-dos, their state is the user's answer about that message."""
+    with connect() as conn:
+        return {
+            r["email_id"] for r in conn.execute(
+                "SELECT DISTINCT email_id FROM tasks WHERE email_id IS NOT NULL"
+            )
+        }
+
+
+def get_task(task_id: int, include_deleted: bool = False) -> dict[str, Any] | None:
+    clause = "" if include_deleted else " AND deleted_at IS NULL"
+    with connect() as conn:
+        row = conn.execute(f"SELECT * FROM tasks WHERE id = ?{clause}", (task_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def update_task(task_id: int, **fields: Any) -> dict[str, Any] | None:
+    """Only the columns actually passed are written. Completing a task stamps
+    completed_at; reopening clears it, so a re-ticked item does not keep a
+    completion time from a previous life."""
+    allowed = ("title", "due_date", "note", "status")
+    sets = [(k, v) for k, v in fields.items() if k in allowed and v is not None]
+    if "status" in dict(sets):
+        status = dict(sets)["status"]
+        sets.append(("completed_at", now_iso() if status == "done" else None))
+    if not sets:
+        return get_task(task_id)
+    clause = ", ".join(f"{k} = ?" for k, _ in sets)
+    with connect() as conn:
+        cursor = conn.execute(
+            f"UPDATE tasks SET {clause} WHERE id = ? AND deleted_at IS NULL",
+            (*[v for _, v in sets], task_id),
+        )
+        conn.commit()
+    return get_task(task_id) if cursor.rowcount else None
+
+
+def delete_task(task_id: int) -> bool:
+    """Soft delete. A checklist item you wrote is not something we should
+    destroy on one click -- it goes to the removed box, where it can come back
+    to the day it was filed on."""
+    with connect() as conn:
+        cursor = conn.execute(
+            "UPDATE tasks SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (now_iso(), task_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def restore_task(task_id: int) -> bool:
+    with connect() as conn:
+        cursor = conn.execute(
+            "UPDATE tasks SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+            (task_id,),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def purge_task(task_id: int) -> bool:
+    """The one irreversible path, reachable only from the removed box."""
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def removed_tasks() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT {_TASK_COLUMNS} FROM tasks t LEFT JOIN emails e ON e.id = t.email_id "
+            f"WHERE t.deleted_at IS NOT NULL AND {_NOT_MUTED} ORDER BY t.deleted_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# A task read out of a muted sender's mail is that sender's mail. The LEFT JOIN
+# keeps hand-written tasks (email_id NULL), which have no sender to mute.
+_TASK_COLUMNS = (
+    "t.*, e.from_name AS sender_name, e.from_address AS sender_address, e.subject AS email_subject"
+)
+_NOT_MUTED = (
+    "(t.email_id IS NULL OR e.from_address IS NULL "
+    " OR e.from_address NOT IN (SELECT address FROM muted_senders))"
+)
+
+
+def tasks_between(start: str, end: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT {_TASK_COLUMNS} FROM tasks t LEFT JOIN emails e ON e.id = t.email_id "
+            f"WHERE t.due_date BETWEEN ? AND ? AND t.deleted_at IS NULL AND {_NOT_MUTED} "
+            f"ORDER BY t.due_date, t.id",
+            (start, end),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# calendar visibility
+# --------------------------------------------------------------------------
+
+def hide_calendar_email(email_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO calendar_hidden (email_id, created_at) VALUES (?, ?)",
+            (email_id, now_iso()),
+        )
+        conn.commit()
+
+
+def unhide_calendar_email(email_id: str) -> bool:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM calendar_hidden WHERE email_id = ?", (email_id,))
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def hidden_calendar_rows() -> list[dict[str, Any]]:
+    """Hidden due dates with enough context to recognise them a week later.
+
+    An INNER JOIN on purpose: if the message itself has aged out of the local
+    cache there is nothing to restore, so it should not be offered.
+
+    Muted senders are excluded for the same reason. Restoring an entry whose
+    sender is muted would appear to work and change nothing -- the mute filter
+    hides it again the moment the calendar reloads. Unmuting brings the whole
+    address back, and this row with it."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.email_id, h.created_at AS removed_at, e.subject, e.from_name, "
+            "       e.from_address, c.deadline "
+            "FROM calendar_hidden h "
+            "JOIN emails e ON e.id = h.email_id "
+            "JOIN classifications c ON c.email_id = h.email_id "
+            "WHERE e.from_address NOT IN (SELECT address FROM muted_senders) "
+            "ORDER BY h.created_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# highlighted senders
+# --------------------------------------------------------------------------
+
+# A small fixed palette rather than a colour picker. Six are enough to tell
+# apart at a glance, they can be given real names in every UI language, and
+# they map to theme tokens so the colours stay legible on a dark background --
+# a free hex value chosen against the ivory theme would vanish in the dark one.
+HIGHLIGHT_COLORS = ("red", "orange", "yellow", "green", "blue", "purple")
+
+
+def highlight_sender(address: str, color: str) -> None:
+    """Colour every message from an address.
+
+    Highlighting un-mutes, because the two are opposite instructions: you
+    cannot both want a sender out of the way and want it to catch your eye.
+    Muting does *not* clear a highlight, so unmuting later restores the colour
+    the user chose rather than silently losing it."""
+    address = (address or "").strip().lower()
+    if not address:
+        return
+    if color not in HIGHLIGHT_COLORS:
+        raise ValueError(f"color must be one of {list(HIGHLIGHT_COLORS)}")
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO highlighted_senders (address, color, created_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(address) DO UPDATE SET color=excluded.color",
+            (address, color, now_iso()),
+        )
+        conn.execute("DELETE FROM muted_senders WHERE address = ?", (address,))
+        conn.commit()
+
+
+def unhighlight_sender(address: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "DELETE FROM highlighted_senders WHERE address = ?",
+            ((address or "").strip().lower(),),
+        )
+        conn.commit()
+
+
+def sender_highlights() -> dict[str, str]:
+    """address -> colour, for whoever needs to paint a row."""
+    with connect() as conn:
+        return {r["address"]: r["color"] for r in conn.execute(
+            "SELECT address, color FROM highlighted_senders"
+        )}
+
+
+def highlighted_sender_rows() -> list[dict[str, Any]]:
+    """Each highlighted address with how much mail it accounts for, so the box
+    shows the same accounting the muted box does."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT h.address, h.color, h.created_at, COUNT(e.id) AS message_count, "
+            "       MAX(e.received_at) AS last_seen, "
+            "       (SELECT from_name FROM emails WHERE from_address = h.address "
+            "         AND from_name != '' ORDER BY received_at DESC LIMIT 1) AS display_name "
+            "FROM highlighted_senders h LEFT JOIN emails e ON e.from_address = h.address "
+            "GROUP BY h.address, h.color ORDER BY message_count DESC, h.address"
+        ).fetchall()
+    return [dict(r) for r in rows]

@@ -330,3 +330,27 @@ def test_muting_beats_even_an_explicit_pin():
     pinned, _ = priority.score_email(e, "fyi", None, [], user_address=ME, today=TODAY,
                                      verdict="pinned", sender_muted=True)
     assert pinned == 0.0
+
+
+# --------------------------------------------------------------------------
+# recipient lists we did not write
+# --------------------------------------------------------------------------
+
+def test_recipient_addresses_reads_the_normal_shape():
+    value = '[{"name": "Danny", "address": "danny@ust.hk"}, {"address": "other@ust.hk"}]'
+    assert priority._recipient_addresses(value) == ["danny@ust.hk", "other@ust.hk"]
+
+
+def test_recipient_addresses_survives_shapes_we_did_not_expect():
+    """This runs inside classification, so an exception here does not mislabel
+    one email -- it aborts the whole batch."""
+    for value in ('["danny@ust.hk"]', '[null, 3, "danny@ust.hk"]', "[]", "", None, "not json"):
+        assert isinstance(priority._recipient_addresses(value), list)
+    assert priority._recipient_addresses('["Danny@UST.hk"]') == ["danny@ust.hk"]
+    assert priority._recipient_addresses('[{"address": null}]') == []
+
+
+def test_addressed_directly_accepts_a_bare_string_list():
+    email = {"to_recipients": '["danny@ust.hk"]', "cc_recipients": "[]"}
+    assert priority._addressed_directly(email, "danny@ust.hk") is True
+    assert priority._cc_only(email, "danny@ust.hk") is False

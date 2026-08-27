@@ -6,6 +6,7 @@ const SOURCE_KEYS = ['user_address', 'applemail_root', 'applemail_inbox_only'];
 const AI_KEYS = ['llm_provider', 'copilot_model', 'anthropic_api_key',
                  'anthropic_model', 'openai_api_key', 'openai_model'];
 const SYNC_KEYS = ['sync_days', 'sync_max_messages', 'classify_batch_size'];
+const NOTIFY_KEYS = ['notify_enabled', 'notify_morning', 'notify_evening'];
 
 const THEMES = [
   { id: 'gold', key: 'themeGold', colors: ['#FAF6EC', '#F0E6C8', '#C9A227', '#3A2E1F'] },
@@ -24,6 +25,8 @@ export default function Settings({
   const [test, setTest] = useState(null);
   const [testing, setTesting] = useState(false);
   const [copilot, setCopilot] = useState(null);
+  const [rescan, setRescan] = useState(null);
+  const [rescanning, setRescanning] = useState(false);
   const [draft, setDraft] = useState({});
   const [sourceInfo, setSourceInfo] = useState(null);
 
@@ -294,6 +297,57 @@ export default function Settings({
               </div>
             )}
           </div>
+        </section>
+
+        <section>
+          <h3>{t('rescanTitle')}</h3>
+          <p className="hint">{t('rescanHelp')}</p>
+          <button className="btn" disabled={rescanning}
+                  onClick={async () => {
+                    setRescanning(true); setRescan(null);
+                    try {
+                      const r = await api.rescan();
+                      setRescan({ ok: true, detail: t('rescanDone', { n: r.classified }) });
+                    } catch (e) {
+                      setRescan({ ok: false, detail: e.message });
+                    } finally {
+                      setRescanning(false);
+                    }
+                  }}>
+            {rescanning ? <><span className="spin" /> {t('rescanRunning')}</> : t('rescanAction')}
+          </button>
+          {rescan && (
+            <p style={{ fontSize: 12, marginTop: 8,
+                        color: rescan.ok ? 'var(--accent-strong)' : 'var(--danger)' }}>
+              {rescan.detail}
+            </p>
+          )}
+        </section>
+
+        <section>
+          <h3>{t('notifyTitle')}</h3>
+          <p className="hint">{t('notifyHelp')}</p>
+          <div className="field row">
+            <label className="check">
+              <input type="checkbox" checked={value('notify_enabled') === 'true'}
+                     onChange={(e) => edit('notify_enabled', e.target.checked ? 'true' : 'false')} />
+              {t('notifyEnabled')}
+            </label>
+          </div>
+          <div className="field">
+            <label>{t('notifyMorning')}</label>
+            <input className="input" type="time" value={value('notify_morning')}
+                   disabled={value('notify_enabled') !== 'true'}
+                   onChange={(e) => edit('notify_morning', e.target.value)} />
+          </div>
+          <div className="field">
+            <label>{t('notifyEvening')}</label>
+            <input className="input" type="time" value={value('notify_evening')}
+                   disabled={value('notify_enabled') !== 'true'}
+                   onChange={(e) => edit('notify_evening', e.target.value)} />
+          </div>
+          <button className="btn primary" disabled={!dirty(NOTIFY_KEYS)}
+                  onClick={() => save(NOTIFY_KEYS)}>{t('save')}</button>
         </section>
 
         <section>

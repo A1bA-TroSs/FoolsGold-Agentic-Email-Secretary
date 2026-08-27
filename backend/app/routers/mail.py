@@ -16,8 +16,13 @@ _LIST_COLUMNS = (
     "e.id, e.subject, e.from_name, e.from_address, e.received_at, e.is_read, "
     "e.is_answered, e.is_flagged, e.has_attachments, e.importance, e.body_preview, "
     "c.bucket, c.deadline, c.score, c.matched, c.rationale, c.source, "
-    "f.verdict, f.snooze_until"
+    "f.verdict, f.snooze_until, h.color AS highlight"
 )
+
+# Highlights are a property of the correspondent, so they join in exactly where
+# muting is consulted -- one source of truth, and the mailbox and the calendar
+# cannot disagree about who is coloured.
+_HIGHLIGHT_JOIN = "LEFT JOIN highlighted_senders h ON h.address = e.from_address"
 
 
 @router.get("")
@@ -56,6 +61,7 @@ def list_mail(
             f"SELECT {_LIST_COLUMNS} FROM emails e "
             f"LEFT JOIN classifications c ON c.email_id = e.id "
             f"LEFT JOIN feedback f ON f.email_id = e.id "
+            f"{_HIGHLIGHT_JOIN} "
             f"{clause} ORDER BY {order} LIMIT ?",
             (*params, limit),
         ).fetchall()
@@ -121,6 +127,37 @@ def mute_impact(address: str) -> dict:
     return {"address": address.lower(), "message_count": db.count_from_sender(address)}
 
 
+class HighlightIn(BaseModel):
+    address: str
+    color: str
+
+
+@router.get("/senders/highlighted")
+def list_highlighted() -> dict:
+    return {"items": db.highlighted_sender_rows(), "colors": list(db.HIGHLIGHT_COLORS)}
+
+
+@router.post("/senders/highlight")
+def highlight(body: HighlightIn) -> dict:
+    address = (body.address or "").strip().lower()
+    if not address:
+        raise HTTPException(status_code=400, detail="An address is required.")
+    try:
+        db.highlight_sender(address, body.color)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Highlighting un-mutes, so the ranking that mute suppressed has to return.
+    pipeline.rescore_all()
+    return {"address": address, "color": body.color,
+            "message_count": db.count_from_sender(address)}
+
+
+@router.delete("/senders/highlight")
+def unhighlight(address: str) -> dict:
+    db.unhighlight_sender(address)
+    return {"address": address.lower(), "color": None}
+
+
 @router.post("/senders/mute")
 def mute(body: MuteIn) -> dict:
     address = (body.address or "").strip().lower()
@@ -182,6 +219,15 @@ async def sync(classify: bool = True) -> dict:
 @router.post("/classify")
 async def classify(limit: int = 100) -> dict:
     return await pipeline.classify_pending(limit)
+
+
+@router.post("/rescan")
+async def rescan() -> dict:
+    """Re-read the whole cached mailbox, including for to-dos.
+
+    Deliberately a user-pressed button: it re-runs the model over everything,
+    which is the one genuinely expensive thing this app can do."""
+    return await pipeline.rescan()
 
 
 @router.get("/digest/today")

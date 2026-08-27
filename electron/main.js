@@ -4,7 +4,7 @@
  * title bar in the Obsidian style. It owns the Python backend's lifetime, so
  * quitting the app actually stops the process holding your mail cache.
  */
-const { app, BrowserWindow, shell, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Notification, shell, ipcMain, dialog } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -17,6 +17,8 @@ const VITE_URL = 'http://localhost:5173';
 
 let backend = null;
 let win = null;
+let reminderTimer = null;
+const remindersSent = new Map();   // slot name -> the date it last fired on
 
 // --------------------------------------------------------------------------
 
@@ -91,6 +93,77 @@ function waitForBackend(timeoutMs = 30000) {
 }
 
 // --------------------------------------------------------------------------
+// Daily checklist reminders
+//
+// A ticker, not two setTimeouts. A timeout scheduled twelve hours out does not
+// survive the laptop being shut, and macOS gives no guarantee about when a
+// slept timer fires -- so instead we wake every minute, ask what time it is,
+// and decide. Each slot is allowed to fire once per calendar day, tracked by
+// date so that a fire at 09:00 cannot repeat at 09:01.
+// --------------------------------------------------------------------------
+
+const REMINDER_TICK_MS = 60 * 1000;
+
+const { dueSlots, reminderBody } = require('./reminders.js');
+
+function getJson(pathname) {
+  return new Promise((resolve, reject) => {
+    http.get(`${BACKEND_URL}${pathname}`, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+        try { resolve(JSON.parse(body)); } catch (err) { reject(err); }
+      });
+    }).on('error', reject);
+  });
+}
+
+async function maybeRemind() {
+  if (!Notification.isSupported()) return;
+
+  let settings;
+  try {
+    settings = await getJson('/api/settings');
+  } catch {
+    return;                       // backend still starting, or already stopped
+  }
+
+  // dueSlots claims each slot as it returns it, so a slow agenda request
+  // cannot let the next tick fire the same reminder twice.
+  const slots = dueSlots(settings, new Date(), remindersSent);
+  if (!slots.length) return;
+
+  let agenda;
+  try {
+    agenda = await getJson('/api/calendar/agenda');
+  } catch {
+    return;                       // next reminder will try again
+  }
+  const body = reminderBody(agenda);
+  if (!body) return;              // say nothing rather than "nothing to do"
+
+  for (const slot of slots) {
+    const notification = new Notification({
+      title: slot === 'morning' ? 'Today in Fools Gold' : 'Still on your list',
+      body,
+      silent: false,
+    });
+    notification.on('click', () => {
+      if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+    });
+    notification.show();
+  }
+}
+
+function startReminders() {
+  if (reminderTimer) return;
+  reminderTimer = setInterval(() => { maybeRemind().catch(() => {}); }, REMINDER_TICK_MS);
+  maybeRemind().catch(() => {});
+}
+
+// --------------------------------------------------------------------------
 
 function createWindow() {
   win = new BrowserWindow({
@@ -151,6 +224,7 @@ app.whenReady().then(async () => {
     dialog.showErrorBox('Fools Gold could not start', String(err.message));
   }
   createWindow();
+  startReminders();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -162,5 +236,6 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 app.on('before-quit', () => { app.isQuitting = true; });
 
 app.on('quit', () => {
+  if (reminderTimer) { clearInterval(reminderTimer); reminderTimer = null; }
   if (backend) { backend.kill('SIGTERM'); backend = null; }
 });
