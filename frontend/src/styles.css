@@ -1,4 +1,4 @@
-/* Fool's Gold theming.
+/* Fools Gold theming.
    Four palettes lifted straight from the brainstorm mockups. Every colour in
    the app resolves through these custom properties, so adding a fifth theme is
    one block here and one entry in the settings list -- no component changes. */
@@ -19,6 +19,9 @@
   --shadow: rgba(58, 46, 31, 0.10);
   --logo-plate: #FFFDF5;
   --logo-plate-border: #E8DEBE;
+  --ok: #3E7A48;
+  --danger: #B4483C;
+  --ember: #E4622F;
 }
 
 [data-theme='dark'] {
@@ -38,6 +41,9 @@
      the gold artwork still has something to sit against. */
   --logo-plate: #302C22;
   --logo-plate-border: #45402F;
+  --ok: #63B074;
+  --danger: #E0705F;
+  --ember: #FF8A47;
 }
 
 [data-theme='green'] {
@@ -55,6 +61,9 @@
   --shadow: rgba(43, 61, 36, 0.10);
   --logo-plate: #FBFDF9;
   --logo-plate-border: #D5E5CB;
+  --ok: #2F6E3C;
+  --danger: #B4483C;
+  --ember: #E4622F;
 }
 
 [data-theme='purple'] {
@@ -72,6 +81,9 @@
   --shadow: rgba(60, 44, 74, 0.10);
   --logo-plate: #FCFAFD;
   --logo-plate-border: #E7D9EE;
+  --ok: #3E7A48;
+  --danger: #B4483C;
+  --ember: #E4622F;
 }
 
 * { box-sizing: border-box; }
@@ -98,8 +110,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .shell { display: flex; flex-direction: column; height: 100%; }
 
 .titlebar {
-  height: 38px;
-  flex: 0 0 38px;
+  height: 40px;
+  flex: 0 0 40px;
   background: var(--header);
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -117,8 +129,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .app { display: flex; flex: 1; min-height: 0; position: relative; }
 
 .rail {
-  width: 56px;
-  flex: 0 0 56px;
+  width: 66px;
+  flex: 0 0 66px;
   background: var(--rail);
   border-right: 1px solid var(--border);
   display: flex;
@@ -129,10 +141,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 
 .rail .logo {
-  width: 34px; height: 34px;
+  width: 46px; height: 46px;
   box-sizing: border-box;
-  padding: 3px;                   /* keeps the artwork off the plate edge */
-  border-radius: 10px;
+  padding: 4px;                   /* keeps the artwork off the plate edge */
+  border-radius: 13px;
   background: var(--logo-plate);
   border: 1px solid var(--logo-plate-border);
   margin-bottom: 12px;
@@ -143,7 +155,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .rail button {
   position: relative;
-  width: 38px; height: 38px;
+  width: 42px; height: 42px;
   border: none; background: transparent;
   border-radius: 9px;
   display: grid; place-items: center;
@@ -304,10 +316,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
   box-shadow: 0 4px 18px var(--shadow); text-align: center;
 }
 .card img {
-  width: 64px; height: 64px;
+  width: 84px; height: 84px;
   box-sizing: border-box;
-  padding: 6px;
-  border-radius: 18px;
+  padding: 8px;
+  border-radius: 23px;
   background: var(--logo-plate);
   border: 1px solid var(--logo-plate-border);
   box-shadow: 0 2px 8px var(--shadow);
@@ -536,10 +548,10 @@ select.input { appearance: none; padding-right: 28px;
 }
 .splash.leaving { opacity: 0; transform: scale(1.03); pointer-events: none; }
 
-.splash-mark { position: relative; display: grid; place-items: center; width: 108px; height: 108px; }
+.splash-mark { position: relative; display: grid; place-items: center; width: 148px; height: 148px; }
 .splash-mark img {
-  width: 74px; height: 74px; box-sizing: border-box; padding: 7px;
-  border-radius: 20px;
+  width: 104px; height: 104px; box-sizing: border-box; padding: 9px;
+  border-radius: 27px;
   background: var(--logo-plate);
   border: 1px solid var(--logo-plate-border);
   box-shadow: 0 6px 22px var(--shadow);
@@ -554,7 +566,7 @@ select.input { appearance: none; padding-right: 28px;
   border-right-color: color-mix(in srgb, var(--accent) 35%, transparent);
   animation: splash-orbit 1.5s linear infinite;
 }
-.splash-name { font-size: 15px; font-weight: 650; animation: splash-text .4s .18s ease both; opacity: 1; }
+.splash-name { font-size: 17px; font-weight: 650; animation: splash-text .4s .18s ease both; opacity: 1; }
 .splash-stage { font-size: 12.5px; color: var(--muted); animation: splash-text .4s .28s ease both; }
 .splash-track {
   width: 132px; height: 2px; border-radius: 2px; overflow: hidden;
@@ -573,7 +585,7 @@ select.input { appearance: none; padding-right: 28px;
 .rail .logo.open { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 
 .logo-menu {
-  position: absolute; top: 44px; left: 62px; z-index: 60;
+  position: absolute; top: 50px; left: 72px; z-index: 60;
   width: 258px; padding: 14px;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 10px 32px var(--shadow);
@@ -581,8 +593,8 @@ select.input { appearance: none; padding-right: 28px;
 }
 .lm-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .lm-head img {
-  width: 32px; height: 32px; padding: 3px; box-sizing: border-box;
-  border-radius: 9px; background: var(--logo-plate); border: 1px solid var(--logo-plate-border);
+  width: 38px; height: 38px; padding: 4px; box-sizing: border-box;
+  border-radius: 11px; background: var(--logo-plate); border: 1px solid var(--logo-plate-border);
 }
 .lm-head div { display: flex; flex-direction: column; line-height: 1.25; }
 .lm-head span { font-size: 11px; color: var(--muted); }
@@ -600,3 +612,471 @@ select.input { appearance: none; padding-right: 28px;
 .lm-rows > div { display: flex; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border); }
 .lm-rows dt { color: var(--muted); flex: 0 0 68px; margin: 0; }
 .lm-rows dd { margin: 0; flex: 1; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ==========================================================================
+   Checklist rows
+   The priority inbox is a to-do list, so it gets the affordance of one: a real
+   checkbox you tick. Reaching for a menu to say "I did this" is friction on the
+   single most common action in the app.
+   ========================================================================== */
+
+@keyframes tick-draw   { from { stroke-dashoffset: 22; } to { stroke-dashoffset: 0; } }
+@keyframes box-pop     { 0% { transform: scale(1); } 45% { transform: scale(1.22); } 100% { transform: scale(1); } }
+@keyframes done-wash   { 0% { background-position: 100% 0; } 100% { background-position: -60% 0; } }
+@keyframes strike      { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes done-out    { 0%   { opacity: 1; transform: translateX(0) scale(1); max-height: 260px; }
+                         35%  { opacity: 1; transform: translateX(6px) scale(1.01); }
+                         100% { opacity: 0; transform: translateX(64px) scale(.97); max-height: 0;
+                                padding-top: 0; padding-bottom: 0; border-bottom-width: 0; } }
+@keyframes banish-out  { 0%   { opacity: 1; filter: none; transform: none; max-height: 260px; }
+                         30%  { opacity: .55; filter: grayscale(1); transform: scale(.985); }
+                         100% { opacity: 0; filter: grayscale(1); transform: translateX(-40px) scale(.9);
+                                max-height: 0; padding-top: 0; padding-bottom: 0; border-bottom-width: 0; } }
+@keyframes ripple      { from { opacity: .5; transform: scale(0); } to { opacity: 0; transform: scale(2.6); } }
+
+.mail-item { padding-left: 40px; }        /* room for the checkbox gutter */
+
+.row-check {
+  position: absolute; left: 12px; top: 11px;
+  width: 19px; height: 19px;
+  display: grid; place-items: center;
+  cursor: pointer;
+}
+/* The input sits on top and takes every click; the painted box and ripple are
+   purely decorative. Without pointer-events:none the box covered the input and
+   swallowed the click, so ticking it did nothing. */
+.row-check input {
+  position: absolute; inset: 0; z-index: 2;
+  opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer;
+}
+.row-check .box, .row-check .ripple { pointer-events: none; }
+
+.row-check .box {
+  width: 19px; height: 19px; border-radius: 6px;
+  border: 1.8px solid var(--border);
+  background: var(--surface);
+  display: grid; place-items: center;
+  transition: background .16s, border-color .16s, transform .16s;
+}
+.row-check:hover .box { border-color: var(--accent); transform: scale(1.08); }
+.row-check input:focus-visible + .box {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.row-check .box svg { width: 12px; height: 12px; display: block; }
+.row-check .box svg path {
+  fill: none; stroke: var(--on-accent); stroke-width: 2.6;
+  stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 22; stroke-dashoffset: 22;
+}
+.row-check input:checked + .box {
+  background: var(--accent); border-color: var(--accent);
+  animation: box-pop .26s cubic-bezier(.34,1.5,.5,1);
+}
+.row-check input:checked + .box svg path { animation: tick-draw .24s .04s ease forwards; }
+
+/* the tap ripple, so a click feels like it landed */
+.row-check .ripple {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: var(--accent); pointer-events: none;
+  opacity: 0;
+}
+.row-check input:checked ~ .ripple { animation: ripple .45s ease-out; }
+
+/* -- completing ---------------------------------------------------------- */
+
+.mail-item.completing {
+  background-image: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--accent) 26%, transparent) 45%,
+    transparent 90%);
+  background-size: 220% 100%;
+  animation: done-wash .5s ease both;
+}
+.mail-item.completing .subj { position: relative; }
+.mail-item.completing .subj::after {
+  content: ''; position: absolute; left: 0; right: 0; top: 52%; height: 1.5px;
+  background: var(--text); transform-origin: left center;
+  animation: strike .3s .06s cubic-bezier(.5,0,.2,1) both;
+}
+.mail-item.done-out { animation: done-out .42s .34s cubic-bezier(.5,0,.2,1) forwards; overflow: hidden; }
+
+/* -- banishing ----------------------------------------------------------- */
+
+.mail-item.banishing { animation: banish-out .46s cubic-bezier(.5,0,.25,1) forwards; overflow: hidden; }
+.mail-item.banishing .row-actions { opacity: 0; }
+
+/* the mute button gets its own colour, because it is the destructive one */
+.row-actions button.mute:hover { border-color: #B4483C; color: #B4483C; }
+
+/* -- the reading pane needs room ---------------------------------------- */
+
+/* The reading pane.
+
+   The body frame is sandboxed with no allow-same-origin, which means the parent
+   document genuinely cannot read its contentDocument -- so sizing the frame to
+   its content is impossible, not merely awkward. (An earlier version tried, got
+   null every time, and silently fell back to a short fixed height. That is why
+   mail rendered in a little box.)
+
+   So the frame fills the pane instead and long mail scrolls inside it. The
+   email gets the full window height, which is the point. */
+.detail-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.detail-head {
+  padding: 16px 22px 12px;
+  flex: 0 0 auto;
+  max-height: 46%;          /* a long subject and recipient list must not squeeze
+                               the mail itself out of the pane */
+  overflow-y: auto;
+}
+.detail-body { flex: 1; min-height: 0; display: flex; padding: 0 18px 16px; }
+.detail-body iframe {
+  flex: 1; width: 100%; border: 1px solid var(--border);
+  background: #fff; border-radius: 10px; display: block;
+}
+/* Plain-text mail has no such restriction, so it scrolls with the pane. */
+.detail-body pre {
+  flex: 1; overflow: auto; margin: 0; padding: 14px 16px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+}
+
+/* ==========================================================================
+   Today's briefing, as a checklist
+   ========================================================================== */
+
+.digest-headline {
+  margin: 0 0 12px; font-size: 13.5px; line-height: 1.5;
+  color: var(--text);
+}
+.digest-empty { margin: 0; font-size: 13px; color: var(--muted); }
+.digest-foot { font-size: 11px; color: var(--muted); margin-top: 10px; }
+
+.agenda { list-style: none; margin: 0; padding: 0; }
+
+.agenda-item {
+  position: relative;
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 8px 8px 34px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: background .13s, border-color .13s;
+  animation: fade-up .24s ease both;
+}
+.agenda-item:hover { background: var(--surface-hover); border-color: var(--border); }
+.agenda-item.active { border-color: var(--accent); background: var(--surface-hover); }
+.agenda-item .row-check { left: 8px; top: 10px; }
+
+.agenda-open {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 3px;
+  background: none; border: 0; padding: 0;
+  text-align: left; cursor: pointer;
+}
+.agenda-note { font-size: 13px; line-height: 1.45; font-weight: 550; }
+.agenda-meta {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--muted);
+}
+.agenda-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.agenda-sender { flex: 0 0 auto; }
+
+/* Ticked rows stay visible until the list is rebuilt, so the user can see what
+   they just cleared -- and untick it if they mis-clicked. */
+.agenda-item.checked .agenda-note { text-decoration: line-through; }
+.agenda-item.checked { opacity: .48; }
+.agenda-item.checked .agenda-note,
+.agenda-item.checked .agenda-meta { transition: opacity .2s; }
+
+/* ==========================================================================
+   Softening pass
+   The first cut was all hairline dividers, square corners and full-bleed
+   panels -- correct, but hard-edged and impersonal. Everything below rounds
+   the geometry, replaces dividers with space, and lets surfaces sit on the
+   background as cards rather than being fenced off by 1px lines.
+   ========================================================================== */
+
+:root { --r-sm: 9px; --r-md: 13px; --r-lg: 18px; --r-xl: 24px; }
+
+body { font-size: 14px; letter-spacing: .002em; }
+
+/* panes become inset cards with breathing room between them */
+.app { padding: 8px 8px 8px 0; gap: 8px; background: var(--header); }
+.rail { background: transparent; border-right: 0; padding-top: 4px; gap: 6px; }
+
+.pane-list, .pane-detail {
+  background: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: var(--r-lg);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--shadow) 45%, transparent);
+}
+.pane-list { border-right: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+
+.titlebar { background: var(--header); border-bottom: 0; }
+
+.topbar { border-bottom: 0; padding: 8px 10px 4px; height: auto; flex: 0 0 auto; gap: 6px; }
+.filters { border-bottom: 0; padding: 4px 10px 8px; gap: 5px; }
+
+/* list rows: cards with gaps, not rows separated by rules */
+.scroll { padding: 0 8px; }
+.mail-item {
+  border-bottom: 0;
+  border-left: 3px solid transparent;
+  border-radius: var(--r-md);
+  margin-bottom: 5px;
+  padding: 11px 12px 12px 42px;
+  background: var(--surface);
+  box-shadow: 0 1px 1px color-mix(in srgb, var(--shadow) 35%, transparent);
+}
+.mail-item:hover { box-shadow: 0 2px 8px color-mix(in srgb, var(--shadow) 60%, transparent); }
+.mail-item.cursor { outline-offset: -2px; border-radius: var(--r-md); }
+.mail-item.pinned::before { border-radius: 0 var(--r-md) 0 0; }
+
+.skel-row { border-bottom: 0; border-radius: var(--r-md); background: var(--surface);
+            margin-bottom: 5px; padding: 13px 14px; }
+
+/* controls: pills and soft fills */
+.input, select.input {
+  border-radius: var(--r-md);
+  border-color: color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 8px 12px;
+}
+.btn { border-radius: 999px; padding: 6px 14px;
+       border-color: color-mix(in srgb, var(--border) 70%, transparent); }
+.btn.ghost { border-radius: var(--r-sm); padding: 5px 9px; }
+.chip { padding: 4px 12px; border-color: color-mix(in srgb, var(--border) 65%, transparent); }
+.tag { border-radius: 999px; padding: 2px 8px; letter-spacing: .03em; }
+.row-actions button { border-radius: 999px; width: 27px; height: 27px;
+                      border-color: color-mix(in srgb, var(--border) 70%, transparent); }
+.row-check .box { border-radius: 7px; }
+
+.rail button { border-radius: var(--r-md); }
+.rail .logo { border-radius: var(--r-lg); }
+
+/* cards and popovers */
+.digest {
+  border-radius: var(--r-lg); margin: 10px 10px 4px; padding: 16px 18px;
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--shadow) 55%, transparent);
+}
+.agenda-item { border-radius: var(--r-md); }
+.card { border-radius: var(--r-xl); padding: 34px 30px; }
+.logo-menu { border-radius: var(--r-lg); }
+.toast { border-radius: 999px; padding: 8px 10px 8px 16px; }
+.why { border-radius: var(--r-md); border-left-width: 3px; }
+.detail-body iframe, .detail-body pre { border-radius: var(--r-md); }
+.keyhint { border-top: 0; background: transparent; padding: 6px 12px 9px; }
+.keyhint kbd { border-radius: 6px; }
+.banner { border-bottom: 0; border-radius: var(--r-md); margin: 8px 10px 0; padding: 8px 13px; }
+.theme-swatch { border-radius: var(--r-md); }
+.theme-swatch .bar { border-radius: var(--r-sm); }
+
+/* language picker */
+.lang-grid { display: flex; gap: 7px; flex-wrap: wrap; }
+.lang-chip { padding: 6px 15px; font-size: 12.5px; }
+
+/* headings: less shouty */
+.settings h3, .digest h3 {
+  letter-spacing: .04em; font-size: 11.5px;
+}
+.settings section { margin-bottom: 30px; }
+
+/* ==========================================================================
+   Rail with labels, rounder cursor, safer row actions
+   ========================================================================== */
+
+.rail { width: 82px; flex: 0 0 82px; }
+.rail-item {
+  width: 66px !important; height: auto !important;
+  display: flex !important; flex-direction: column; align-items: center; gap: 3px;
+  padding: 7px 2px 6px;
+  border-radius: var(--r-md);
+}
+.rail-glyph { position: relative; display: grid; place-items: center; }
+.rail-label {
+  font-size: 9.5px; line-height: 1.15; letter-spacing: .01em;
+  text-align: center; opacity: .85;
+}
+.rail-item.active .rail-label { opacity: 1; font-weight: 600; }
+.rail-item .badge { top: -3px; right: -4px; }
+
+/* The keyboard cursor was a hard rectangle sitting inside rounded cards. */
+.mail-item.cursor {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-radius: var(--r-md);
+}
+.mail-item.cursor::after {
+  left: 0; top: 6px; bottom: 6px; width: 3px;
+  border-radius: 0 3px 3px 0;
+}
+
+/* Actions live in their own gutter and only arm after a dwell, so clicking a
+   row to read it cannot fire one by accident. */
+.mail-item { padding-right: 16px; }
+.mail-item .row { padding-right: 4px; }
+.row-actions {
+  top: 7px; right: 7px;
+  background: none; padding-left: 0;
+  opacity: 0; transform: translateX(6px) scale(.94);
+  pointer-events: none;
+  transition: opacity .16s ease, transform .16s ease;
+}
+.row-actions.armed { opacity: 1; transform: none; pointer-events: auto; }
+.mail-item:hover .row-actions:not(.armed) { opacity: 0; }
+.row-actions button {
+  background: var(--surface);
+  box-shadow: 0 1px 4px color-mix(in srgb, var(--shadow) 60%, transparent);
+}
+/* Give the buttons a backdrop so they never sit illegibly over the subject. */
+.row-actions::before {
+  content: ''; position: absolute; inset: -4px -3px -4px -18px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--surface-hover) 35%);
+  z-index: -1;
+}
+
+/* Theme swatches: a colour strip over its name. Explicit sizing because the
+   strip is the whole point of the control -- an empty pill says nothing. */
+.theme-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.theme-swatch {
+  display: flex; flex-direction: column; gap: 7px;
+  padding: 9px 9px 8px;
+  border-radius: var(--r-md);
+  border: 2px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: var(--surface);
+  transition: border-color .14s, transform .14s, box-shadow .14s;
+}
+.theme-swatch:hover { transform: translateY(-1px); box-shadow: 0 3px 10px var(--shadow); }
+.theme-swatch.active { border-color: var(--accent); }
+.theme-swatch .bar {
+  display: flex; height: 26px; border-radius: var(--r-sm);
+  overflow: hidden; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.theme-swatch .bar span { flex: 1 1 0; min-width: 0; }
+.theme-name { font-size: 11.5px; line-height: 1.2; text-align: center; }
+
+/* ==========================================================================
+   Completing and burning
+   Two gestures with opposite meanings, so they get opposite colours,
+   directions and textures. Ticking something off should feel like a small
+   win; muting a sender should feel like something being destroyed, because
+   it is a standing decision about every future message from that address.
+   ========================================================================== */
+
+@keyframes done-flash {
+  0%   { background-color: var(--surface); }
+  30%  { background-color: color-mix(in srgb, var(--ok) 30%, var(--surface)); }
+  100% { background-color: color-mix(in srgb, var(--ok) 14%, var(--surface)); }
+}
+@keyframes done-slide-left {
+  0%   { opacity: 1; transform: translateX(0) scale(1); max-height: 300px; }
+  25%  { transform: translateX(10px) scale(1.012); }
+  100% { opacity: 0; transform: translateX(-96px) scale(.96); max-height: 0;
+         margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
+}
+@keyframes ok-ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+                     100% { box-shadow: 0 0 0 12px transparent; } }
+
+.mail-item.completing {
+  background-image: none;
+  animation: done-flash .42s ease both, ok-ring .55s ease-out both;
+  border-left-color: var(--ok) !important;
+}
+.mail-item.completing .row-check .box { background: var(--ok); border-color: var(--ok); }
+.mail-item.completing .subj::after { background: var(--ok); }
+.mail-item.done-out { animation: done-slide-left .46s .3s cubic-bezier(.5,0,.2,1) forwards; overflow: hidden; }
+
+/* -- burning -------------------------------------------------------------- */
+
+@keyframes burn-heat {
+  0%   { background-color: var(--surface); }
+  22%  { background-color: color-mix(in srgb, var(--danger) 38%, var(--surface)); }
+  55%  { background-color: color-mix(in srgb, var(--ember) 30%, var(--surface)); }
+  100% { background-color: color-mix(in srgb, var(--muted) 22%, var(--surface)); }
+}
+/* The ember line sweeps down the row; everything above it is already ash. */
+@keyframes ember-sweep { from { top: -4px; } to { top: 104%; } }
+@keyframes to-ash {
+  0%   { filter: none; opacity: 1; }
+  40%  { filter: grayscale(.5) contrast(1.08); opacity: .9; }
+  100% { filter: grayscale(1) blur(1.6px); opacity: 0; }
+}
+@keyframes crumble {
+  0%   { transform: translate(0, 0) rotate(0); max-height: 300px; }
+  35%  { transform: translate(-1px, 1px) rotate(-.25deg); }
+  60%  { transform: translate(1px, 3px) rotate(.35deg); }
+  100% { transform: translate(-6px, 16px) rotate(-1.2deg); max-height: 0;
+         margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
+}
+
+.mail-item.burning {
+  position: relative; overflow: hidden;
+  border-left-color: var(--danger) !important;
+  animation: burn-heat .5s ease both,
+             to-ash .78s .18s ease-in forwards,
+             crumble .8s .2s cubic-bezier(.45,0,.3,1) forwards;
+}
+.mail-item.burning .row-actions, .mail-item.burning .row-check { opacity: 0; }
+.mail-item.burning::after {
+  content: ''; position: absolute; left: 0; right: 0; height: 10px;
+  background: linear-gradient(180deg,
+              transparent,
+              color-mix(in srgb, var(--ember) 85%, transparent) 45%,
+              color-mix(in srgb, var(--danger) 70%, transparent) 70%,
+              transparent);
+  filter: blur(2px);
+  animation: ember-sweep .62s .1s linear forwards;
+  pointer-events: none;
+}
+
+/* -- confirm dialog ------------------------------------------------------- */
+
+@keyframes dim-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes lift-in { from { opacity: 0; transform: translateY(10px) scale(.97); }
+                     to   { opacity: 1; transform: none; } }
+
+.modal-scrim {
+  position: fixed; inset: 0; z-index: 300;
+  display: grid; place-items: center; padding: 24px;
+  background: color-mix(in srgb, var(--text) 34%, transparent);
+  backdrop-filter: blur(3px);
+  animation: dim-in .16s ease both;
+}
+.modal {
+  width: 100%; max-width: 400px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-xl); padding: 24px 24px 20px;
+  box-shadow: 0 20px 60px color-mix(in srgb, var(--shadow) 90%, transparent);
+  animation: lift-in .2s cubic-bezier(.3,1.2,.5,1) both;
+}
+.modal h4 { margin: 0 0 8px; font-size: 16px; }
+.modal p { margin: 0 0 6px; font-size: 13px; color: var(--muted); line-height: 1.55; }
+.modal .who {
+  display: flex; align-items: center; gap: 9px;
+  background: var(--surface-hover); border: 1px solid var(--border);
+  border-radius: var(--r-md); padding: 10px 12px; margin: 12px 0 14px;
+}
+.modal .who b { font-size: 13px; }
+.modal .who span { font-size: 11.5px; color: var(--muted); }
+.modal .count { color: var(--danger); font-weight: 650; }
+.modal .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+.btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+.btn.danger:hover:not(:disabled) { filter: brightness(1.08); }
+
+/* -- muted box ------------------------------------------------------------ */
+
+.muted-head { padding: 14px 16px 6px; }
+.muted-head h4 { margin: 0 0 4px; font-size: 13px; }
+.muted-head p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.muted-sender {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; margin: 0 8px 6px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-md);
+}
+.muted-sender .who { flex: 1; min-width: 0; }
+.muted-sender .who b { display: block; font-size: 12.5px; overflow: hidden;
+                       text-overflow: ellipsis; white-space: nowrap; }
+.muted-sender .who span { font-size: 11px; color: var(--muted); }
+.mail-item.from-muted { opacity: .62; }

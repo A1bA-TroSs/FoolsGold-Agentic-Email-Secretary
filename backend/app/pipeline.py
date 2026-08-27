@@ -9,6 +9,7 @@ Two rules shape this file:
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
 from typing import Any
 
@@ -34,7 +35,7 @@ def _mark_ai(available: bool, detail: str = "", off: bool = False) -> None:
     _ai_status["detail"] = detail
 
 
-def _ranking_context() -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
+def _ranking_context() -> tuple[dict[str, int], dict[str, dict[str, Any]], set[str]]:
     """The two whole-mailbox inputs the scorer needs. Fetched once per pass
     rather than per email -- correspondent affinity walks the Sent mailbox."""
     try:
@@ -42,7 +43,7 @@ def _ranking_context() -> tuple[dict[str, int], dict[str, dict[str, Any]]]:
         correspondents = get_source().correspondents()
     except Exception:  # noqa: BLE001 - ranking must survive a source hiccup
         correspondents = {}
-    return correspondents, db.all_feedback()
+    return correspondents, db.all_feedback(), db.muted_senders()
 
 
 def user_address() -> str:
@@ -102,7 +103,7 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
     priorities = priority.active_priorities()
     me = user_address()
     today = date.today()
-    correspondents, feedback = _ranking_context()
+    correspondents, feedback, muted = _ranking_context()
     for c in classifications:
         email = emails_by_id.get(c.email_id)
         if email is None:
@@ -112,6 +113,7 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
             llm_matched=c.matched, user_address=me, today=today,
             correspondents=correspondents,
             verdict=(feedback.get(c.email_id) or {}).get("verdict"),
+            sender_muted=(email.get("from_address") or "").lower() in muted,
         )
         db.save_classification({
             "email_id": c.email_id,
@@ -190,7 +192,7 @@ def rescore_all() -> int:
     priorities = priority.active_priorities()
     me = user_address()
     today = date.today()
-    correspondents, feedback = _ranking_context()
+    correspondents, feedback, muted = _ranking_context()
     updated = 0
     with db.connect() as conn:
         rows = conn.execute(
@@ -205,6 +207,7 @@ def rescore_all() -> int:
                 priorities, llm_matched=llm_matched, user_address=me, today=today,
                 correspondents=correspondents,
                 verdict=(feedback.get(email["id"]) or {}).get("verdict"),
+                sender_muted=(email.get("from_address") or "").lower() in muted,
             )
             conn.execute(
                 "UPDATE classifications SET score = ?, matched = ? WHERE email_id = ?",
@@ -220,23 +223,75 @@ def rescore_all() -> int:
 # --------------------------------------------------------------------------
 
 def _digest_candidates(limit: int = 25) -> list[dict[str, Any]]:
+    """Top-ranked mail that still needs the user. Anything already ticked off,
+    muted or snoozed is excluded -- a briefing that lists things you have
+    already dealt with trains you to ignore the briefing."""
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT e.subject, e.from_name, e.from_address, e.body_text, e.body_preview, "
+            "SELECT e.id, e.subject, e.from_name, e.from_address, e.received_at, "
+            "       e.body_text, e.body_preview, "
             "       c.bucket, c.deadline, c.score "
             "FROM emails e JOIN classifications c ON c.email_id = e.id "
+            "LEFT JOIN feedback f ON f.email_id = e.id "
             "WHERE c.bucket != 'noise' "
+            "  AND (f.verdict IS NULL OR f.verdict = 'pinned') "
+            "  AND e.from_address NOT IN (SELECT address FROM muted_senders) "
             "ORDER BY c.score DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
+def _as_agenda_row(
+    email: dict[str, Any],
+    note: str = "",
+    note_key: str | None = None,
+    note_vars: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One briefing row.
+
+    The structural path emits a translation *key* rather than a finished
+    sentence, because the backend has no business generating display text --
+    doing so left the briefing stubbornly English while the rest of the UI was
+    in Korean. The LLM path still sends a literal note, since the model writes
+    it in the user's language.
+    """
+    return {
+        "email_id": email["id"],
+        "subject": email.get("subject") or "(no subject)",
+        "sender": email.get("from_name") or email.get("from_address") or "",
+        "deadline": email.get("deadline"),
+        "bucket": email.get("bucket") or "fyi",
+        "note": note,
+        "note_key": note_key,
+        "note_vars": note_vars or {},
+    }
+
+
 def cached_digest(day: str | None = None) -> dict[str, Any] | None:
     day = day or date.today().isoformat()
     with db.connect() as conn:
         row = conn.execute("SELECT * FROM digests WHERE day = ?", (day,)).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    return _unpack(dict(row))
+
+
+def _unpack(row: dict[str, Any]) -> dict[str, Any]:
+    """The digest is stored as JSON in the body column. Older rows hold plain
+    markdown, so fall back to treating the text as the headline."""
+    body = row.get("body") or ""
+    try:
+        payload = json.loads(body)
+        if isinstance(payload, dict):
+            row["headline"] = payload.get("headline", "")
+            row["items"] = payload.get("items", [])
+            return row
+    except (ValueError, TypeError):
+        pass
+    row["headline"] = body
+    row["items"] = []
+    return row
 
 
 async def build_digest(force: bool = False) -> dict[str, Any]:
@@ -248,45 +303,79 @@ async def build_digest(force: bool = False) -> dict[str, Any]:
             return cached
 
     emails = _digest_candidates()
+    by_id = {e["id"]: e for e in emails}
+
     if not emails:
-        body = "Nothing needing your attention has synced yet. Hit refresh to pull your inbox."
+        headline: Any = {"key": "nothingWaiting"}
+        items: list[dict[str, Any]] = []
         model = "none"
     else:
         try:
             provider = get_provider()
-            body = await provider.summarize(emails, priority.priority_topics())
+            headline, agenda = await provider.summarize(
+                emails, priority.priority_topics(), db.get_setting("ui_language", "en")
+            )
+            items = [
+                _as_agenda_row(by_id[a.email_id], a.note)
+                for a in agenda if a.email_id in by_id
+            ]
             model = f"{provider.name}:{provider.model}"
             _mark_ai(True, "")
+            if not items:
+                # The model answered but picked nothing usable; a briefing with
+                # no rows is not a briefing.
+                headline, items = _fallback_agenda(emails)
+                model = "structural"
         except Exception as exc:  # noqa: BLE001
             turned_off = (db.get_setting("llm_provider", "copilot") or "").lower() == "none"
             _mark_ai(False, "" if turned_off else str(exc), off=turned_off)
-            body = _fallback_digest(emails)
+            headline, items = _fallback_agenda(emails)
             model = "structural"
 
+    payload = json.dumps({"headline": headline, "items": items})
+    created = db.now_iso()
     with db.connect() as conn:
         conn.execute(
             "INSERT INTO digests (day, body, model, created_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(day) DO UPDATE SET body=excluded.body, model=excluded.model, "
             "created_at=excluded.created_at",
-            (day, body, model, db.now_iso()),
+            (day, payload, model, created),
         )
         conn.commit()
-    return {"day": day, "body": body, "model": model, "created_at": db.now_iso()}
+    return {"day": day, "headline": headline, "items": items, "model": model, "created_at": created}
 
 
-def _fallback_digest(emails: list[dict[str, Any]]) -> str:
-    """A useful digest with no model at all: deadlines first, then actions."""
+def _fallback_agenda(emails: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """A useful checklist with no model at all: deadlines first, then actions.
+
+    Every row still points at a real email, so the briefing stays clickable and
+    tickable whether or not AI is available."""
     today = date.today().isoformat()
-    lines: list[str] = []
-    dated = [e for e in emails if e.get("deadline")]
-    dated.sort(key=lambda e: e["deadline"])
+    rows: list[dict[str, Any]] = []
+    used: set[str] = set()
+
+    dated = sorted((e for e in emails if e.get("deadline")), key=lambda e: e["deadline"])
     for e in dated[:5]:
-        when = "today" if e["deadline"] == today else e["deadline"]
-        lines.append(f"- **Due {when}** - {e['subject']} ({e.get('from_name') or e.get('from_address')})")
-    actions = [e for e in emails if e.get("bucket") == "action" and not e.get("deadline")]
-    for e in actions[:5]:
-        lines.append(f"- Needs a reply - {e['subject']} ({e.get('from_name') or e.get('from_address')})")
-    if not lines:
-        return "Nothing looks time-critical today."
-    # No "built without AI" preamble here -- the card already shows that in its footer.
-    return "\n".join(lines)
+        if e["deadline"] == today:
+            rows.append(_as_agenda_row(e, note_key="dueToday"))
+        else:
+            rows.append(_as_agenda_row(e, note_key="dueOn", note_vars={"date": e["deadline"]}))
+        used.add(e["id"])
+
+    for e in emails:
+        if len(rows) >= 7:
+            break
+        if e["id"] in used or e.get("bucket") != "action":
+            continue
+        rows.append(_as_agenda_row(e, note_key="needsReply"))
+        used.add(e["id"])
+
+    if not rows:
+        return {"key": "nothingUrgent"}, []
+
+    urgent = sum(1 for r in rows if r["deadline"])
+    headline = {
+        "key": "agendaHeadline" if urgent else "agendaHeadlineNoDeadline",
+        "vars": {"n": len(rows), "d": urgent},
+    }
+    return headline, rows

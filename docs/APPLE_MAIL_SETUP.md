@@ -12,7 +12,7 @@ access". That is a policy decision by your institution and there is no way
 around it from the outside.
 
 But Apple Mail has *already* signed into your mailbox and downloaded the
-messages. They are sitting on your disk right now. Fool's Gold reads those.
+messages. They are sitting on your disk right now. Fools Gold reads those.
 
 | | Apple Mail | Outlook (Graph) |
 |---|---|---|
@@ -50,7 +50,7 @@ macOS handles the whole OAuth flow itself. That is the entire point of this path
   app. It does not connect an account.
 
 Let Mail finish downloading before you continue. A large mailbox takes a while,
-and Fool's Gold can only see what Mail has actually fetched.
+and Fools Gold can only see what Mail has actually fetched.
 
 **If your university blocks this.** Some tenants have not consented to Apple's
 account app, or use Conditional Access to allow only the official Outlook
@@ -68,21 +68,21 @@ Access** and add:
 
 - **during development**, whichever app you launch from — usually **Terminal**
   (or iTerm). The permission attaches to the launching app, not to Python.
-- **once packaged**, **Fool's Gold** itself.
+- **once packaged**, **Fools Gold** itself.
 
 Quit and reopen the app afterwards. macOS does not apply the change to an
 already-running process.
 
 Without it you will see: *"macOS is blocking access to ~/Library/Mail."*
 
-### 3. Tell Fool's Gold your address
+### 3. Tell Fools Gold your address
 
 In **Settings → Mail source**, make sure **Apple Mail on this Mac** is selected
 and type your own email address.
 
 This is not cosmetic. "Addressed **to** me" versus "I'm on **Cc**" is the single
 most reliable structural signal an assistant has, and without your address
-Fool's Gold cannot tell the difference.
+Fools Gold cannot tell the difference.
 
 ### 4. Check, then refresh
 
@@ -96,7 +96,7 @@ It reports whether the store exists, whether this process is allowed to read it,
 and how many messages sit in each mailbox — so you can tell "Mail hasn't synced"
 apart from "macOS is blocking me", which otherwise look identical.
 
-Then open Fool's Gold and hit the refresh icon. The count should roughly match.
+Then open Fools Gold and hit the refresh icon. The count should roughly match.
 
 ## What it actually reads
 
@@ -105,7 +105,7 @@ Then open Fool's Gold and hit the refresh icon. The count should roughly match.
 ```
 
 Each `.emlx` file is three parts: a line with a byte count, the RFC822 message,
-and an Apple plist holding Mail's own metadata. Fool's Gold parses these
+and an Apple plist holding Mail's own metadata. Fools Gold parses these
 directly with the Python standard library.
 
 **It deliberately does not read Mail's `Envelope Index` SQLite database.** That
@@ -117,7 +117,7 @@ Trash, Junk, Spam, Sent, Drafts, Outbox and Archive are always excluded. By
 default only INBOX is read; untick "Inbox only" in Settings to include your
 other folders.
 
-Fool's Gold only ever **reads** these files. It never writes, moves or deletes
+Fools Gold only ever **reads** these files. It never writes, moves or deletes
 anything in `~/Library/Mail`.
 
 ## Troubleshooting
@@ -133,7 +133,7 @@ Full Disk Access, step 2 — and remember to restart the app.
 Mail is still setting up. Give it a few minutes and hit Re-check.
 
 **The inbox is empty but Mail shows plenty**
-Your account may not label its inbox `INBOX`. Fool's Gold falls back to all
+Your account may not label its inbox `INBOX`. Fools Gold falls back to all
 non-excluded mailboxes automatically, but you can also untick "Inbox only".
 Also check that **Days of mail to keep** in Settings covers the period you want.
 

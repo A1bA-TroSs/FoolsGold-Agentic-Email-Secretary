@@ -217,7 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# ---- Fool's Gold ----
+# ---- Fools Gold ----
 backend/.venv/
 frontend/dist/
 frontend/node_modules/
