@@ -1,6 +1,6 @@
-# Connecting Fool's Gold to your Outlook mailbox
+# Connecting Fools Gold to your Outlook mailbox
 
-Fool's Gold talks to Outlook through the Microsoft Graph API. Microsoft requires
+Fools Gold talks to Outlook through the Microsoft Graph API. Microsoft requires
 every application that does this to be *registered*, and the registration has to
 live under your own Microsoft account — nobody can create it for you, and there
 is no shared key to hand out.
@@ -25,7 +25,7 @@ In the left sidebar: **Applications → App registrations → + New registration
 
 | Field | Value |
 |---|---|
-| **Name** | `Fool's Gold` (only you ever see this) |
+| **Name** | `Fools Gold` (only you ever see this) |
 | **Supported account types** | **Accounts in any organizational directory and personal Microsoft accounts** |
 | **Redirect URI** | Platform: **Public client/native (mobile & desktop)**<br>URI: `http://localhost:8765/api/auth/callback` |
 
@@ -41,7 +41,7 @@ not a downgrade.
 On the app's **Overview** page, copy **Application (client) ID**. It looks like
 `3f9a2c10-8e4b-4c77-b0a1-9d2e5f8a1234`.
 
-**You do not need a client secret.** Fool's Gold is a *public client*: it runs on
+**You do not need a client secret.** Fools Gold is a *public client*: it runs on
 your machine, where no secret can actually be kept secret. It uses PKCE instead,
 which is what Microsoft recommends for desktop apps.
 
@@ -65,14 +65,14 @@ Click **Add permissions**.
 If your account is a school or work one, you may see *"Admin consent required"*
 next to a permission. `Mail.Read` normally does not require it, but some
 universities restrict it. If it is blocked, your IT administrator has to approve
-it — or you can point Fool's Gold at a personal Outlook account instead.
+it — or you can point Fools Gold at a personal Outlook account instead.
 
 ## 5. Make sure the public client flow is allowed
 
 Go to **Authentication**. Scroll to **Advanced settings** and confirm
 **Allow public client flows** is set to **Yes**. Save if you changed it.
 
-## 6. Paste it into Fool's Gold
+## 6. Paste it into Fools Gold
 
 Launch the app, open **Settings** (gear, bottom of the left rail), paste the
 client ID under **Microsoft app registration**, and hit **Save client ID**.
@@ -109,7 +109,7 @@ removed the app from <https://myapps.microsoft.com>). Just sign in again.
 
 ---
 
-## What Fool's Gold does with the access
+## What Fools Gold does with the access
 
 - Tokens are encrypted with a local key at `~/.foolsgold/secret.key` (0600) and
   stored in `~/.foolsgold/foolsgold.db`. They never leave the machine.

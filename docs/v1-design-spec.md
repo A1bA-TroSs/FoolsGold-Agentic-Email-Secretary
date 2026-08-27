@@ -1,8 +1,8 @@
-# Fool's Gold — v1.0 Design: Email Secretary (Summarization)
+# Fools Gold — v1.0 Design: Email Secretary (Summarization)
 
 ## Vision
 
-Fool's Gold is a local-first, agentic AI email assistant — an "AI-native email client," not a triage tool bolted onto Outlook. The full product vision spans three versioned chapters:
+Fools Gold is a local-first, agentic AI email assistant — an "AI-native email client," not a triage tool bolted onto Outlook. The full product vision spans three versioned chapters:
 
 - **1.0 — Email Secretary (Summarization)**: read, organize, prioritize, and summarize the inbox. No writes.
 - **2.0 — Calendar + Scheduling**: a built-in calendar, auto-marking events/deadlines pulled from emails, schedule management.
@@ -53,7 +53,7 @@ The core problem being solved: priority in a real inbox is contextual and time-v
   - `classify(email) -> { bucket: "action" | "fyi" | "noise", deadline: date | null, rationale: string }`
   - `summarize(emails: list) -> digest: string`
   Implementations: `ClaudeProvider`, `OpenAIProvider` for v1.0.
-- **Branding:** name "Fool's Gold," logo at `assets/logo.png` (gold low-poly crystal cluster with orbit ring, ivory rounded-square background) — visually the source for the Gold & Ivory theme's palette and the icon-rail accent color.
+- **Branding:** name "Fools Gold," logo at `assets/logo.png` (gold low-poly crystal cluster with orbit ring, ivory rounded-square background) — visually the source for the Gold & Ivory theme's palette and the icon-rail accent color.
 
 ## Data Flow
 

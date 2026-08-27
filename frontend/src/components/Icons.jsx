@@ -56,3 +56,23 @@ export const MailSyncIcon = () => (
 export const ThinkingIcon = () => (
   <span className="icon-think"><i /><i /><i /></span>
 );
+
+/* The briefing view is a checklist, so it gets a checklist. A sun read as a
+   brightness control, which is not a thing this app has. */
+export const AgendaIcon = () => (
+  <svg {...base}>
+    <rect x="4" y="3.5" width="16" height="17" rx="2.5" />
+    <path d="M8.2 9.2 9.6 10.6 12 8.2" />
+    <path d="M8.2 15.2 9.6 16.6 12 14.2" />
+    <path d="M14.6 9.4h2.6M14.6 15.4h2.6" />
+  </svg>
+);
+
+/* Priority = a flag you plant on what matters, clearer than a star (which
+   usually means "favourite" in a mail client). */
+export const FlagIcon = () => (
+  <svg {...base}>
+    <path d="M5 21V4.5" />
+    <path d="M5 5.2h10.5l-1.6 3.2 1.6 3.2H5z" />
+  </svg>
+);

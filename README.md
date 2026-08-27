@@ -1,4 +1,4 @@
-# Fool's Gold — v1.0, Email Secretary
+# Fools Gold — v1.0, Email Secretary
 
 An agentic email secretary for Outlook that reads, ranks and summarises your
 inbox. Local-first and **read-only**: your mail and your tokens never leave your
@@ -16,6 +16,9 @@ machine, and v1.0 has no code path that writes to your mailbox.
 - **Priority ranking** driven by a list of what you're working on *right now*,
   not a static ranking of senders
 - **A daily digest** — "what's crucial today" — generated once per day
+- **The priority inbox is a checklist** — tick an email off and it strikes
+  through, washes gold and slides away; mute one and it desaturates and shrinks
+  out. Both are undoable and both re-rank the list instantly.
 - **Keyboard-first list** — `j`/`k` move, `Enter` open, `p` pin, `e` done,
   `x` mute, `s` snooze, `u` undo, `/` search, `r` sync
 - **Four themes**: Gold & Ivory (default), Dark, Green, Purple — including the
@@ -57,7 +60,7 @@ signals rather than a sender allowlist.
 |---|---|
 | Pin | sorts to the top as its own group (+60 orders items within it) |
 | Not important | −45 |
-| Done | −60, and it leaves the priority view |
+| Tick the checkbox (done) | −60, and it leaves the priority view |
 | Snooze | hidden until the timer expires |
 
 Every email shows a **"why this ranking"** line, so the list is never a black box.
@@ -131,7 +134,7 @@ dropdown, not a rewrite.
 > (GA 2 June 2026) is the supported route for a Copilot subscriber.
 
 **Two things worth knowing about the Copilot path.** It bills in *premium
-requests*, not tokens — so Fool's Gold batches ~10 emails per request and caches
+requests*, not tokens — so Fools Gold batches ~10 emails per request and caches
 every classification, keeping a full inbox to a handful of requests a day. And
 Copilot is positioned as a coding assistant, so routing personal mail through it
 means that text goes to GitHub/Microsoft under terms not written with

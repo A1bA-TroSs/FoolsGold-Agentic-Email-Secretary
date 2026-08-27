@@ -1,4 +1,4 @@
-"""Fool's Gold backend.
+"""Fools Gold backend.
 
 Binds to 127.0.0.1 only. Nothing about this process is reachable from the
 network -- it exists to give the Electron window a local API and to keep the

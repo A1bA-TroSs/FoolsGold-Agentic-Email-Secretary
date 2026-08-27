@@ -25,9 +25,15 @@ def list_mail(
     bucket: str | None = Query(None, description="action | fyi | noise"),
     search: str | None = None,
     sort: str = Query("priority", pattern="^(priority|date)$"),
+    muted: bool = Query(False, description="show only mail from muted senders"),
     limit: int = Query(200, le=1000),
 ) -> dict:
     where, params = [], []
+    # Muted senders are hidden everywhere except the muted box itself.
+    where.append(
+        "e.from_address IN (SELECT address FROM muted_senders)" if muted
+        else "e.from_address NOT IN (SELECT address FROM muted_senders)"
+    )
     if bucket:
         where.append("c.bucket = ?")
         params.append(bucket)
@@ -96,6 +102,40 @@ def set_feedback(email_id: str, body: FeedbackIn) -> dict:
     db.set_feedback(email_id, body.verdict, until)
     pipeline.rescore_all()
     return {"email_id": email_id, "verdict": body.verdict, "snooze_until": until}
+
+
+class MuteIn(BaseModel):
+    address: str
+
+
+@router.get("/senders/muted")
+def list_muted() -> dict:
+    return {"items": db.muted_sender_rows()}
+
+
+@router.get("/senders/impact")
+def mute_impact(address: str) -> dict:
+    """How much mail a mute would actually silence. The confirmation dialog
+    shows this, because "mute" reads as "this message" unless you are told it
+    means every message from this address, past and future."""
+    return {"address": address.lower(), "message_count": db.count_from_sender(address)}
+
+
+@router.post("/senders/mute")
+def mute(body: MuteIn) -> dict:
+    address = (body.address or "").strip().lower()
+    if not address:
+        raise HTTPException(status_code=400, detail="An address is required.")
+    db.mute_sender(address)
+    pipeline.rescore_all()
+    return {"address": address, "muted": True, "message_count": db.count_from_sender(address)}
+
+
+@router.delete("/senders/mute")
+def unmute(address: str) -> dict:
+    db.unmute_sender(address)
+    pipeline.rescore_all()
+    return {"address": address.lower(), "muted": False}
 
 
 @router.delete("/{email_id}/feedback")

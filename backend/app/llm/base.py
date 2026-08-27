@@ -52,10 +52,17 @@ class LLMProvider(ABC):
         raw = await self.complete(CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities))
         return parse_classifications(raw, [e["id"] for e in emails])
 
-    async def summarize(self, emails: list[dict[str, Any]], priorities: list[str]) -> str:
+    async def summarize(
+        self, emails: list[dict[str, Any]], priorities: list[str], language: str = "en"
+    ) -> tuple[str, list[AgendaItem]]:
+        """Returns (headline, agenda items). Items reference real email ids so
+        every line in the briefing is something the user can open and tick off."""
         if not emails:
-            return "Nothing in the inbox needs you today."
-        return (await self.complete(DIGEST_SYSTEM, build_digest_prompt(emails, priorities))).strip()
+            return "Nothing in the inbox needs you today.", []
+        raw = await self.complete(
+            DIGEST_SYSTEM, build_digest_prompt(emails, priorities, language)
+        )
+        return parse_agenda(raw, [e["id"] for e in emails])
 
 
 # --------------------------------------------------------------------------
@@ -85,12 +92,21 @@ Reply with a JSON array and nothing else. One object per email, same order as gi
 DIGEST_SYSTEM = """You write one short morning briefing for a busy person, in the voice of
 a trusted assistant who has already read everything.
 
+The briefing is an actionable checklist, not prose: every line the user sees is
+tied to a specific email they can open and tick off. So return the *ids* of the
+emails that matter today, each with a one-line reason, plus a single headline
+sentence for the whole day.
+
 Rules:
-- Lead with what is time-critical today. Deadlines and things that need a decision come first.
-- Group related mail into one line instead of listing each message.
-- Name people and concrete dates. No filler, no "you have several emails".
-- If nothing genuinely needs them today, say so plainly in one sentence.
-- Plain markdown, no heading, at most 8 bullet points."""
+- Order by what is time-critical today. Deadlines and decisions first.
+- At most 7 items. Leave out anything that does not need them today.
+- Each note is at most 14 words, names concrete people and dates, and says what
+  the user must actually DO. Not "an email about X" -- "confirm the room by 5pm".
+- The headline is one sentence summing up the day. If nothing is urgent, say so.
+- Never invent an id. Only use ids from the list given.
+
+Reply with JSON and nothing else:
+{"headline": "<one sentence>", "items": [{"id": "<id>", "note": "<max 14 words>"}]}"""
 
 
 def _fmt_email(email: dict[str, Any], index: int) -> str:
@@ -119,21 +135,67 @@ def build_classify_prompt(emails: list[dict[str, Any]], priorities: list[str]) -
     )
 
 
-def build_digest_prompt(emails: list[dict[str, Any]], priorities: list[str]) -> str:
+LANGUAGE_NAMES = {"en": "English", "ko": "Korean", "zh": "Chinese", "ja": "Japanese"}
+
+
+def build_digest_prompt(
+    emails: list[dict[str, Any]], priorities: list[str], language: str = "en"
+) -> str:
     prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
     lines = []
     for e in emails:
         deadline = f" | due {e['deadline']}" if e.get("deadline") else ""
         lines.append(
+            f"id: {e['id']}\n"
             f"[{e.get('bucket','fyi')}{deadline}] {e.get('subject','')} "
             f"-- from {e.get('from_name') or e.get('from_address')}: "
             f"{(e.get('body_text') or e.get('body_preview') or '')[:400]}"
         )
+    # Headline and notes are interface text written for this user, so they follow
+    # the UI language. Subjects and senders are quoted from their own mail and
+    # must come back exactly as they arrived.
+    lang = LANGUAGE_NAMES.get(language, "English")
     return (
-        f"Today is {date.today().isoformat()}.\n\n"
+        f"Today is {date.today().isoformat()}.\n"
+        f"Write the headline and every note in {lang}. "
+        f"Do not translate email subjects or sender names -- quote them verbatim.\n\n"
         f"The user's active priorities:\n{prio}\n\n"
         f"Mail in play:\n" + "\n\n".join(lines)
     )
+
+
+@dataclass
+class AgendaItem:
+    email_id: str
+    note: str = ""
+
+
+def parse_agenda(raw: str, expected_ids: list[str]) -> tuple[str, list[AgendaItem]]:
+    """Map the model's chosen ids back onto real emails.
+
+    Ids that are not in the list we asked about are dropped rather than shown.
+    A checklist row that opens nothing is worse than a missing row -- and a
+    hallucinated id would do exactly that.
+    """
+    data = extract_json(raw)
+    if not isinstance(data, dict):
+        raise ValueError("expected a JSON object with headline and items")
+
+    headline = str(data.get("headline") or "").strip()[:400]
+    allowed = set(expected_ids)
+    items: list[AgendaItem] = []
+    seen: set[str] = set()
+
+    for entry in data.get("items") or []:
+        if not isinstance(entry, dict):
+            continue
+        email_id = str(entry.get("id") or "").strip()
+        if email_id not in allowed or email_id in seen:
+            continue
+        seen.add(email_id)
+        items.append(AgendaItem(email_id=email_id, note=str(entry.get("note") or "").strip()[:200]))
+
+    return headline, items
 
 
 # --------------------------------------------------------------------------

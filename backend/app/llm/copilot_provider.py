@@ -6,7 +6,7 @@ Copilot SDK went GA on 2026-06-02 and is the supported route for a Copilot
 subscriber, including Copilot Free and student Pro.
 
 Auth is GitHub's OAuth device flow, handled by the SDK; credentials land in the
-system keychain, so Fool's Gold never sees or stores a GitHub token.
+system keychain, so Fools Gold never sees or stores a GitHub token.
 
 Cost note: Copilot bills in premium requests, not tokens. That is why the
 caller batches ~10 emails per request and caches every result in SQLite --
