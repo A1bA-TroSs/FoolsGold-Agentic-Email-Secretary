@@ -1,6 +1,6 @@
 {
   "name": "foolsgold",
-  "productName": "Fool's Gold",
+  "productName": "Fools Gold",
   "version": "1.0.0",
   "description": "Agentic email secretary for Outlook — local-first, read-only.",
   "main": "electron/main.js",
@@ -18,7 +18,7 @@
   },
   "build": {
     "appId": "dev.foolsgold.app",
-    "productName": "Fool's Gold",
+    "productName": "Fools Gold",
     "files": ["electron/**", "frontend/dist/**", "assets/**"],
     "extraResources": [{ "from": "backend", "to": "backend", "filter": ["**/*", "!**/__pycache__/**"] }],
     "mac": { "icon": "assets/logo.png", "category": "public.app-category.productivity" }

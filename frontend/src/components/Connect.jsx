@@ -63,7 +63,7 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
     return (
       <div className="centered">
         <div className="card">
-          <img src="./logo.png" alt="Fool's Gold" />
+          <img src="./logo.png" alt="Fools Gold" />
           <h2>Connect Outlook</h2>
           {picker}
           <p className="sub">
@@ -85,12 +85,12 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
   return (
     <div className="centered">
       <div className="card" style={{ maxWidth: 440 }}>
-        <img src="./logo.png" alt="Fool's Gold" />
+        <img src="./logo.png" alt="Fools Gold" />
         <h2>Read from Apple Mail</h2>
         {picker}
         <p className="sub">
           No sign-in, no app registration. Apple Mail has already downloaded your
-          messages &mdash; Fool&rsquo;s Gold reads them straight off this Mac, and nothing
+          messages &mdash; Fools Gold reads them straight off this Mac, and nothing
           leaves it.
         </p>
 
@@ -98,7 +98,7 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
                      lineHeight: 1.65, paddingLeft: 18, margin: '0 0 18px' }}>
           <li>Add your Outlook account to <strong>Apple Mail</strong> and let it finish
               downloading. macOS handles the Microsoft login for you.</li>
-          <li>Give Fool&rsquo;s Gold <strong>Full Disk Access</strong> in System Settings →
+          <li>Give Fools Gold <strong>Full Disk Access</strong> in System Settings →
               Privacy &amp; Security. macOS protects <code>~/Library/Mail</code>, so this is
               required. Restart the app afterwards.</li>
           <li>Type your own address below &mdash; it&rsquo;s how we tell mail addressed

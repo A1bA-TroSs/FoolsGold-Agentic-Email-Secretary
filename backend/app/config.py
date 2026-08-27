@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_NAME = "Fool's Gold"
+APP_NAME = "Fools Gold"
 VERSION = "1.0.0-dev"
 
 # All user state lives in one directory the user can inspect or delete.
@@ -30,6 +30,8 @@ SECRET_SETTINGS = {"anthropic_api_key", "openai_api_key"}
 
 DEFAULT_SETTINGS = {
     "theme": "gold",
+    # UI chrome only. Mail subjects, senders and bodies are never translated.
+    "ui_language": "en",
     # Where mail comes from. "applemail" needs no account registration at all,
     # so it is the default; "graph" talks to Outlook directly.
     "mail_source": "applemail",

@@ -1,4 +1,4 @@
 # Optional. Only needed for the GitHub Copilot provider.
-# Requires Python 3.11+. Without it, Fool's Gold still runs on Claude, OpenAI,
+# Requires Python 3.11+. Without it, Fools Gold still runs on Claude, OpenAI,
 # or structural signals alone -- Settings just won't offer Copilot.
 github-copilot-sdk>=1.0.11

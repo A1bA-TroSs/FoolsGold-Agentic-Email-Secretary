@@ -256,8 +256,15 @@ def score_email(
     today: date | None = None,
     correspondents: dict[str, int] | None = None,
     verdict: str | None = None,
+    sender_muted: bool = False,
 ) -> tuple[float, list[str]]:
     """Returns (score, matched topic names). Deterministic -- unit tested."""
+    # A muted sender is a standing decision about a correspondent, so it short
+    # circuits every other signal. Nothing they send should compete for a place
+    # in the list -- that is the whole point of muting them.
+    if sender_muted:
+        return 0.0, []
+
     today = today or date.today()
     score = BUCKET_WEIGHT.get(bucket, 15.0)
     score += deadline_points(deadline, today)

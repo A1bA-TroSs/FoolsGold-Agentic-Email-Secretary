@@ -1,4 +1,5 @@
 import { MailSyncIcon, ThinkingIcon } from './Icons.jsx';
+import { useT } from '../lib/i18n.js';
 
 /* Loading states that say what is actually happening.
 
@@ -20,12 +21,14 @@ export function SkeletonList({ rows = 7 }) {
   );
 }
 
-export function SyncingNote({ children = 'Reading your mailbox…' }) {
-  return <div className="loading-note"><MailSyncIcon />{children}</div>;
+export function SyncingNote({ children }) {
+  const t = useT();
+  return <div className="loading-note"><MailSyncIcon />{children || t('readingMailbox')}</div>;
 }
 
-export function ThinkingNote({ children = 'Reading through what arrived…' }) {
-  return <div className="loading-note"><ThinkingIcon />{children}</div>;
+export function ThinkingNote({ children }) {
+  const t = useT();
+  return <div className="loading-note"><ThinkingIcon />{children || t('thinking')}</div>;
 }
 
 export function Sweep() {

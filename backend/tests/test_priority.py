@@ -301,3 +301,32 @@ def test_pin_is_a_large_boost_but_ordering_is_what_puts_it_on_top():
                                            user_address=ME, today=TODAY)
     # Points alone are not enough -- which is exactly why ordering handles it.
     assert pinned < urgent_score
+
+
+# ----------------------------------------------------------- muted senders
+
+def test_a_muted_sender_scores_nothing_whatever_else_is_true():
+    """Muting is a standing decision about a correspondent, so it has to beat
+    every other signal -- otherwise an 'urgent' newsletter climbs back up."""
+    loud = email(
+        subject="Action required: submit by Friday",
+        from_address="news@techweekly.com",
+        is_read=0, is_flagged=1, importance="high", has_attachments=1,
+    )
+    normal, _ = priority.score_email(
+        loud, "action", TODAY.isoformat(), [prio("thesis")],
+        llm_matched=["thesis"], user_address=ME, today=TODAY,
+    )
+    muted, matched = priority.score_email(
+        loud, "action", TODAY.isoformat(), [prio("thesis")],
+        llm_matched=["thesis"], user_address=ME, today=TODAY, sender_muted=True,
+    )
+    assert normal > 0
+    assert muted == 0.0 and matched == []
+
+
+def test_muting_beats_even_an_explicit_pin():
+    e = email(from_address="news@techweekly.com")
+    pinned, _ = priority.score_email(e, "fyi", None, [], user_address=ME, today=TODAY,
+                                     verdict="pinned", sender_muted=True)
+    assert pinned == 0.0

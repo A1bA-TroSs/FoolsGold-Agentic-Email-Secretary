@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useT } from '../lib/i18n.js';
 
 /* Startup.
 
@@ -10,25 +11,22 @@ import { useEffect, useState } from 'react';
 
    It also holds for a short minimum so it never flashes on a fast start -- a
    splash that appears and disappears in 80ms is worse than none. */
-const STAGES = [
-  'Waking the backend',
-  'Finding your mailbox',
-  'Ranking what arrived',
-];
+const STAGE_KEYS = ['bootWaking', 'bootFinding', 'bootRanking'];
 
 export default function Splash({ done, detail }) {
+  const t = useT();
   const [stage, setStage] = useState(0);
   const [gone, setGone] = useState(false);
 
   useEffect(() => {
-    const t = setInterval(() => setStage((s) => Math.min(STAGES.length - 1, s + 1)), 620);
-    return () => clearInterval(t);
+    const timer = setInterval(() => setStage((s) => Math.min(STAGE_KEYS.length - 1, s + 1)), 620);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
     if (!done) return undefined;
-    const t = setTimeout(() => setGone(true), 260);   // let the fade finish
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setGone(true), 260);   // let the fade finish
+    return () => clearTimeout(timer);
   }, [done]);
 
   if (gone) return null;
@@ -39,8 +37,8 @@ export default function Splash({ done, detail }) {
         <span className="splash-ring" />
         <img src="./logo.png" alt="" />
       </div>
-      <div className="splash-name">Fool&rsquo;s Gold</div>
-      <div className="splash-stage">{detail || STAGES[stage]}</div>
+      <div className="splash-name">{t('appName')}</div>
+      <div className="splash-stage">{detail || t(STAGE_KEYS[stage])}</div>
       <div className="splash-track"><i /></div>
     </div>
   );

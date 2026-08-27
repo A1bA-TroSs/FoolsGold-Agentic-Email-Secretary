@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Diagnose what Fool's Gold can actually see on this Mac.
+"""Diagnose what Fools Gold can actually see on this Mac.
 
 Run this before launching the app. It answers three questions in order:
   1. Is there a mail store at all? (did Apple Mail finish downloading?)
   2. Can this process read it? (Full Disk Access)
-  3. What would Fool's Gold import?
+  3. What would Fools Gold import?
 
     python3 scripts/check-mail.py
 
@@ -102,7 +102,7 @@ def scan(store: Path) -> tuple[Counter, float | None, int]:
 
 
 def main() -> int:
-    print(f"{BOLD}Fool's Gold — mail store check{OFF}")
+    print(f"{BOLD}Fools Gold — mail store check{OFF}")
 
     head("1. Apple Mail")
 
@@ -164,7 +164,7 @@ def main() -> int:
         print(f"{DIM}        Open Mail and let it finish syncing.{OFF}")
         return check_outlook(found_apple=False)
 
-    head("2. What Fool's Gold would read")
+    head("2. What Fools Gold would read")
     usable = 0
     for label, count in sorted(per_mailbox.items(), key=lambda kv: -kv[1]):
         top = label.split("/")[0].strip().lower()
@@ -182,7 +182,7 @@ def main() -> int:
     if usable:
         ok(f"{usable} message(s) in INBOX ready to import.")
     else:
-        warn("No INBOX found. Fool's Gold falls back to all non-excluded mailboxes,")
+        warn("No INBOX found. Fools Gold falls back to all non-excluded mailboxes,")
         print(f"{DIM}        or you can untick 'Inbox only' in Settings.{OFF}")
 
     if newest:
@@ -214,7 +214,7 @@ def check_outlook(found_apple: bool) -> int:
         ok(f"Outlook for Mac has {count} message(s) cached locally.")
     else:
         warn("Outlook for Mac is installed but has no local messages cached.")
-    print(f"{DIM}  Fool's Gold cannot read this yet. If Apple Mail is blocked for you,")
+    print(f"{DIM}  Fools Gold cannot read this yet. If Apple Mail is blocked for you,")
     print(f"  say so and an Outlook-for-Mac source can be added.{OFF}")
     return 0
 

@@ -47,11 +47,11 @@ export default function Login({ onSignedIn, configured, picker = null }) {
   return (
     <div className="centered">
       <div className="card">
-        <img src="./logo.png" alt="Fool's Gold" />
-        <h2>Fool&rsquo;s Gold</h2>
+        <img src="./logo.png" alt="Fools Gold" />
+        <h2>Fools Gold</h2>
         {picker}
         <p className="sub">
-          Connect your Outlook mailbox. Fool&rsquo;s Gold reads your mail and never writes to it &mdash;
+          Connect your Outlook mailbox. Fools Gold reads your mail and never writes to it &mdash;
           everything stays on this Mac.
         </p>
 

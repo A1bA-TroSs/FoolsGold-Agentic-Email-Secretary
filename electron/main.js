@@ -1,4 +1,4 @@
-/* Fool's Gold desktop shell.
+/* Fools Gold desktop shell.
  *
  * A real window, not a browser tab: fixed default size, its own icon, hidden
  * title bar in the Obsidian style. It owns the Python backend's lifetime, so
@@ -42,7 +42,7 @@ function startBackend() {
   const python = pythonBin();
   if (python === null) {
     dialog.showErrorBox(
-      'Fool\u2019s Gold is not set up yet',
+      'Fools Gold is not set up yet',
       'No Python environment found at backend/.venv.\n\n' +
       'Run this once from the repo root:\n\n' +
       '    ./scripts/setup.sh\n\n' +
@@ -63,7 +63,7 @@ function startBackend() {
     backend = null;
     if (code && code !== 0 && !app.isQuitting) {
       dialog.showErrorBox(
-        'Fool\u2019s Gold backend stopped',
+        'Fools Gold backend stopped',
         `The Python backend exited with code ${code}.\n\n` +
         `Most often this means the environment is stale or incomplete. Rebuild it:\n\n` +
         `    ./scripts/setup.sh\n\n` +
@@ -99,7 +99,7 @@ function createWindow() {
     minWidth: 820,
     minHeight: 520,
     show: false,
-    title: "Fool's Gold",
+    title: "Fools Gold",
     icon: path.join(__dirname, '..', 'assets', 'logo.png'),
     backgroundColor: '#FAF6EC',          // ivory, so first paint is never white flash
     // Obsidian-style chrome. The traffic lights are positioned to sit inside the
@@ -148,7 +148,7 @@ app.whenReady().then(async () => {
   try {
     await waitForBackend();
   } catch (err) {
-    dialog.showErrorBox('Fool’s Gold could not start', String(err.message));
+    dialog.showErrorBox('Fools Gold could not start', String(err.message));
   }
   createWindow();
 

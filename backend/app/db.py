@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS feedback (
     created_at  TEXT
 );
 
+-- Muting is about a correspondent, not a message. "This one email is not
+-- important" is what the feedback table is for; muting says "nothing from this
+-- address is worth ranking", which is how people actually think about a
+-- newsletter or an automated notifier.
+CREATE TABLE IF NOT EXISTS muted_senders (
+    address    TEXT PRIMARY KEY,
+    created_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS digests (
     day        TEXT PRIMARY KEY,
     body       TEXT,
@@ -283,6 +292,57 @@ def all_feedback() -> dict[str, dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM feedback").fetchall()
     return {r["email_id"]: dict(r) for r in rows}
+
+
+# --------------------------------------------------------------------------
+# muted senders
+# --------------------------------------------------------------------------
+
+def mute_sender(address: str) -> None:
+    address = (address or "").strip().lower()
+    if not address:
+        return
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO muted_senders (address, created_at) VALUES (?, ?)",
+            (address, now_iso()),
+        )
+        conn.commit()
+
+
+def unmute_sender(address: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM muted_senders WHERE address = ?", ((address or "").strip().lower(),))
+        conn.commit()
+
+
+def muted_senders() -> set[str]:
+    with connect() as conn:
+        return {r["address"] for r in conn.execute("SELECT address FROM muted_senders")}
+
+
+def muted_sender_rows() -> list[dict[str, Any]]:
+    """Each muted address with how much mail it accounts for, so the muted box
+    shows the consequence of the decision rather than a bare list."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT m.address, m.created_at, COUNT(e.id) AS message_count, "
+            "       MAX(e.received_at) AS last_seen, "
+            "       (SELECT from_name FROM emails WHERE from_address = m.address "
+            "         AND from_name != '' ORDER BY received_at DESC LIMIT 1) AS display_name "
+            "FROM muted_senders m LEFT JOIN emails e ON e.from_address = m.address "
+            "GROUP BY m.address ORDER BY message_count DESC, m.address"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_from_sender(address: str) -> int:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) n FROM emails WHERE from_address = ?",
+            ((address or "").strip().lower(),),
+        ).fetchone()
+    return int(row["n"]) if row else 0
 
 
 def json_list(value: Any) -> list:
