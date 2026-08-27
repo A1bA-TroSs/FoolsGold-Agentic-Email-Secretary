@@ -7,22 +7,52 @@ import MailDetail from './components/MailDetail.jsx';
 import MailList from './components/MailList.jsx';
 import ConfirmMute from './components/ConfirmMute.jsx';
 import MutedBox from './components/MutedBox.jsx';
+import RemovedBox from './components/RemovedBox.jsx';
+import HighlightBox from './components/HighlightBox.jsx';
 import Settings from './components/Settings.jsx';
+import Calendar, { DayPanel, useCalendar, todayIso } from './components/Calendar.jsx';
 import Splash from './components/Splash.jsx';
 import LogoMenu from './components/LogoMenu.jsx';
 import { SkeletonList, Sweep, SyncingNote, ThinkingNote } from './components/Loading.jsx';
-import { AgendaIcon, FlagIcon, GearIcon, InboxIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
+import { AgendaIcon, BackIcon, CalendarIcon, FlagIcon, GearIcon, InboxIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
 
 /* Views are a flat list including Settings, not a modal on top of everything
    else. Settings used to be a boolean overlay, which meant clicking a sidebar
    icon while it was open did nothing until you closed it -- the sidebar looked
    broken. Now every rail button is just a route. */
+/* Order runs from "what do I do right now" outwards to "what have I put
+   aside": today's checklist, then the ranked inbox, then everything, then the
+   month, then the things silenced or removed. */
 const VIEWS = [
+  { id: 'today',    key: 'viewToday',    hintKey: 'viewTodayHint',    short: 'railToday',    icon: AgendaIcon },
   { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: FlagIcon },
   { id: 'all',      key: 'viewAll',      hintKey: 'viewAllHint',      short: 'railAll',      icon: InboxIcon },
-  { id: 'today',    key: 'viewToday',    hintKey: 'viewTodayHint',    short: 'railToday',    icon: AgendaIcon },
+  { id: 'calendar', key: 'viewCalendar', hintKey: 'viewCalendarHint', short: 'railCalendar', icon: CalendarIcon },
   { id: 'muted',    key: 'viewMuted',    hintKey: 'viewMutedHint',    short: 'railMuted',    icon: MuteIcon },
 ];
+
+/* The divider between the list and the reading pane is draggable. The chosen
+   width lives in localStorage rather than in settings, because it describes
+   this window on this screen -- not the account, which syncs nothing anyway. */
+const LIST_MIN = 260;
+const LIST_MAX = 640;
+const LIST_DEFAULT = 340;
+const LIST_KEY = 'foolsgold.listWidth';
+
+const clampWidth = (n) => Math.min(LIST_MAX, Math.max(LIST_MIN, Math.round(n)));
+
+function readListWidth() {
+  try {
+    const raw = Number(localStorage.getItem(LIST_KEY));
+    return Number.isFinite(raw) && raw > 0 ? clampWidth(raw) : LIST_DEFAULT;
+  } catch {
+    return LIST_DEFAULT;      // private window, or storage disabled
+  }
+}
+
+function saveListWidth(width) {
+  try { localStorage.setItem(LIST_KEY, String(width)); } catch { /* not fatal */ }
+}
 
 export default function App() {
   const [booting, setBooting] = useState(true);
@@ -54,7 +84,12 @@ export default function App() {
   const [muteTarget, setMuteTarget] = useState(null);   // { email, count } while confirming
   const [muteBusy, setMuteBusy] = useState(false);
   const [mutedSenders, setMutedSenders] = useState([]);
+  const [highlighted, setHighlighted] = useState([]);
+  const [removed, setRemoved] = useState([]);
+  const [removedBusy, setRemovedBusy] = useState(new Set());
   const [firstPaint, setFirstPaint] = useState(false);
+  const [addingTask, setAddingTask] = useState(false);
+  const [listWidth, setListWidth] = useState(readListWidth);
 
   const inSettings = view === 'settings';
 
@@ -123,8 +158,38 @@ export default function App() {
   // The muted box lists senders, not just their mail.
   const loadMuted = useCallback(async () => {
     try { setMutedSenders((await api.mutedSenders()).items || []); } catch { /* offline */ }
+    // Highlights load alongside: they are the same kind of decision about the
+    // same kind of thing, and a stale one would contradict the coloured rows.
+    try { setHighlighted((await api.highlightedSenders()).items || []); } catch { /* offline */ }
   }, []);
   useEffect(() => { if (source.ready) loadMuted(); }, [source.ready, loadMuted, view]);
+
+  /* What has been taken off the calendar. Loaded with the muted box, which is
+     where it lives, and refreshed after a delete so the two views agree. */
+  const loadRemoved = useCallback(async () => {
+    try { setRemoved((await api.removedEntries()).items || []); } catch { /* offline */ }
+  }, []);
+  useEffect(() => {
+    if (source.ready && (view === 'muted' || view === 'calendar')) loadRemoved();
+  }, [source.ready, loadRemoved, view]);
+
+  async function actOnRemoved(entry, run) {
+    setRemovedBusy((prev) => new Set(prev).add(entry.key));
+    try {
+      await run();
+      await loadRemoved();
+      calendarRef.current?.();
+      setBanner('');
+    } catch (e) {
+      setBanner(e.message);
+    } finally {
+      setRemovedBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(entry.key);
+        return next;
+      });
+    }
+  }
 
   useEffect(() => { loadMail(); }, [loadMail]);
 
@@ -184,12 +249,20 @@ export default function App() {
   // ---- feedback -----------------------------------------------------------
   const DISMISSED = new Set(['done', 'snoozed', 'not_important']);
 
-  // Which briefing rows show as ticked. Read from the mail list so the digest
-  // and the inbox can never disagree about what is handled.
-  const doneIds = useMemo(
-    () => new Set(mail.filter((m) => m.verdict === 'done').map((m) => m.id)),
-    [mail],
-  );
+  /* Which briefing rows show as ticked.
+
+     This used to be derived only from the mail list, which is a different
+     query from the one that built the briefing -- so a row the list did not
+     happen to contain (a muted sender, anything past the 200-row limit) could
+     never show a tick no matter how often you clicked it. The verdict now
+     comes back on the digest row itself; this set is only the optimistic
+     overlay that makes the tick appear on the same frame as the click. */
+  const [justDone, setJustDone] = useState(new Set());
+  const doneIds = useMemo(() => {
+    const ids = new Set(mail.filter((m) => m.verdict === 'done').map((m) => m.id));
+    for (const id of justDone) ids.add(id);
+    return ids;
+  }, [mail, justDone]);
 
   const visible = useMemo(() => {
     if (view === 'all') return mail;
@@ -199,6 +272,11 @@ export default function App() {
       // the checkbox was ticked, so the completion animation never played --
       // the row simply blinked out of existence.
       m.id === leaving?.id
+      // Highlighting is an explicit "I want to spot these". Leaving such a
+      // sender filtered out as noise would contradict the instruction the
+      // moment it was given -- you colour an address and its mail is nowhere.
+      // It does not change the ranking, only whether the row is on screen.
+      || (m.highlight && !DISMISSED.has(m.verdict))
       || (m.bucket !== 'noise' && !DISMISSED.has(m.verdict)));
   }, [mail, view, leaving]);
 
@@ -216,6 +294,13 @@ export default function App() {
     const exits = view !== 'all' && kind !== null;
 
     setMail((rows) => rows.map((m) => (m.id === id ? { ...m, verdict } : m)));
+    /* The briefing row may not be in `mail` at all, so the optimistic tick has
+       to be recorded separately or clicking it looks like nothing happened. */
+    setJustDone((prev) => {
+      const next = new Set(prev);
+      if (verdict === 'done') next.add(id); else next.delete(id);
+      return next;
+    });
     if (exits) setLeaving({ id, kind });
 
     clearTimeout(undoTimer.current);
@@ -228,7 +313,13 @@ export default function App() {
       // Hold the list still until the exit animation finishes, or the row is
       // yanked out from under the animation and the gesture reads as a glitch.
       const settle = kind === 'done' ? 800 : kind === 'banish' ? 480 : 0;
-      setTimeout(() => { setLeaving(null); loadMail(); }, settle);
+      setTimeout(() => {
+        setLeaving(null);
+        loadMail();
+        // Cheap: today's digest is cached, so this only re-reads the verdicts
+        // that were just joined onto it.
+        api.digest(false).then(setDigest).catch(() => {});
+      }, settle);
     } catch (e) {
       setBanner(e.message);
       setLeaving(null);
@@ -258,6 +349,7 @@ export default function App() {
       setTimeout(async () => {
         setLeaving(null);
         await Promise.all([loadMail(), loadMuted()]);
+        calendarRef.current?.();      // the muted sender's due dates go too
       }, 1000);                       // the burn runs ~1s; do not yank the row out mid-animation
     } catch (e) {
       setBanner(e.message);
@@ -271,7 +363,29 @@ export default function App() {
     try {
       await api.unmuteSender(address);
       await Promise.all([loadMail(), loadMuted()]);
+      calendarRef.current?.();        // and they come back
     } catch (e) { setBanner(e.message); }
+  }
+
+  /* Muting is confirmed and applied by code declared above the calendar hook,
+     so it reaches the reload through a ref rather than the binding directly. */
+  const calendarRef = useRef(null);
+
+  /* Highlighting is the opposite instruction to muting and, like muting, it is
+     about the correspondent -- so one call updates both surfaces at once and
+     neither can hold a stale idea of who is coloured. It also un-mutes, which
+     is why the mail list has to be reloaded and not merely repainted. */
+  async function setHighlight(address, color) {
+    if (!address) return;
+    try {
+      if (color) await api.highlightSender(address, color);
+      else await api.unhighlightSender(address);
+      await Promise.all([loadMail(), loadMuted()]);
+      calendarRef.current?.();
+      setBanner('');
+    } catch (e) {
+      setBanner(e.message);
+    }
   }
 
   async function undoFeedback() {
@@ -298,6 +412,7 @@ export default function App() {
       switch (e.key) {
         case 'r': e.preventDefault(); return sync();
         case 'u': return undoFeedback();
+        case 'Escape': return selectedId ? closeEmail() : undefined;
         case '/': e.preventDefault(); return document.getElementById('mail-search')?.focus();
         default: break;
       }
@@ -352,6 +467,72 @@ export default function App() {
   const openEmail = useCallback((id) => {
     setSelectedId(id);
     setCursorId(id);
+  }, []);
+
+  /* Closing an email is a real action, not just "click something else". The
+     briefing and the calendar both hand you an email that then fills the
+     reading pane, and without a way back the only exit was to pick a different
+     email or change view entirely. */
+  const closeEmail = useCallback(() => setSelectedId(null), []);
+
+  const calendar = useCalendar(loadMail, view === 'calendar');
+  useEffect(() => { calendarRef.current = calendar.reload; }, [calendar.reload]);
+
+  /* The calendar's own entries are not mail rows, so they carry the sender as
+     a plain address. Reshape one into what the shared confirm dialog expects
+     rather than giving muting a second, subtly different path. */
+  const muteFromCalendar = useCallback((entry) => {
+    if (!entry?.sender_address) return;
+    askMute({
+      id: entry.email_id,
+      from_address: entry.sender_address,
+      from_name: entry.sender || '',
+      subject: entry.title,
+    });
+  }, []);
+
+  useEffect(() => { if (view !== 'calendar') setAddingTask(false); }, [view]);
+
+  // ---- resizable divider --------------------------------------------------
+  const listRef = useRef(null);
+
+  const beginResize = useCallback((event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    const left = listRef.current?.getBoundingClientRect().left ?? 0;
+    let latest = null;
+    const move = (ev) => {
+      latest = clampWidth(ev.clientX - left);
+      setListWidth(latest);
+    };
+    const stop = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      document.body.classList.remove('resizing');
+      if (latest !== null) saveListWidth(latest);
+    };
+    document.body.classList.add('resizing');
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+  }, []);
+
+  const nudgeResize = useCallback((event) => {
+    const step = event.shiftKey ? 40 : 12;
+    const delta = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+    if (!delta) return;
+    event.preventDefault();
+    setListWidth((current) => {
+      const next = clampWidth(current + delta);
+      saveListWidth(next);
+      return next;
+    });
+  }, []);
+
+  const resetResize = useCallback(() => {
+    setListWidth(LIST_DEFAULT);
+    saveListWidth(LIST_DEFAULT);
   }, []);
 
   // ---- render -------------------------------------------------------------
@@ -420,14 +601,15 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div className="pane-list view-enter" key={view}>
+            <div className="pane-list view-enter" key={view} ref={listRef}
+                 style={{ width: listWidth, flexBasis: listWidth }}>
               {/* In the Today view the briefing IS the list: it lives in the
                   left column so the reading pane is free to show whatever row
                   you click. Previously the briefing filled the reading pane
                   itself, so clicking one of its rows selected an email that
                   had nowhere to appear -- the click looked like it did nothing. */}
               <div className="topbar">
-                {view !== 'today' && <input id="mail-search" className="input" placeholder={t('searchPlaceholder')}
+                {view !== 'today' && view !== 'calendar' && <input id="mail-search" className="input" placeholder={t('searchPlaceholder')}
                        value={search} onChange={(e) => setSearch(e.target.value)} />}
                 <button className="btn ghost" onClick={sync} disabled={syncing}
                         title={`${t('syncTitle')} (r)`} aria-label={t('syncTitle')}>
@@ -435,7 +617,7 @@ export default function App() {
                 </button>
               </div>
 
-              {view !== 'muted' && view !== 'today' && <div className="filters">
+              {view !== 'muted' && view !== 'today' && view !== 'calendar' && <div className="filters">
                 {[
                   { id: null, label: `${t('filterAll')} ${visible.length ? `(${visible.length})` : ''}` },
                   { id: 'action', label: `${t('filterAction')} ${counts.action ? `(${counts.action})` : ''}` },
@@ -448,7 +630,19 @@ export default function App() {
               </div>}
 
               <div className="scroll">
-                {view === 'today' ? (
+                {view === 'calendar' ? (
+                  <DayPanel
+                    day={calendar.day} items={calendar.items} busyKeys={calendar.busyKeys}
+                    onToggle={calendar.toggle}
+                    onDelete={(entry) => calendar.remove(entry).then(loadRemoved)}
+                    onMute={muteFromCalendar}
+                    onHighlight={setHighlight}
+                    burningId={leaving?.kind === 'burn' ? leaving.id : null}
+                    onOpenEmail={openEmail} onAdd={calendar.addTask}
+                    adding={addingTask} onStartAdd={() => setAddingTask(true)}
+                    onStopAdd={() => setAddingTask(false)}
+                  />
+                ) : view === 'today' ? (
                   <Digest
                     digest={digest} loading={digestLoading} onRefresh={refreshDigest}
                     selectedId={selectedId} checkedIds={doneIds}
@@ -456,17 +650,26 @@ export default function App() {
                   />
                 ) : (
                   <>
-                    {view === 'muted' && <MutedBox senders={mutedSenders} onUnmute={unmute} />}
+                    {view === 'muted' && <>
+                      <MutedBox senders={mutedSenders} onUnmute={unmute} />
+                      <HighlightBox items={highlighted} onHighlight={setHighlight} />
+                      <RemovedBox
+                        items={removed} busyKeys={removedBusy}
+                        onRestore={(it) => actOnRemoved(it, () => api.restoreEntry(it.kind, it.id))}
+                        onPurge={(it) => actOnRemoved(it, () => api.purgeEntry(it.kind, it.id))}
+                      />
+                    </>}
                     {listLoading && !mail.length
                       ? <SkeletonList />
                       : <MailList items={visible} selectedId={selectedId} cursorId={cursorId}
                                   leaving={leaving} mutedView={view === 'muted'}
-                                  onSelect={openEmail} onFeedback={applyFeedback} onMute={askMute} />}
+                                  onSelect={openEmail} onFeedback={applyFeedback} onMute={askMute}
+                                  onHighlight={setHighlight} />}
                   </>
                 )}
               </div>
 
-              {view !== 'today' && <div className="keyhint">
+              {view !== 'today' && view !== 'calendar' && <div className="keyhint">
                 <span><kbd>↑</kbd><kbd>↓</kbd> {t('keyMove')}</span>
                 <span><kbd>↵</kbd> {t('keyOpen')}</span>
                 <span><kbd>p</kbd> {t('keyPin')}</span>
@@ -478,6 +681,21 @@ export default function App() {
                 <span><kbd>r</kbd> {t('keySync')}</span>
               </div>}
             </div>
+
+            <div
+              className="pane-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label={t('resizeHandle')}
+              aria-valuenow={listWidth}
+              aria-valuemin={LIST_MIN}
+              aria-valuemax={LIST_MAX}
+              tabIndex={0}
+              title={t('resizeHint')}
+              onPointerDown={beginResize}
+              onKeyDown={nudgeResize}
+              onDoubleClick={resetResize}
+            ><span /></div>
 
             <div className="pane-detail">
               {banner && <div className="banner"><span className="dot" />{banner}</div>}
@@ -498,7 +716,33 @@ export default function App() {
               )}
 
               {selectedId ? (
-                <MailDetail emailId={selectedId} />
+                <>
+                  {/* The way back. Reading an email is a detour from a list, a
+                      briefing or a day on the calendar, and until this existed
+                      the only way out of the detour was to start another one. */}
+                  <div className="detail-back">
+                    <button className="btn ghost" onClick={closeEmail}>
+                      <BackIcon />
+                      {t(view === 'calendar' ? 'backToCalendar'
+                        : view === 'today' ? 'backToChecklist' : 'backToList')}
+                    </button>
+                    <span className="detail-back-hint"><kbd>esc</kbd></span>
+                  </div>
+                  <MailDetail emailId={selectedId} />
+                </>
+              ) : view === 'calendar' ? (
+                <div className="scroll cal-scroll">
+                  <Calendar
+                    month={calendar.month} loading={calendar.loading}
+                    selectedDay={calendar.day}
+                    onMove={calendar.move} onToday={calendar.goToday}
+                    onPickDay={calendar.pickDay}
+                    onQuickAdd={(day) => { calendar.pickDay(day); setAddingTask(true); }}
+                    onMuteSender={(s) => askMute({ from_address: s.address, from_name: s.name })}
+                    onHighlightSender={setHighlight}
+                  />
+                  {calendar.error && <div className="banner"><span className="dot" />{calendar.error}</div>}
+                </div>
               ) : view === 'today' ? (
                 <div className="empty">{t('selectEmail')}</div>
               ) : (

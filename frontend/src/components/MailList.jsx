@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useFlip } from '../lib/useFlip.js';
 import { useT } from '../lib/i18n.js';
-import { ClockIcon, MuteIcon, PaperclipIcon, PinIcon } from './Icons.jsx';
+import { dueChip } from '../lib/due.js';
+import { ClockIcon, HighlightIcon, MuteIcon, PaperclipIcon, PinIcon } from './Icons.jsx';
+import HighlightPicker from './HighlightPicker.jsx';
 
 function when(iso) {
   if (!iso) return '';
@@ -16,18 +18,9 @@ function when(iso) {
   return d.toLocaleDateString([], { year: '2-digit', month: 'short', day: 'numeric' });
 }
 
-function dueLabel(deadline, t) {
-  if (!deadline) return null;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const due = new Date(`${deadline}T00:00:00`);
-  const days = Math.round((due - today) / 86400000);
-  if (days < -21) return null;      // past this it scores nothing, so stop shouting
-  if (days < 0) return t('overdueDays', { n: -days });
-  if (days === 0) return t('dueToday');
-  if (days === 1) return t('dueTomorrow');
-  if (days <= 7) return t('dueInDays', { n: days });
-  return t('dueOn', { date: deadline.slice(5) });
-}
+// Same rule as the briefing, from the same place -- these two used to have
+// separate copies of the arithmetic and disagreed about when to stop.
+const dueLabel = (deadline, t) => dueChip(deadline, t)?.label ?? null;
 
 /* The two verdicts that need a gesture rather than a menu live outside this
    list: "done" is the checkbox, and the third button is mute. It was labelled
@@ -50,10 +43,11 @@ function Tick() {
 }
 
 export default function MailList({
-  items, selectedId, cursorId, onSelect, onFeedback, onMute, leaving, mutedView,
+  items, selectedId, cursorId, onSelect, onFeedback, onMute, onHighlight, leaving, mutedView,
 }) {
   const listRef = useRef(null);
   const t = useT();
+  const [pickerFor, setPickerFor] = useState(null);
 
   /* The row actions only arm after the pointer has rested on a row for a
      moment. Before this they appeared instantly on hover, sitting over the
@@ -100,6 +94,7 @@ export default function MailList({
             tabIndex={0}
             className={[
               'mail-item',
+              m.highlight ? `hl hl-${m.highlight}` : '',
               m.bucket || '',
               m.verdict || '',
               m.is_read ? '' : 'unread',
@@ -147,7 +142,26 @@ export default function MailList({
                   <Icon />
                 </button>
               ))}
+              {/* The opposite of the mute beside it: same gesture, same place,
+                  same scope -- the whole correspondent, not this message. */}
+              <button
+                className={`hl-btn ${m.highlight ? `on hl-${m.highlight}` : ''}`}
+                title={t('highlightSender')} aria-label={`${t('highlightSender')}: ${m.subject}`}
+                onClick={() => setPickerFor(pickerFor === m.id ? null : m.id)}
+              >
+                <HighlightIcon />
+              </button>
             </div>
+
+            {pickerFor === m.id && (
+              <HighlightPicker
+                current={m.highlight}
+                label={`${t('highlightSender')}: ${m.from_name || m.from_address}`}
+                onPick={(c) => { setPickerFor(null); onHighlight(m.from_address, c); }}
+                onClear={() => { setPickerFor(null); onHighlight(m.from_address, null); }}
+                onClose={() => setPickerFor(null)}
+              />
+            )}
 
             <div className="row">
               <span className="subj">{m.subject}</span>

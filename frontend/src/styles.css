@@ -203,7 +203,20 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 .topbar h1 { font-size: 13px; font-weight: 650; margin: 0; letter-spacing: .01em; }
 
-.scroll { flex: 1; min-height: 0; overflow-y: auto; }
+/* overflow-x must be stated. With `overflow-y: auto` and overflow-x left at
+   `visible`, CSS computes the visible axis to `auto` too -- which is where the
+   stray horizontal scrollbar under the briefing came from. */
+.scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+
+/* Chromium's UA stylesheet gives <button> `align-items: flex-start`. The build
+   inside Electron and the one these audits run in disagree about it, so a flex
+   button that does not declare its own alignment stretches its children on one
+   engine and collapses them to content width on the other -- which is how the
+   theme swatches rendered as a 2px line and the briefing text stopped
+   ellipsising, on Danny's machine only, while every check here passed.
+
+   An element selector, so any class rule still wins. */
+button { align-items: stretch; }
 
 /* ------------------------------------------------------------- controls -- */
 
@@ -769,7 +782,9 @@ select.input { appearance: none; padding-right: 28px;
 
 .agenda-open {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 3px;
+  /* stretch, or the note and meta rows size to their text and the subject has
+     nothing to ellipsise against -- it just runs out of the card. */
+  display: flex; flex-direction: column; align-items: stretch; gap: 3px;
   background: none; border: 0; padding: 0;
   text-align: left; cursor: pointer;
 }
@@ -778,8 +793,15 @@ select.input { appearance: none; padding-right: 28px;
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 11.5px; color: var(--muted);
 }
-.agenda-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-.agenda-sender { flex: 0 0 auto; }
+/* `white-space: nowrap` makes an element's min-content width the whole string,
+   and a flex item's default `min-width: auto` then refuses to shrink below it
+   -- so max-width was being ignored and the subject ran out of the card,
+   giving the pane a horizontal scrollbar. `min-width: 0` is what actually
+   lets the ellipsis happen. */
+.agenda-subject { flex: 1 1 auto; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agenda-sender { flex: 0 1 auto; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Ticked rows stay visible until the list is rebuilt, so the user can see what
    they just cleared -- and untick it if they mis-clicked. */
@@ -940,7 +962,7 @@ body { font-size: 14px; letter-spacing: .002em; }
    strip is the whole point of the control -- an empty pill says nothing. */
 .theme-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
 .theme-swatch {
-  display: flex; flex-direction: column; gap: 7px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 7px;
   padding: 9px 9px 8px;
   border-radius: var(--r-md);
   border: 2px solid color-mix(in srgb, var(--border) 70%, transparent);
@@ -950,7 +972,7 @@ body { font-size: 14px; letter-spacing: .002em; }
 .theme-swatch:hover { transform: translateY(-1px); box-shadow: 0 3px 10px var(--shadow); }
 .theme-swatch.active { border-color: var(--accent); }
 .theme-swatch .bar {
-  display: flex; height: 26px; border-radius: var(--r-sm);
+  display: flex; width: 100%; height: 26px; border-radius: var(--r-sm);
   overflow: hidden; border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
 .theme-swatch .bar span { flex: 1 1 0; min-width: 0; }
@@ -1080,3 +1102,416 @@ body { font-size: 14px; letter-spacing: .002em; }
                        text-overflow: ellipsis; white-space: nowrap; }
 .muted-sender .who span { font-size: 11px; color: var(--muted); }
 .mail-item.from-muted { opacity: .62; }
+
+/* ==========================================================================
+   Resizable divider
+   The list pane used to be a fixed 340px, which is generous for a one-line
+   subject and cramped for anything else. The handle is 8px of hit area around
+   a 1px line, so it is grabbable without looking like a gutter.
+   ========================================================================== */
+
+.pane-resizer {
+  flex: 0 0 8px;
+  align-self: stretch;
+  margin: 0 -4px;              /* overlap the gap so the panes stay put */
+  position: relative;
+  cursor: col-resize;
+  background: none; border: 0; padding: 0;
+  z-index: 3;
+  touch-action: none;          /* pointer events, not the browser's scroll */
+}
+.pane-resizer span {
+  position: absolute; top: 12px; bottom: 12px; left: 50%;
+  width: 2px; margin-left: -1px; border-radius: 2px;
+  background: transparent;
+  transition: background .15s ease;
+}
+.pane-resizer:hover span,
+.pane-resizer:focus-visible span,
+body.resizing .pane-resizer span { background: var(--accent); }
+.pane-resizer:focus-visible { outline: none; }
+
+/* While dragging, nothing else should react to the pointer -- text selection
+   in particular, which otherwise highlights half the inbox on the way past. */
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing iframe { pointer-events: none; }
+
+/* ==========================================================================
+   Return from an open email
+   ========================================================================== */
+
+.detail-back {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px 2px;
+}
+.detail-back .btn { display: inline-flex; align-items: center; gap: 6px; }
+.detail-back-hint { font-size: 11px; color: var(--muted); }
+.detail-back-hint kbd {
+  font: inherit; font-size: 10px; padding: 1px 5px;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--surface);
+}
+
+/* ==========================================================================
+   Calendar
+   ========================================================================== */
+
+.cal-scroll { padding: 10px 12px 14px; }
+.cal { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.cal.busy { opacity: .72; transition: opacity .18s; }
+
+.cal-head { display: flex; align-items: center; gap: 6px; }
+.cal-head .spacer { flex: 1; }
+.cal-title {
+  font-size: 15px; font-weight: 650; margin: 0; min-width: 9.5em;
+  text-align: center; letter-spacing: .01em;
+}
+.btn.icon { padding: 5px 7px; display: inline-flex; }
+
+.cal-weekdays {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px;
+  font-size: 11px; font-weight: 650; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted);
+}
+.cal-weekdays span { text-align: center; padding: 2px 0; }
+.cal-weekdays .weekend { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  grid-auto-rows: minmax(74px, 1fr);
+  gap: 6px;
+}
+
+.cal-day {
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  min-width: 0;                       /* or long chips stretch the column */
+  padding: 6px 6px 5px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: var(--r-md);
+  cursor: pointer;
+  overflow: hidden;
+  transition: background .13s, border-color .13s, transform .13s;
+}
+.cal-day:hover { background: var(--surface-hover); border-color: var(--border); }
+.cal-day:active { transform: scale(.985); }
+.cal-day.outside { opacity: .42; }
+.cal-day.picked { border-color: var(--accent); background: var(--surface-hover); }
+.cal-day.today .cal-daynum {
+  background: var(--accent); color: var(--on-accent);
+  border-radius: 999px; padding: 0 6px; min-width: 20px; text-align: center;
+}
+
+.cal-daynum { font-size: 12px; font-weight: 650; align-self: flex-start; line-height: 1.5; }
+.cal-chips { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cal-chip {
+  font-size: 10.5px; line-height: 1.5;
+  padding: 1px 5px; border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.cal-chip.task { background: color-mix(in srgb, var(--ok, #2f7d4f) 16%, transparent); }
+.cal-chip.done { text-decoration: line-through; opacity: .5; }
+.cal-more { font-size: 10px; color: var(--muted); padding-left: 5px; }
+.cal-foot { display: flex; justify-content: flex-end; }
+.cal-empty { padding: 24px; color: var(--muted); font-size: 13px; }
+
+/* ---------------------------------------------------------------- day -- */
+
+.day-panel { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 12px; }
+.day-head h2 { font-size: 14px; margin: 0 0 2px; font-weight: 650; }
+.day-sub { margin: 0; font-size: 11.5px; color: var(--muted); }
+
+.btn.add-row { justify-content: center; gap: 6px; display: inline-flex; align-items: center; }
+
+.task-add { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-add .input { flex: 1 1 100%; min-width: 0; }
+.task-add .input.date { flex: 1 1 auto; }
+.task-error { flex: 1 1 100%; margin: 0; font-size: 11.5px; color: var(--danger, #b4402f); }
+
+.day-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.day-item {
+  position: relative;
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 9px 8px 9px 34px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: var(--r-md);
+  animation: fade-up .22s ease both;
+}
+.day-item .row-check { left: 8px; top: 10px; }
+.day-item.busy { opacity: .55; pointer-events: none; }
+.day-item.done { opacity: .5; }
+.day-item.done .day-title { text-decoration: line-through; }
+
+.day-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.day-title {
+  font-size: 12.5px; font-weight: 600; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.day-title.link { background: none; border: 0; padding: 0; cursor: pointer; color: inherit; }
+.day-title.link:hover { color: var(--accent); }
+.day-meta {
+  display: flex; align-items: center; gap: 5px; min-width: 0;
+  font-size: 11px; color: var(--muted);
+}
+.day-sender { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tag.task { background: color-mix(in srgb, var(--ok, #2f7d4f) 18%, transparent); }
+
+.day-confirm { display: flex; gap: 4px; flex: 0 0 auto; }
+.btn.sm { padding: 2px 8px; font-size: 11px; }
+.icon-btn.danger { opacity: 0; transition: opacity .13s, color .13s; }
+.day-item:hover .icon-btn.danger,
+.icon-btn.danger:focus-visible { opacity: .75; }
+.icon-btn.danger:hover { opacity: 1; color: var(--danger, #b4402f); }
+.day-hint { margin: 2px 0 0; font-size: 11px; color: var(--muted); }
+.empty.soft { padding: 18px 4px; font-size: 12.5px; color: var(--muted); }
+
+/* A bare icon button: no chrome until you reach for it. Used for destructive
+   row actions, where a full button would shout louder than the action
+   deserves. */
+.icon-btn {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; padding: 0;
+  background: none; border: 1px solid transparent; border-radius: 7px;
+  color: var(--muted); cursor: pointer;
+  transition: background .13s, color .13s, border-color .13s, opacity .13s;
+}
+.icon-btn:hover { background: var(--surface-hover); border-color: var(--border); }
+.icon-btn svg { width: 15px; height: 15px; }
+
+.btn.danger {
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  color: var(--danger); font-weight: 600;
+}
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger); border-color: var(--danger); color: #fff;
+}
+
+/* ==========================================================================
+   Calendar: muting
+   ========================================================================== */
+
+.day-actions { display: flex; gap: 2px; flex: 0 0 auto; }
+.day-actions .icon-btn { opacity: 0; }
+.day-item:hover .day-actions .icon-btn,
+.day-actions .icon-btn:focus-visible { opacity: .75; }
+
+/* The same burn the priority list uses, minus the parts a day row does not
+   have (a bucket stripe, a hover gutter). Muting should look identical
+   wherever it is done, or it reads as a different action. */
+.day-item.burning {
+  position: relative; overflow: hidden;
+  border-color: var(--danger) !important;
+  animation: burn-heat .5s ease both,
+             to-ash .78s .18s ease-in forwards,
+             crumble .8s .2s cubic-bezier(.45,0,.3,1) forwards;
+}
+.day-item.burning .day-actions, .day-item.burning .row-check { opacity: 0; }
+.day-item.burning::after {
+  content: ''; position: absolute; left: 0; right: 0; height: 10px;
+  background: linear-gradient(180deg,
+              transparent,
+              color-mix(in srgb, var(--ember) 85%, transparent) 45%,
+              color-mix(in srgb, var(--danger) 70%, transparent) 70%,
+              transparent);
+  filter: blur(2px);
+  animation: ember-sweep .62s .1s linear forwards;
+  pointer-events: none;
+}
+
+/* -- who is filling the month -------------------------------------------- */
+
+.cal-foot { display: flex; align-items: flex-start; gap: 10px; }
+.cal-senders { flex: 1; min-width: 0; }
+.cal-senders-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 0; padding: 2px 0;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  cursor: pointer;
+}
+.cal-senders-toggle:hover { color: var(--text); }
+.cal-senders-toggle .caret { transition: transform .15s ease; display: inline-block; }
+.cal-senders-toggle .caret.open { transform: rotate(180deg); }
+.cal-senders-hint { margin: 6px 0 8px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+
+.cal-sender-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 4px;
+  max-height: 190px; overflow-y: auto; overflow-x: hidden;
+  animation: fade-up .2s ease both;
+}
+.cal-sender-list li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: var(--r-md);
+}
+.cal-sender-list .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cal-sender-list .who b {
+  font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.cal-sender-list .who span {
+  font-size: 10.5px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.cal-sender-list .count { font-size: 11px; color: var(--muted); flex: 0 0 auto; }
+.cal-sender-list .icon-btn { opacity: .7; }
+.cal-sender-list li:hover .icon-btn { opacity: 1; }
+
+/* ==========================================================================
+   Removed box
+   Sits under the muted senders: both answer "what have I suppressed, and how
+   do I take it back?" -- muting by correspondent, this by single date.
+   ========================================================================== */
+
+.removed-box { padding: 4px 2px 10px; }
+.removed-box h3 {
+  font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent); margin: 14px 0 4px;
+}
+.removed-box .hint { margin: 0 0 8px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.removed-empty { margin: 0; font-size: 12px; color: var(--muted); }
+
+.removed-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.removed-list li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 9px;
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  border-radius: var(--r-md);
+  animation: fade-up .2s ease both;
+}
+.removed-list li.busy { opacity: .5; pointer-events: none; }
+
+.removed-list .who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.removed-list .who b {
+  font-size: 12.5px; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.removed-list .who > span {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  font-size: 11px; color: var(--muted);
+}
+
+.removed-actions, .removed-confirm { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.removed-actions .btn.sm { display: inline-flex; align-items: center; gap: 4px; }
+.removed-actions .btn.sm svg { width: 13px; height: 13px; }
+.removed-actions .icon-btn { opacity: .55; }
+.removed-list li:hover .removed-actions .icon-btn { opacity: 1; }
+
+/* ==========================================================================
+   Sender highlights — the opposite of muting
+   Six colours, defined as tokens per theme rather than fixed hex, because a
+   value picked against ivory is unreadable on the dark ground and vice versa.
+   ========================================================================== */
+
+:root {
+  --hl-red: #C0392B;    --hl-orange: #C97A20;  --hl-yellow: #B08900;
+  --hl-green: #2E7D45;  --hl-blue: #2A6BB0;    --hl-purple: #6E4B9E;
+}
+[data-theme="dark"] {
+  --hl-red: #E8705F;    --hl-orange: #E0954A;  --hl-yellow: #D8B542;
+  --hl-green: #6BBF7E;  --hl-blue: #6BA7E0;    --hl-purple: #B08AD8;
+}
+
+.hl-red    { --hl: var(--hl-red); }
+.hl-orange { --hl: var(--hl-orange); }
+.hl-yellow { --hl: var(--hl-yellow); }
+.hl-green  { --hl: var(--hl-green); }
+.hl-blue   { --hl: var(--hl-blue); }
+.hl-purple { --hl: var(--hl-purple); }
+
+/* A highlighted mail row: a solid edge and a wash, not a shouty fill. The
+   point is to be findable while scanning, not to become unreadable. */
+.mail-item.hl {
+  border-left-color: var(--hl) !important;
+  background: color-mix(in srgb, var(--hl) 9%, var(--surface));
+}
+.mail-item.hl:hover { background: color-mix(in srgb, var(--hl) 15%, var(--surface)); }
+.mail-item.hl.selected { background: color-mix(in srgb, var(--hl) 18%, var(--surface)); }
+
+.cal-chip.hl-red, .cal-chip.hl-orange, .cal-chip.hl-yellow,
+.cal-chip.hl-green, .cal-chip.hl-blue, .cal-chip.hl-purple {
+  background: color-mix(in srgb, var(--hl) 26%, transparent);
+  box-shadow: inset 2px 0 0 var(--hl);
+}
+
+.day-item.hl, .cal-sender-list li.hl {
+  border-color: color-mix(in srgb, var(--hl) 55%, transparent);
+  background: color-mix(in srgb, var(--hl) 9%, var(--surface));
+}
+.day-item.hl { box-shadow: inset 3px 0 0 var(--hl); }
+
+.icon-btn.on, .hl-btn.on { color: var(--hl); opacity: 1; }
+.row-actions .hl-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 1px solid transparent; border-radius: 7px;
+  color: var(--muted); cursor: pointer; padding: 4px;
+}
+.row-actions .hl-btn:hover { background: var(--surface-hover); border-color: var(--border); }
+
+.sender-actions { display: flex; gap: 2px; flex: 0 0 auto; }
+
+/* -- the picker ----------------------------------------------------------- */
+
+.hl-picker {
+  position: absolute; right: 8px; top: 34px; z-index: 6;
+  display: flex; align-items: center; gap: 5px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--shadow) 60%, transparent);
+  animation: fade-up .16s ease both;
+}
+.cal-sender-list .hl-picker, .day-item .hl-picker { top: 38px; }
+
+.hl-swatch {
+  width: 17px; height: 17px; padding: 0;
+  border-radius: 50%; cursor: pointer;
+  border: 2px solid transparent;
+  background: var(--hl);
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.hl-swatch:hover { transform: scale(1.18); }
+.hl-swatch.on {
+  border-color: var(--bg);
+  box-shadow: 0 0 0 2px var(--hl);
+}
+.hl-clear {
+  background: none; border: 0; cursor: pointer;
+  font-size: 11px; color: var(--muted); padding: 0 2px 0 4px;
+  border-left: 1px solid var(--border);
+}
+.hl-clear:hover { color: var(--text); }
+
+/* -- the box in the Muted view -------------------------------------------- */
+
+.hl-box { padding: 4px 2px 10px; }
+.hl-box h3 {
+  font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--accent); margin: 14px 0 4px;
+}
+.hl-box .hint { margin: 0 0 8px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.hl-box .empty-line { margin: 0; font-size: 12px; color: var(--muted); }
+.hl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.hl-list li {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 9px;
+  background: color-mix(in srgb, var(--hl) 9%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--hl) 55%, transparent);
+  border-radius: var(--r-md);
+}
+.hl-list .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--hl); flex: 0 0 auto; }
+.hl-list .who { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.hl-list .who b { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hl-list .who span { font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
