@@ -14,18 +14,24 @@ import Calendar, { DayPanel, useCalendar, todayIso } from './components/Calendar
 import Splash from './components/Splash.jsx';
 import LogoMenu from './components/LogoMenu.jsx';
 import { SkeletonList, Sweep, SyncingNote, ThinkingNote } from './components/Loading.jsx';
-import { AgendaIcon, BackIcon, CalendarIcon, FlagIcon, GearIcon, InboxIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
+import { AgendaIcon, BackIcon, CalendarIcon, GearIcon, InboxIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
 
 /* Views are a flat list including Settings, not a modal on top of everything
    else. Settings used to be a boolean overlay, which meant clicking a sidebar
    icon while it was open did nothing until you closed it -- the sidebar looked
    broken. Now every rail button is just a route. */
 /* Order runs from "what do I do right now" outwards to "what have I put
-   aside": today's checklist, then the ranked inbox, then everything, then the
-   month, then the things silenced or removed. */
+   aside": the ranked inbox, then everything, then the month, then the things
+   silenced or removed.
+
+   There is no separate Today view. There was, and it showed the same briefing
+   Priority already shows -- a rail button whose entire job was to move the
+   checklist from the right-hand pane into the left-hand one. Two doors into one
+   room is a question the user answers every time they look at the rail. So
+   Priority absorbed it, and took the agenda icon with it: what the button opens
+   onto is a checklist for today, which is what that icon has always said. */
 const VIEWS = [
-  { id: 'today',    key: 'viewToday',    hintKey: 'viewTodayHint',    short: 'railToday',    icon: AgendaIcon },
-  { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: FlagIcon },
+  { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: AgendaIcon },
   { id: 'all',      key: 'viewAll',      hintKey: 'viewAllHint',      short: 'railAll',      icon: InboxIcon },
   { id: 'calendar', key: 'viewCalendar', hintKey: 'viewCalendarHint', short: 'railCalendar', icon: CalendarIcon },
   { id: 'muted',    key: 'viewMuted',    hintKey: 'viewMutedHint',    short: 'railMuted',    icon: MuteIcon },
@@ -609,7 +615,7 @@ export default function App() {
                   itself, so clicking one of its rows selected an email that
                   had nowhere to appear -- the click looked like it did nothing. */}
               <div className="topbar">
-                {view !== 'today' && view !== 'calendar' && <input id="mail-search" className="input" placeholder={t('searchPlaceholder')}
+                {view !== 'calendar' && <input id="mail-search" className="input" placeholder={t('searchPlaceholder')}
                        value={search} onChange={(e) => setSearch(e.target.value)} />}
                 <button className="btn ghost" onClick={sync} disabled={syncing}
                         title={`${t('syncTitle')} (r)`} aria-label={t('syncTitle')}>
@@ -617,7 +623,7 @@ export default function App() {
                 </button>
               </div>
 
-              {view !== 'muted' && view !== 'today' && view !== 'calendar' && <div className="filters">
+              {view !== 'muted' && view !== 'calendar' && <div className="filters">
                 {[
                   { id: null, label: `${t('filterAll')} ${visible.length ? `(${visible.length})` : ''}` },
                   { id: 'action', label: `${t('filterAction')} ${counts.action ? `(${counts.action})` : ''}` },
@@ -642,12 +648,6 @@ export default function App() {
                     adding={addingTask} onStartAdd={() => setAddingTask(true)}
                     onStopAdd={() => setAddingTask(false)}
                   />
-                ) : view === 'today' ? (
-                  <Digest
-                    digest={digest} loading={digestLoading} onRefresh={refreshDigest}
-                    selectedId={selectedId} checkedIds={doneIds}
-                    onOpen={openEmail} onDone={applyFeedback}
-                  />
                 ) : (
                   <>
                     {view === 'muted' && <>
@@ -669,7 +669,7 @@ export default function App() {
                 )}
               </div>
 
-              {view !== 'today' && view !== 'calendar' && <div className="keyhint">
+              {view !== 'calendar' && <div className="keyhint">
                 <span><kbd>↑</kbd><kbd>↓</kbd> {t('keyMove')}</span>
                 <span><kbd>↵</kbd> {t('keyOpen')}</span>
                 <span><kbd>p</kbd> {t('keyPin')}</span>
@@ -724,7 +724,7 @@ export default function App() {
                     <button className="btn ghost" onClick={closeEmail}>
                       <BackIcon />
                       {t(view === 'calendar' ? 'backToCalendar'
-                        : view === 'today' ? 'backToChecklist' : 'backToList')}
+                        : view === 'priority' ? 'backToChecklist' : 'backToList')}
                     </button>
                     <span className="detail-back-hint"><kbd>esc</kbd></span>
                   </div>
@@ -743,8 +743,6 @@ export default function App() {
                   />
                   {calendar.error && <div className="banner"><span className="dot" />{calendar.error}</div>}
                 </div>
-              ) : view === 'today' ? (
-                <div className="empty">{t('selectEmail')}</div>
               ) : (
                 <div className="scroll">
                   <Digest

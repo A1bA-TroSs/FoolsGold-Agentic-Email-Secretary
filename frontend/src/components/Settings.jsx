@@ -4,7 +4,7 @@ import { LANGUAGES, useT } from '../lib/i18n.js';
 
 const SOURCE_KEYS = ['user_address', 'applemail_root', 'applemail_inbox_only'];
 const AI_KEYS = ['llm_provider', 'copilot_model', 'anthropic_api_key',
-                 'anthropic_model', 'openai_api_key', 'openai_model'];
+                 'anthropic_model', 'openai_api_key', 'openai_model', 'openai_base_url'];
 const SYNC_KEYS = ['sync_days', 'sync_max_messages', 'classify_batch_size'];
 const NOTIFY_KEYS = ['notify_enabled', 'notify_morning', 'notify_evening'];
 
@@ -186,11 +186,12 @@ export default function Settings({
           <div className="field">
             <label>{t('provider')}</label>
             <select className="input" value={provider} onChange={(e) => edit('llm_provider', e.target.value)}>
-              <option value="copilot">GitHub Copilot (SDK)</option>
-              <option value="anthropic">Anthropic (Claude)</option>
-              <option value="openai">OpenAI</option>
               <option value="none">{t('providerNone')}</option>
+              <option value="anthropic">Anthropic (Claude)</option>
+              <option value="openai">{t('providerOpenAI')}</option>
+              <option value="copilot">GitHub Copilot</option>
             </select>
+            <p className="hint" style={{ marginTop: 6 }}>{t('providerBilling')}</p>
           </div>
 
           {provider === 'copilot' && (
@@ -215,6 +216,9 @@ export default function Settings({
                 <label>{t('apiKey')} {settings?.anthropic_api_key_set && <span style={{ color: 'var(--muted)' }}>{t('savedNote')}</span>}</label>
                 <input className="input" type="password" placeholder="sk-ant-…"
                        value={draft.anthropic_api_key ?? ''} onChange={(e) => edit('anthropic_api_key', e.target.value)} />
+                {settings?.anthropic_api_key_set && (
+                  <p className="hint" style={{ marginTop: 6 }}>{t('apiKeyClearHint')}</p>
+                )}
               </div>
               <div className="field">
                 <label>{t('model')}</label>
@@ -230,11 +234,21 @@ export default function Settings({
                 <label>{t('apiKey')} {settings?.openai_api_key_set && <span style={{ color: 'var(--muted)' }}>{t('savedNote')}</span>}</label>
                 <input className="input" type="password" placeholder="sk-…"
                        value={draft.openai_api_key ?? ''} onChange={(e) => edit('openai_api_key', e.target.value)} />
+                {settings?.openai_api_key_set && (
+                  <p className="hint" style={{ marginTop: 6 }}>{t('apiKeyClearHint')}</p>
+                )}
               </div>
               <div className="field">
                 <label>{t('model')}</label>
                 <input className="input" value={value('openai_model')}
                        onChange={(e) => edit('openai_model', e.target.value)} />
+              </div>
+              <div className="field">
+                <label>{t('endpoint')}</label>
+                <input className="input" value={value('openai_base_url')}
+                       placeholder="https://api.openai.com/v1"
+                       onChange={(e) => edit('openai_base_url', e.target.value)} />
+                <p className="hint" style={{ marginTop: 6 }}>{t('endpointHelp')}</p>
               </div>
             </>
           )}

@@ -31,7 +31,7 @@ def write_emlx(path: Path, raw: str, flags: int = 0, extra: dict | None = None) 
 
 
 SIMPLE = """From: Prof. Lee <lee@uni.edu>
-To: Alex <you@example.com>
+To: Sam <you@example.com>
 Cc: Lab list <lab@uni.edu>
 Subject: Action required: final draft by Friday
 Date: Tue, 25 Aug 2026 09:00:00 +0000
@@ -41,7 +41,7 @@ Content-Type: text/plain; charset="utf-8"
 Please submit the final draft by Friday.
 """
 
-MULTIPART = """From: Talent Team <careers@northlight.io>
+MULTIPART = """From: Talent Team <careers@northlight.example>
 To: you@example.com
 Subject: Internship offer
 Date: Mon, 24 Aug 2026 12:00:00 +0000
@@ -155,7 +155,7 @@ def test_row_carries_recipients_sender_and_date(tmp_path: Path):
     row = am.to_row(path, path.stat().st_mtime, ["INBOX"])
     assert row["from_address"] == "lee@uni.edu"
     assert row["from_name"] == "Prof. Lee"
-    assert json.loads(row["to_recipients"]) == [{"name": "Alex", "address": "you@example.com"}]
+    assert json.loads(row["to_recipients"]) == [{"name": "Sam", "address": "you@example.com"}]
     assert json.loads(row["cc_recipients"])[0]["address"] == "lab@uni.edu"
     assert row["received_at"].startswith("2026-08-25T09:00")
     assert row["is_read"] == 1
@@ -405,7 +405,7 @@ def test_plain_unread_message_has_no_engagement_flags(tmp_path):
 
 def test_correspondent_affinity_counts_who_you_write_to(tmp_path):
     root = tmp_path / "V10" / "ACC"
-    sent = ("From: Alex <you@example.com>\nTo: Prof. Lee <lee@uni.edu>\n"
+    sent = ("From: Sam <you@example.com>\nTo: Prof. Lee <lee@uni.edu>\n"
             "Subject: Re: draft\nDate: Tue, 25 Aug 2026 09:00:00 +0000\n\nOn its way.\n")
     for n in range(3):
         write_emlx(root / "Sent Messages.mbox" / "d" / "Messages" / f"{n}.emlx", sent)

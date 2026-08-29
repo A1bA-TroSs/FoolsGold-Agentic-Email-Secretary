@@ -83,9 +83,12 @@ def create_task(body: TaskIn) -> dict:
 
 @router.patch("/tasks/{task_id}")
 def patch_task(task_id: int, body: TaskPatch) -> dict:
-    row = db.update_task(
-        task_id, title=body.title, due_date=body.due_date, note=body.note, status=body.status
-    )
+    try:
+        row = db.update_task(
+            task_id, title=body.title, due_date=body.due_date, note=body.note, status=body.status
+        )
+    except db.DuplicateTask as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if row is None:
         raise HTTPException(status_code=404, detail="Task not found.")
     return row

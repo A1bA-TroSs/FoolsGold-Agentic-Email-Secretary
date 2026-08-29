@@ -1,9 +1,8 @@
 """When a deadline stops being a reminder.
 
-Danny, on seeing a briefing row that said "496d overdue" and was marked urgent:
-"상식적으로 한달 지났으면 잊어버리자." A due date a month past is history --
-either it was met, or it was missed and the world moved on. Shouting about it
-every morning only teaches you to ignore the briefing.
+A due date a month past is history: either it was met, or it was missed and
+the world moved on. Announcing "496 days overdue" as the most urgent thing of
+the morning only teaches you to ignore the briefing.
 
 Note what this is *not*: it is not about how old the email is, and it does not
 remove anything. The message stays in the inbox, the entry stays on the
@@ -35,7 +34,7 @@ def _email(email_id: str, subject: str, days_ago: int | None, bucket: str = "act
     """days_ago counts back from TODAY; None means no deadline at all."""
     db.upsert_emails([{
         "id": email_id, "conversation_id": "", "subject": subject,
-        "from_name": "Someone", "from_address": f"{email_id}@ust.hk",
+        "from_name": "Someone", "from_address": f"{email_id}@example.edu",
         "to_recipients": "[]", "cc_recipients": "[]",
         "received_at": "2026-08-20T09:00:00+00:00",
         "is_read": 0, "is_answered": 0, "is_flagged": 0, "has_attachments": 0,
