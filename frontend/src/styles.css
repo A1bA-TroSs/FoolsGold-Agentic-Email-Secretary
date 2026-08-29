@@ -208,12 +208,12 @@ button { font: inherit; color: inherit; cursor: pointer; }
    stray horizontal scrollbar under the briefing came from. */
 .scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 
-/* Chromium's UA stylesheet gives <button> `align-items: flex-start`. The build
-   inside Electron and the one these audits run in disagree about it, so a flex
-   button that does not declare its own alignment stretches its children on one
-   engine and collapses them to content width on the other -- which is how the
-   theme swatches rendered as a 2px line and the briefing text stopped
-   ellipsising, on Danny's machine only, while every check here passed.
+/* Chromium's UA stylesheet gives <button> `align-items: flex-start`, and the
+   build bundled with Electron does not always agree with the one a browser
+   test runs in. A flex button that does not declare its own alignment then
+   stretches its children on one engine and collapses them to content width on
+   the other -- which showed up as theme swatches rendering as a 2px line and
+   briefing text that stopped ellipsising, on some installs only.
 
    An element selector, so any class rule still wins. */
 button { align-items: stretch; }

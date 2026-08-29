@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from .. import db, pipeline, priority
 from ..config import DEFAULT_SETTINGS, SECRET_SETTINGS
 from ..llm.copilot_provider import CopilotProvider
+from ..llm import registry
 from ..llm.registry import get_provider, reset_cache
 from ..sources.registry import all_status, get_source
 from ..llm.base import ProviderUnavailable
@@ -59,7 +60,13 @@ async def test_provider() -> dict:
 @router.get("/settings/copilot-status")
 async def copilot_status() -> dict:
     """Lets Settings show 'Copilot: signed in as ...' before the user wonders
-    why everything is falling back to structural scoring."""
+    why everything is falling back to structural scoring.
+
+    Guarded: starting the runtime can raise a sign-in prompt, so it must not
+    happen to somebody who chose a different provider and never mentioned
+    Copilot at all."""
+    if registry.configured_provider() != "copilot":
+        return {"signed_in": False, "selected": False, "models": []}
     provider = CopilotProvider(db.get_setting("copilot_model", "auto"))
     status = await provider.auth_status()
     status["models"] = await provider.list_models() if status.get("signed_in") else []

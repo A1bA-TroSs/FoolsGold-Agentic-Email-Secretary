@@ -40,10 +40,15 @@ DEFAULT_SETTINGS = {
     # Your own address. Graph fills this in at sign-in; with Apple Mail you type
     # it, and it drives the strongest structural signal there is (To: you vs Cc:).
     "user_address": "",
-    "llm_provider": "copilot",
+    # No provider is preselected. The app must never reach for a credential the
+    # user did not choose, and until they choose one it ranks mail on
+    # structural signals -- which works, and says so.
+    "llm_provider": "none",
     "copilot_model": "auto",
     "anthropic_model": "claude-sonnet-4-5",
     "openai_model": "gpt-4o-mini",
+    # Anything speaking the OpenAI API: Azure, OpenRouter, a local server.
+    "openai_base_url": "",
     "entra_client_id": "",
     "sync_days": "30",
     "sync_max_messages": "300",

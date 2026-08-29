@@ -111,7 +111,7 @@ def _email(email_id: str, sender: str, subject: str, deadline: str | None, bucke
 
 
 def test_email_deadlines_appear_without_being_asked_for(store):
-    _email("e1", "prof@ust.hk", "Chapter 3 comments", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3 comments", "2026-08-27")
     items = planner.entries(date(2026, 8, 1), date(2026, 8, 31))
     assert [i["title"] for i in items] == ["Chapter 3 comments"]
     assert items[0]["kind"] == "email"
@@ -119,7 +119,7 @@ def test_email_deadlines_appear_without_being_asked_for(store):
 
 
 def test_an_email_without_a_deadline_never_reaches_the_calendar(store):
-    _email("e1", "prof@ust.hk", "No date here", None)
+    _email("e1", "supervisor@example.edu", "No date here", None)
     assert planner.entries(date(2026, 1, 1), date(2026, 12, 31)) == []
 
 
@@ -131,7 +131,7 @@ def test_a_nonsense_deadline_drops_one_entry_not_the_month(store):
 
 
 def test_ticking_an_email_keeps_it_on_the_calendar_struck_through(store):
-    _email("e1", "prof@ust.hk", "Chapter 3 comments", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3 comments", "2026-08-27")
     planner.set_done("email", "e1", True)
     items = planner.entries(date(2026, 8, 27), date(2026, 8, 27))
     assert len(items) == 1, "a completed item must stay on the day it was due"
@@ -140,14 +140,14 @@ def test_ticking_an_email_keeps_it_on_the_calendar_struck_through(store):
 
 
 def test_unticking_an_email_does_not_discard_an_unrelated_pin(store):
-    _email("e1", "prof@ust.hk", "Chapter 3", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3", "2026-08-27")
     db.set_feedback("e1", "pinned")
     planner.set_done("email", "e1", False)
     assert db.all_feedback()["e1"]["verdict"] == "pinned"
 
 
 def test_unticking_an_email_that_was_done_clears_the_verdict(store):
-    _email("e1", "prof@ust.hk", "Chapter 3", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3", "2026-08-27")
     planner.set_done("email", "e1", True)
     planner.set_done("email", "e1", False)
     assert "e1" not in db.all_feedback()
@@ -168,7 +168,7 @@ def test_unmuting_puts_them_back(store):
 
 
 def test_deleting_an_email_entry_hides_it_without_deleting_the_mail(store):
-    _email("e1", "prof@ust.hk", "Chapter 3", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3", "2026-08-27")
     planner.remove("email", "e1")
     assert planner.entries(date(2026, 8, 1), date(2026, 8, 31)) == []
     assert db.get_emails(["e1"]), "the message itself must survive"
@@ -271,7 +271,7 @@ def test_own_tasks_have_no_sender_to_mute(store):
 def test_muting_from_one_day_clears_that_sender_across_the_whole_month(store):
     for i, day in enumerate(("2026-08-05", "2026-08-14", "2026-08-28")):
         _email(f"ad{i}", "promo@shop.io", f"Offer {i}", day)
-    _email("real", "prof@ust.hk", "Chapter 3", "2026-08-27")
+    _email("real", "supervisor@example.edu", "Chapter 3", "2026-08-27")
 
     assert len(planner.entries(date(2026, 8, 1), date(2026, 8, 31))) == 4
     db.mute_sender("promo@shop.io")
@@ -358,7 +358,7 @@ def test_purging_a_task_is_final(store):
 
 
 def test_an_email_due_date_can_be_removed_and_restored(store):
-    _email("e1", "prof@ust.hk", "Chapter 3", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3", "2026-08-27")
     planner.remove("email", "e1")
 
     removed = planner.removed()
@@ -374,7 +374,7 @@ def test_an_email_due_date_can_be_removed_and_restored(store):
 def test_an_email_due_date_cannot_be_purged(store):
     """Purging an email entry would delete our *tombstone*, putting the date
     back -- the opposite of what the button would promise."""
-    _email("e1", "prof@ust.hk", "Chapter 3", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3", "2026-08-27")
     planner.remove("email", "e1")
     with pytest.raises(ValueError):
         planner.purge("email", "e1")
@@ -382,7 +382,7 @@ def test_an_email_due_date_cannot_be_purged(store):
 
 
 def test_restoring_something_that_was_never_removed_is_an_error(store):
-    _email("e1", "prof@ust.hk", "Chapter 3", "2026-08-27")
+    _email("e1", "supervisor@example.edu", "Chapter 3", "2026-08-27")
     task = db.add_task("Live task", "2026-08-27")
     with pytest.raises(KeyError):
         planner.restore("email", "e1")

@@ -13,7 +13,67 @@ from datetime import date
 from typing import Any
 
 VALID_BUCKETS = {"action", "fyi", "noise"}
-_MAX_BODY_IN_PROMPT = 1200  # per email; enough to judge intent, cheap enough to batch
+
+# How much of a body the model gets to see. The opening is where intent lives,
+# so it is always sent whole; the rest is sampled for dates (see _body_for_prompt).
+_MAX_BODY_HEAD = 2000
+_MAX_BODY_TAIL = 1600      # total budget for date-bearing excerpts after the head
+_DATE_WINDOW = 260         # characters kept either side of a date found later on
+
+# Written-out and numeric dates, the forms that actually carry deadlines in mail.
+# Deliberately not matching bare "30" or "3rd month" -- a number is not a date,
+# and widening this to catch them would keep every page of every newsletter.
+_DATE_IN_BODY = re.compile(
+    r"(\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{4}"
+    r"|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}"
+    r"|\d{4}[-/]\d{1,2}[-/]\d{1,2}"
+    r"|\d{1,2}[/.]\d{1,2}[/.]\d{2,4}"
+    r"|\d{4}\s*년\s*\d{1,2}\s*월\s*\d{1,2}\s*일)",
+    re.IGNORECASE,
+)
+
+
+def _body_for_prompt(body: str) -> str:
+    """Send the opening whole, then the parts further down that carry a date.
+
+    A flat character cut is fine for judging what a message is about and wrong
+    for reading obligations out of it. HTML tables arrive here flattened -- every
+    column heading first, then every value -- so a deadline table puts its labels
+    near the top and its dates hundreds of characters below them. Cutting at a
+    fixed offset delivered "FYP Progress Report (Deadline: end of 3rd month)"
+    while withholding the "30 August 2026" that answered it, and the model then
+    did exactly as it was told: no date you can point at, no task. The email
+    looked like a model failure and was a truncation.
+
+    So: the head in full, then windows around each later date, in order, until
+    the tail budget runs out. A message with no dates past the head costs the
+    same as it did before."""
+    body = body or ""
+    if len(body) <= _MAX_BODY_HEAD:
+        return body
+
+    head, rest = body[:_MAX_BODY_HEAD], body[_MAX_BODY_HEAD:]
+    windows: list[tuple[int, int]] = []
+    for match in _DATE_IN_BODY.finditer(rest):
+        start = max(0, match.start() - _DATE_WINDOW)
+        end = min(len(rest), match.end() + _DATE_WINDOW)
+        if windows and start <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], end))   # merge overlaps
+        else:
+            windows.append((start, end))
+
+    kept: list[str] = []
+    budget = _MAX_BODY_TAIL
+    for start, end in windows:
+        if budget <= 0:
+            break
+        chunk = rest[start : start + min(end - start, budget)]
+        budget -= len(chunk)
+        kept.append(chunk)
+
+    if not kept:
+        return head
+    return head + "\n[... trimmed; the dated lines further down follow ...]\n" + "\n[...]\n".join(kept)
 
 
 MAX_TASKS_PER_EMAIL = 5
@@ -115,6 +175,13 @@ Rules for tasks:
 - Every task needs a real date you can point at in the email. If the email says a
   thing is due but never says when, leave it out.
 - Never invent or infer a date to make a task fit. Half a task is worse than none.
+- Tables arrive flattened: every column heading in a run, then the row of values
+  in the same order underneath. So a deadline schedule reads as a list of labels
+  followed by a list of dates. Match them up by position -- the 2nd date belongs
+  to the 2nd label -- rather than treating the labels as undated. Only do this
+  when the counts line up; if they do not, take no date at all.
+- Deadlines given as a rule ("end of the 3rd month") count only when the email
+  also states the date that rule works out to. Do not compute one yourself.
 - At most 5 per email. Empty list is the right answer for most mail, and always
   the right answer for newsletters and marketing.
 
@@ -147,7 +214,7 @@ Reply with JSON and nothing else:
 
 
 def _fmt_email(email: dict[str, Any], index: int) -> str:
-    body = (email.get("body_text") or email.get("body_preview") or "")[:_MAX_BODY_IN_PROMPT]
+    body = _body_for_prompt(email.get("body_text") or email.get("body_preview") or "")
     to = email.get("to_recipients") or "[]"
     cc = email.get("cc_recipients") or "[]"
     return (

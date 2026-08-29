@@ -1,152 +1,55 @@
-# Reading mail without any app registration
+# Reading mail from Apple Mail
 
-This is the setup path that needs **no Microsoft app registration, no OAuth
-flow, and no cooperation from your university's IT department.**
+This is the default source and needs no account registration. Fools Gold reads
+the mail **already synced to your Mac** by Apple Mail — whoever your provider
+is. It never signs in to anything.
 
-## Why this exists
+## 1. Have Apple Mail hold the account
 
-Microsoft requires an Entra app registration before any program can read a
-mailbox over the Graph API. Many university tenants block students from
-creating one — you open the portal and get "액세스 권한 없음 / You don't have
-access". That is a policy decision by your institution and there is no way
-around it from the outside.
+Open Mail and add the account normally (Mail → Settings → Accounts). Let it
+finish downloading. Fools Gold reads what Mail has; it cannot fetch anything
+Mail has not.
 
-But Apple Mail has *already* signed into your mailbox and downloaded the
-messages. They are sitting on your disk right now. Fools Gold reads those.
+If your organisation blocks adding the account to Mail, that blocks this route
+too — there is nothing the app can do about it.
 
-| | Apple Mail | Outlook (Graph) |
-|---|---|---|
-| App registration | not needed | required |
-| Sign-in | macOS already did it | OAuth every session |
-| Works if IT blocks Entra | **yes** | no |
-| Network traffic | none | every sync |
-| Freshness | whatever Mail has synced | live |
-| Mail leaves your Mac | never | never (read-only API) |
+## 2. Grant Full Disk Access
 
-## Setup
+macOS protects `~/Library/Mail`. Without permission the folder looks *empty*
+rather than forbidden, which is why the app says so explicitly instead of
+reporting "no mail".
 
-### 1. Add your account to Apple Mail
+1. System Settings → Privacy & Security → **Full Disk Access**
+2. **+**, then add the app (or your terminal, if running from source)
+3. **Quit and reopen** the app — macOS only applies this at launch
 
-1. Open **Mail**
-2. **Mail → Settings…** in the menu bar (or `⌘ ,`)
-3. The **Accounts** tab
-4. The small **`+`** at the **bottom of the account list on the left** — not
-   anything in the settings panel on the right
-5. Pick **Microsoft Exchange**. This is correct for both `outlook.com` and
-   university Microsoft 365 addresses.
-6. Enter your name and address, then choose **Sign in with Microsoft**
-
-macOS handles the whole OAuth flow itself. That is the entire point of this path.
-
-**Two things that look like they should work but don't:**
-
-- **"Add another email address" / alias.** That creates an extra *iCloud*
-  address, which is why it only offers iCloud domains. It has nothing to do with
-  connecting another mailbox.
-- **"Other Mail Account…"** in the provider list. That tries plain IMAP with
-  basic authentication, which Microsoft has already removed from Exchange Online
-  and is retiring for Outlook.com. It will fail. Use **Microsoft Exchange**.
-- **File → Import Mailboxes.** That reads mbox/olm files exported from another
-  app. It does not connect an account.
-
-Let Mail finish downloading before you continue. A large mailbox takes a while,
-and Fools Gold can only see what Mail has actually fetched.
-
-**If your university blocks this.** Some tenants have not consented to Apple's
-account app, or use Conditional Access to allow only the official Outlook
-client. You would see *"Need admin approval"* or *"blocked by your
-organization's policy"* on the Microsoft sign-in screen. That is a real block and
-not something to work around — but schools that do this almost always still
-allow **Outlook for Mac**, which also keeps a local copy of your mail. Say so and
-an Outlook-for-Mac source can be added.
-
-### 2. Grant Full Disk Access
-
-macOS protects `~/Library/Mail` behind TCC, so the process doing the reading
-needs Full Disk Access. Open **System Settings → Privacy & Security → Full Disk
-Access** and add:
-
-- **during development**, whichever app you launch from — usually **Terminal**
-  (or iTerm). The permission attaches to the launching app, not to Python.
-- **once packaged**, **Fools Gold** itself.
-
-Quit and reopen the app afterwards. macOS does not apply the change to an
-already-running process.
-
-Without it you will see: *"macOS is blocking access to ~/Library/Mail."*
-
-### 3. Tell Fools Gold your address
-
-In **Settings → Mail source**, make sure **Apple Mail on this Mac** is selected
-and type your own email address.
-
-This is not cosmetic. "Addressed **to** me" versus "I'm on **Cc**" is the single
-most reliable structural signal an assistant has, and without your address
-Fools Gold cannot tell the difference.
-
-### 4. Check, then refresh
-
-Before launching the app, you can confirm what is actually on disk:
+## 3. Check it worked
 
 ```bash
 python3 scripts/check-mail.py
 ```
 
-It reports whether the store exists, whether this process is allowed to read it,
-and how many messages sit in each mailbox — so you can tell "Mail hasn't synced"
-apart from "macOS is blocking me", which otherwise look identical.
+Runs standalone, needs nothing installed, and reports what it can see: where
+the store is, how many messages, and what the app would import. If it prints a
+permission error, step 2 has not taken effect yet.
 
-Then open Fools Gold and hit the refresh icon. The count should roughly match.
+## Which mailboxes are read
 
-## What it actually reads
+By default, INBOX only. Settings → Mail source → *Inbox only* — turn it off to
+include every non-excluded mailbox. Junk, Trash and Drafts are always skipped.
 
-```
-~/Library/Mail/V<n>/<account-uuid>/<Mailbox>.mbox/.../Messages/*.emlx
-```
+The Sent mailbox is read separately, headers only, to learn who you actually
+correspond with. That is what lets a message from someone you email weekly
+outrank a newsletter.
 
-Each `.emlx` file is three parts: a line with a byte count, the RFC822 message,
-and an Apple plist holding Mail's own metadata. Fools Gold parses these
-directly with the Python standard library.
+## If the store is somewhere unusual
 
-**It deliberately does not read Mail's `Envelope Index` SQLite database.** That
-schema changes between macOS releases and the file is locked while Mail is
-running. The read/unread flag we need is in each message's own plist, so the
-fragile dependency would buy nothing.
+Settings → Mail source → *Mail folder* accepts an explicit path. Leave it blank
+to auto-detect. This exists for non-standard setups and for testing; you should
+not normally need it.
 
-Trash, Junk, Spam, Sent, Drafts, Outbox and Archive are always excluded. By
-default only INBOX is read; untick "Inbox only" in Settings to include your
-other folders.
+## What is stored
 
-Fools Gold only ever **reads** these files. It never writes, moves or deletes
-anything in `~/Library/Mail`.
-
-## Troubleshooting
-
-**"No ~/Library/Mail directory found"**
-Apple Mail has never run, or has no accounts. Do step 1 — and note the `+` is at
-the bottom of the *account list*, not in the panel on the right.
-
-**"macOS is blocking access to ~/Library/Mail"**
-Full Disk Access, step 2 — and remember to restart the app.
-
-**"Found ~/Library/Mail but no V<n> message store inside it"**
-Mail is still setting up. Give it a few minutes and hit Re-check.
-
-**The inbox is empty but Mail shows plenty**
-Your account may not label its inbox `INBOX`. Fools Gold falls back to all
-non-excluded mailboxes automatically, but you can also untick "Inbox only".
-Also check that **Days of mail to keep** in Settings covers the period you want.
-
-**Messages look older than they should**
-Files are pre-filtered by modification time before parsing, so a huge mailbox
-stays fast. The *displayed* date always comes from the real `Date:` header.
-
-**I want a non-standard location**
-Settings → Mail source → **Mail store path**. An explicit path always wins over
-auto-detection.
-
-## Switching to Outlook later
-
-Nothing is lost. Settings → Mail source → Outlook. If you eventually get an
-Entra client ID, see [ENTRA_SETUP.md](ENTRA_SETUP.md). Your priorities,
-classifications and digests are keyed to the mail itself and carry over.
+Message metadata and bodies are cached in `~/.foolsgold/foolsgold.db` so that
+ranking does not re-read the store every time. Delete it to start clean — your
+actual mail is untouched, since Fools Gold only ever reads.

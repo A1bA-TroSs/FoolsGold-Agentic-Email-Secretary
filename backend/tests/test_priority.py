@@ -9,7 +9,7 @@ import pytest
 
 from app import priority
 
-ME = "danny@outlook.com"
+ME = "you@example.com"
 TODAY = date(2026, 8, 25)
 
 
@@ -19,7 +19,7 @@ def email(**overrides):
         "subject": "Hello",
         "from_name": "Alice Chen",
         "from_address": "alice@uni.edu",
-        "to_recipients": json.dumps([{"name": "Danny", "address": ME}]),
+        "to_recipients": json.dumps([{"name": "Sam", "address": ME}]),
         "cc_recipients": json.dumps([]),
         "received_at": datetime.now(timezone.utc).isoformat(),
         "is_read": 1,
@@ -141,7 +141,7 @@ def test_direct_recipient_outranks_cc_only():
     direct = email()
     cc = email(
         to_recipients=json.dumps([{"name": "List", "address": "all@uni.edu"}]),
-        cc_recipients=json.dumps([{"name": "Danny", "address": ME}]),
+        cc_recipients=json.dumps([{"name": "Sam", "address": ME}]),
     )
     direct_score, _ = priority.score_email(direct, "fyi", None, [], user_address=ME, today=TODAY)
     cc_score, _ = priority.score_email(cc, "fyi", None, [], user_address=ME, today=TODAY)
@@ -172,7 +172,7 @@ def test_score_never_goes_negative():
 # ------------------------------------------------ engagement & staleness
 
 def test_overdue_deadlines_decay_instead_of_pinning_forever():
-    """The bug Danny saw: a print notice whose collection window closed in May
+    """The bug the user saw: a print notice whose collection window closed in May
     outranked this morning's mail, because any overdue date scored a flat +26
     while the best recency bonus was +8."""
     d = lambda n: (TODAY + timedelta(days=n)).isoformat()  # noqa: E731
@@ -188,8 +188,8 @@ def test_overdue_deadlines_decay_instead_of_pinning_forever():
 def test_a_stale_overdue_notice_loses_to_todays_mail():
     """End-to-end version of the same thing, at the score level."""
     old_notice = email(
-        subject="ITSO NetPrint Service Notification",
-        from_address="no-reply@netprint.ust.hk",
+        subject="Print quota notice",
+        from_address="no-reply@printing.example.edu",
         is_read=1,
         received_at=(datetime.now(timezone.utc) - timedelta(days=100)).isoformat(),
     )
@@ -337,20 +337,23 @@ def test_muting_beats_even_an_explicit_pin():
 # --------------------------------------------------------------------------
 
 def test_recipient_addresses_reads_the_normal_shape():
-    value = '[{"name": "Danny", "address": "danny@ust.hk"}, {"address": "other@ust.hk"}]'
-    assert priority._recipient_addresses(value) == ["danny@ust.hk", "other@ust.hk"]
+    value = '[{"name": "Sam", "address": "you@example.com"}, {"address": "other@example.com"}]'
+    assert priority._recipient_addresses(value) == ["you@example.com", "other@example.com"]
 
 
 def test_recipient_addresses_survives_shapes_we_did_not_expect():
     """This runs inside classification, so an exception here does not mislabel
     one email -- it aborts the whole batch."""
-    for value in ('["danny@ust.hk"]', '[null, 3, "danny@ust.hk"]', "[]", "", None, "not json"):
+    for value in ('["you@example.com"]', '[null, 3, "you@example.com"]', "[]", "", None, "not json"):
         assert isinstance(priority._recipient_addresses(value), list)
-    assert priority._recipient_addresses('["Danny@UST.hk"]') == ["danny@ust.hk"]
     assert priority._recipient_addresses('[{"address": null}]') == []
 
 
+def test_recipient_addresses_normalise_case():
+    assert priority._recipient_addresses('["You@Example.COM"]') == ["you@example.com"]
+
+
 def test_addressed_directly_accepts_a_bare_string_list():
-    email = {"to_recipients": '["danny@ust.hk"]', "cc_recipients": "[]"}
-    assert priority._addressed_directly(email, "danny@ust.hk") is True
-    assert priority._cc_only(email, "danny@ust.hk") is False
+    email = {"to_recipients": '["you@example.com"]', "cc_recipients": "[]"}
+    assert priority._addressed_directly(email, "you@example.com") is True
+    assert priority._cc_only(email, "you@example.com") is False

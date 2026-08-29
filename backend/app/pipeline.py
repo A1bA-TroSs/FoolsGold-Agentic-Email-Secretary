@@ -206,12 +206,45 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
                 _persist(_structural_classifications(batch, me), emails_by_id, "structural", "none")
                 done += len(batch)
 
+        # Mail the model never got to see is upgraded a batch at a time once it
+        # is reachable again. Without this, one rate-limited first sync left an
+        # inbox permanently ranked on structure alone: classification is cached
+        # per email and never revisited, so nothing short of a full rescan
+        # recovered -- and nothing told the user that.
+        upgraded = 0
+        if not used_fallback and done < limit:
+            upgraded = await _upgrade_structural(provider, me, topics, batch_size,
+                                                 budget=limit - done)
+
         return {
             "classified": done,
+            "upgraded": upgraded,
             "source": "structural" if used_fallback else "llm",
             "ai_available": _ai_status["available"],
             "detail": detail,
         }
+
+
+async def _upgrade_structural(provider, me: str, topics: list[str],
+                              batch_size: int, budget: int) -> int:
+    """Re-ask the model about mail that only has a structural verdict.
+
+    Bounded by the same limit as a normal pass, so a recovering key costs one
+    ordinary sync's worth of requests and no more."""
+    ids = db.structural_email_ids(min(budget, batch_size))
+    if not ids:
+        return 0
+    emails = db.get_emails(ids)
+    if not emails:
+        return 0
+    by_id = {e["id"]: e for e in emails}
+    try:
+        results = await provider.classify_batch(emails, topics)
+    except Exception as exc:  # noqa: BLE001 - the upgrade is best-effort
+        _mark_ai(False, str(exc))
+        return 0
+    _persist(results, by_id, "llm", f"{provider.name}:{provider.model}")
+    return len(results)
 
 
 async def rescan(batch_limit: int = 100, max_passes: int = 40) -> dict[str, Any]:

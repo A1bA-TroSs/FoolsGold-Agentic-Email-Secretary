@@ -28,27 +28,27 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
     db.init_db()
-    db.set_setting("user_address", "danny@connect.ust.hk")
+    db.set_setting("user_address", "you@example.com")
     return tmp_path
 
 
-COOP_BODY = """Dear PARK, Younseo,
+COOP_BODY = """Dear Sam Rivera,
 
-This is a reminder about your Co-op project. Your Progress Report is due on
+This is a reminder about your placement. Your Progress Report is due on
 30 August 2026 and must be submitted through the portal. The Final Presentation
 will take place on 12 September 2026 in Room 4213.
 
 Best regards,
-Co-op Office
+Placements Office
 """
 
 
-def _add_email(email_id="coop", subject="Co-op Project Final Presentation Reminder - PARK, Younseo",
-               body=COOP_BODY, sender="coop@ust.hk"):
+def _add_email(email_id="coop", subject="Placement final presentation reminder - Sam Rivera",
+               body=COOP_BODY, sender="placements@example.edu"):
     db.upsert_emails([{
         "id": email_id, "conversation_id": "", "subject": subject,
-        "from_name": "Co-op Office", "from_address": sender,
-        "to_recipients": '["danny@connect.ust.hk"]', "cc_recipients": "[]",
+        "from_name": "Placements Office", "from_address": sender,
+        "to_recipients": '["you@example.com"]', "cc_recipients": "[]",
         "received_at": "2026-08-20T09:00:00+00:00",
         "is_read": 0, "is_answered": 0, "is_flagged": 0, "has_attachments": 0,
         "importance": "normal", "web_link": "", "folder": "INBOX",
@@ -75,7 +75,7 @@ class StubProvider(LLMProvider):
 def _reply(tasks, deadline="2026-09-12", bucket="action", email_id="coop"):
     return json.dumps([{
         "id": email_id, "bucket": bucket, "deadline": deadline,
-        "tasks": tasks, "matched": [], "rationale": "Co-op deliverables due.",
+        "tasks": tasks, "matched": [], "rationale": "placement deliverables due.",
     }])
 
 
@@ -102,12 +102,12 @@ def _reread_with(monkeypatch, reply):
 
 def test_several_obligations_in_one_email_all_survive_parsing():
     tasks = parse_tasks([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
-        {"title": "Present the Co-op final presentation", "due": "2026-09-12"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
+        {"title": "Present the placement final presentation", "due": "2026-09-12"},
     ])
     assert [(t.title, t.due_date) for t in tasks] == [
-        ("Submit the Co-op progress report", "2026-08-30"),
-        ("Present the Co-op final presentation", "2026-09-12"),
+        ("Submit the placement progress report", "2026-08-30"),
+        ("Present the placement final presentation", "2026-09-12"),
     ]
 
 
@@ -168,14 +168,14 @@ def test_a_classification_without_tasks_still_parses():
 def test_the_coop_email_produces_both_obligations(store, monkeypatch):
     _add_email()
     _classify_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
-        {"title": "Present the Co-op final presentation", "due": "2026-09-12"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
+        {"title": "Present the placement final presentation", "due": "2026-09-12"},
     ]))
 
     aug = planner.entries(date(2026, 8, 30), date(2026, 8, 30))
     sep = planner.entries(date(2026, 9, 12), date(2026, 9, 12))
-    assert [e["title"] for e in aug] == ["Submit the Co-op progress report"]
-    assert [e["title"] for e in sep] == ["Present the Co-op final presentation"]
+    assert [e["title"] for e in aug] == ["Submit the placement progress report"]
+    assert [e["title"] for e in sep] == ["Present the placement final presentation"]
 
 
 def test_the_subject_line_no_longer_takes_a_slot_of_its_own(store, monkeypatch):
@@ -184,10 +184,10 @@ def test_the_subject_line_no_longer_takes_a_slot_of_its_own(store, monkeypatch):
     what you owe. Once the body has been read, the to-dos say it better."""
     _add_email()
     _classify_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
     ]))
     everything = planner.entries(date(2026, 1, 1), date(2026, 12, 31))
-    assert [e["title"] for e in everything] == ["Submit the Co-op progress report"]
+    assert [e["title"] for e in everything] == ["Submit the placement progress report"]
     assert all(e["kind"] == "task" for e in everything)
 
 
@@ -201,13 +201,13 @@ def test_an_email_with_no_extractable_tasks_keeps_its_own_chip(store, monkeypatc
 def test_a_task_from_mail_keeps_a_way_back_to_the_message(store, monkeypatch):
     _add_email()
     _classify_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
     ]))
     entry = planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]
     assert entry["email_id"] == "coop"
     assert entry["origin"] == "email"
-    assert entry["sender"] == "Co-op Office"
-    assert entry["sender_address"] == "coop@ust.hk"
+    assert entry["sender"] == "Placements Office"
+    assert entry["sender_address"] == "placements@example.edu"
 
 
 def test_a_hand_written_task_has_no_sender_and_no_source(store):
@@ -224,7 +224,7 @@ def test_ranking_uses_the_soonest_obligation_not_whichever_date_came_first(store
     be ranked on."""
     _add_email()
     _classify_with(monkeypatch, _reply(
-        [{"title": "Submit the Co-op progress report", "due": "2026-08-30"}],
+        [{"title": "Submit the placement progress report", "due": "2026-08-30"}],
         deadline="2026-09-12",
     ))
     with db.connect() as conn:
@@ -238,7 +238,7 @@ def test_ranking_uses_the_soonest_obligation_not_whichever_date_came_first(store
 
 def test_re_reading_an_email_does_not_duplicate_its_tasks(store, monkeypatch):
     _add_email()
-    reply = _reply([{"title": "Submit the Co-op progress report", "due": "2026-08-30"}])
+    reply = _reply([{"title": "Submit the placement progress report", "due": "2026-08-30"}])
     _classify_with(monkeypatch, reply)
     _reread_with(monkeypatch, reply)
     assert len(planner.entries(date(2026, 8, 30), date(2026, 8, 30))) == 1
@@ -246,7 +246,7 @@ def test_re_reading_an_email_does_not_duplicate_its_tasks(store, monkeypatch):
 
 def test_a_completed_task_is_not_resurrected_by_a_re_read(store, monkeypatch):
     _add_email()
-    reply = _reply([{"title": "Submit the Co-op progress report", "due": "2026-08-30"}])
+    reply = _reply([{"title": "Submit the placement progress report", "due": "2026-08-30"}])
     _classify_with(monkeypatch, reply)
     entry = planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]
     planner.set_done("task", entry["id"], True)
@@ -259,7 +259,7 @@ def test_a_completed_task_is_not_resurrected_by_a_re_read(store, monkeypatch):
 
 def test_a_removed_task_is_not_resurrected_by_a_re_read(store, monkeypatch):
     _add_email()
-    reply = _reply([{"title": "Submit the Co-op progress report", "due": "2026-08-30"}])
+    reply = _reply([{"title": "Submit the placement progress report", "due": "2026-08-30"}])
     _classify_with(monkeypatch, reply)
     entry = planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]
     planner.remove("task", entry["id"])
@@ -275,16 +275,16 @@ def test_a_task_the_mail_no_longer_mentions_is_cleared_away(store, monkeypatch):
     second time. An untouched to-do that is no longer in the message goes."""
     _add_email()
     _classify_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
         {"title": "Book a room for the rehearsal", "due": "2026-09-01"},
     ]))
     assert len(planner.entries(date(2026, 8, 1), date(2026, 9, 30))) == 2
 
     _reread_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
     ]))
     left = planner.entries(date(2026, 8, 1), date(2026, 9, 30))
-    assert [e["title"] for e in left] == ["Submit the Co-op progress report"]
+    assert [e["title"] for e in left] == ["Submit the placement progress report"]
 
 
 def test_a_task_the_user_ticked_is_kept_even_if_the_mail_stops_mentioning_it(store, monkeypatch):
@@ -304,7 +304,7 @@ def test_hand_written_tasks_are_untouched_by_extraction(store, monkeypatch):
     _add_email()
     mine = db.add_task("Water the plants", "2026-08-30")
     _classify_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
     ]))
     _reread_with(monkeypatch, _reply([]))
     assert db.get_task(mine["id"]) is not None
@@ -320,7 +320,7 @@ def test_a_structural_pass_does_not_wipe_tasks_a_model_pass_found(store, monkeyp
     silence as "there are none"."""
     _add_email()
     _classify_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
     ]))
 
     pipeline._persist(
@@ -336,7 +336,7 @@ def test_an_llm_pass_with_no_tasks_does_clear_them(store, monkeypatch):
     an answer, not an absence."""
     _add_email()
     _classify_with(monkeypatch, _reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
     ]))
     _reread_with(monkeypatch, _reply([], deadline=None))
     assert planner.entries(date(2026, 8, 30), date(2026, 8, 30)) == []
@@ -378,14 +378,14 @@ def test_rescan_re_reads_mail_that_was_already_classified(store, monkeypatch):
     assert planner.entries(date(2026, 8, 1), date(2026, 9, 30)) == []
 
     provider = StubProvider(_reply([
-        {"title": "Submit the Co-op progress report", "due": "2026-08-30"},
+        {"title": "Submit the placement progress report", "due": "2026-08-30"},
     ]))
     monkeypatch.setattr(pipeline, "get_provider", lambda: provider)
     result = asyncio.run(pipeline.rescan())
 
     assert result["classified"] == 1
     assert [e["title"] for e in planner.entries(date(2026, 8, 1), date(2026, 9, 30))] == [
-        "Submit the Co-op progress report"
+        "Submit the placement progress report"
     ]
 
 
@@ -397,7 +397,7 @@ def test_rescan_terminates_on_an_empty_mailbox(store, monkeypatch):
 
 def test_rescan_does_not_lose_what_the_user_already_decided(store, monkeypatch):
     _add_email()
-    reply = _reply([{"title": "Submit the Co-op progress report", "due": "2026-08-30"}])
+    reply = _reply([{"title": "Submit the placement progress report", "due": "2026-08-30"}])
     _classify_with(monkeypatch, reply)
     entry = planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]
     planner.set_done("task", entry["id"], True)

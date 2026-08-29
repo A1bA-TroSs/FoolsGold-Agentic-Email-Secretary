@@ -3,6 +3,7 @@ sync and the request handlers from tripping over each other."""
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Iterable
@@ -101,8 +102,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_at   TEXT,
     completed_at TEXT,
     deleted_at   TEXT,                     -- set = in the removed box, not gone
-    email_id     TEXT,                     -- the message this was read out of
-    origin       TEXT NOT NULL DEFAULT 'user'   -- user | email
+    email_id     TEXT,                     -- the first message this was read out of
+    origin       TEXT NOT NULL DEFAULT 'user',  -- user | email
+    dedup_key    TEXT                      -- normalised title + day; see dedup_key()
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(due_date);
 -- The indexes over email_id live in LATE_INDEXES, not here: this script runs
@@ -127,6 +129,28 @@ CREATE TABLE IF NOT EXISTS highlighted_senders (
     color      TEXT NOT NULL,
     created_at TEXT
 );
+
+-- Which messages named a given to-do. A commitment is a thing in the world, not
+-- a property of one email: the same deadline routinely arrives twice -- the
+-- department's copy and the one you forwarded to yourself -- and holding that
+-- link on the task itself made two rows, two chips, one day. So the task is one
+-- row and the messages naming it are many.
+--
+-- Dropping a task because the mail no longer names it now has to ask whether
+-- anything ELSE still names it, which is what this table is here to answer.
+-- Keyed by what the mail said, not by the row it landed in, so re-reading a
+-- message is a no-op even after the user has renamed the item or moved it to
+-- another day. Matching on the row's current wording instead would read their
+-- edit as a commitment we no longer hold, delete it, and file the model's
+-- original phrasing back in its place.
+CREATE TABLE IF NOT EXISTS task_sources (
+    task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    email_id   TEXT NOT NULL,
+    source_key TEXT NOT NULL,        -- the commitment as this email worded it
+    created_at TEXT,
+    PRIMARY KEY (email_id, source_key)
+);
+CREATE INDEX IF NOT EXISTS idx_task_sources_task ON task_sources(task_id);
 
 CREATE TABLE IF NOT EXISTS digests (
     day        TEXT PRIMARY KEY,
@@ -160,14 +184,22 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("tasks", "deleted_at", "TEXT"),
     ("tasks", "email_id", "TEXT"),
     ("tasks", "origin", "TEXT NOT NULL DEFAULT 'user'"),
+    ("tasks", "dedup_key", "TEXT"),
 ]
 
 # Indexes added after the first release. CREATE INDEX IF NOT EXISTS is safe to
 # re-run, but it cannot run before _migrate() has added the columns it names.
 LATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_tasks_email ON tasks(email_id)",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_from_email "
-    "ON tasks(email_id, title, due_date) WHERE email_id IS NOT NULL",
+    # Superseded by idx_tasks_dedup below. It was scoped per email -- unique on
+    # (email_id, title, due_date) -- which is precisely why two messages naming
+    # the same deadline each got a row of their own.
+    "DROP INDEX IF EXISTS idx_tasks_from_email",
+    # One commitment, one row, whichever mail carried it. Restricted to
+    # extracted rows: two hand-written items that happen to read alike are the
+    # user's business and must not fail their insert.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_dedup "
+    "ON tasks(dedup_key) WHERE origin = 'email' AND dedup_key IS NOT NULL",
 ]
 
 
@@ -180,10 +212,99 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
+class DuplicateTask(ValueError):
+    """An edit would have made two rows the same commitment."""
+
+
+def dedup_key(title: str, due_date: str) -> str:
+    """What makes two to-dos the same to-do: one job, one day.
+
+    Two departments describing one deadline rarely type it identically -- a
+    trailing full stop, a doubled space, a capital where the other used lower
+    case -- so the comparison is on the normalised text, not the stored title.
+    The stored title stays exactly as the model wrote it; this is only the key."""
+    text = re.sub(r"\s+", " ", (title or "")).strip().casefold()
+    text = text.rstrip(" .!?。")
+    return f"{(due_date or '').strip()}|{text}"
+
+
+def _collapse_duplicate_tasks(conn: sqlite3.Connection) -> None:
+    """One-time repair for databases written before a to-do was a thing rather
+    than a property of an email.
+
+    This has to run before the unique index is created, or the index creation
+    fails on the very rows it exists to prevent. It is idempotent: on a database
+    with nothing to collapse it fills in the keys and does no writes.
+
+    Merging two halves of one commitment must not lose what the user said about
+    either half. A tick survives -- they did the thing, and which chip they
+    ticked is an accident of which one they happened to see. A removal does not
+    survive a surviving twin: the row stays visible if any copy was visible,
+    because bringing something back is a click and noticing it never came back
+    is not."""
+    # The index this prepares the ground for is rebuilt straight afterwards, by
+    # LATE_INDEXES. It has to come off first: on the second and every later
+    # start it already exists, and filling in a key would then trip the very
+    # constraint this function is here to make satisfiable.
+    conn.execute("DROP INDEX IF EXISTS idx_tasks_dedup")
+
+    rows = conn.execute(
+        "SELECT id, title, due_date, status, created_at, completed_at, deleted_at, "
+        "       origin, email_id, dedup_key "
+        "FROM tasks ORDER BY id"
+    ).fetchall()
+    if not rows:
+        return
+
+    for row in rows:
+        key = dedup_key(row["title"], row["due_date"])
+        if row["dedup_key"] != key:
+            conn.execute("UPDATE tasks SET dedup_key = ? WHERE id = ?", (key, row["id"]))
+
+    # Backfill the link table from the column it replaces, so an upgraded
+    # database knows which mail its existing to-dos came out of.
+    conn.executemany(
+        "INSERT OR IGNORE INTO task_sources (task_id, email_id, source_key, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        [(r["id"], r["email_id"], dedup_key(r["title"], r["due_date"]), r["created_at"])
+         for r in rows if r["email_id"]],
+    )
+
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        if row["origin"] != "email":
+            continue          # hand-written items are never merged into anything
+        groups.setdefault(dedup_key(row["title"], row["due_date"]), []).append(row)
+
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        # Visible beats removed; done beats open; oldest breaks the tie.
+        survivor = sorted(
+            members,
+            key=lambda r: (r["deleted_at"] is not None, r["status"] != "done", r["id"]),
+        )[0]
+        done = next((r for r in members if r["status"] == "done"), None)
+        if done is not None and survivor["status"] != "done":
+            conn.execute(
+                "UPDATE tasks SET status = 'done', completed_at = ? WHERE id = ?",
+                (done["completed_at"] or now_iso(), survivor["id"]),
+            )
+        for row in members:
+            if row["id"] == survivor["id"]:
+                continue
+            conn.execute(
+                "UPDATE OR IGNORE task_sources SET task_id = ? WHERE task_id = ?",
+                (survivor["id"], row["id"]),
+            )
+            conn.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
+
+
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
         _migrate(conn)
+        _collapse_duplicate_tasks(conn)
         for statement in LATE_INDEXES:
             conn.execute(statement)
         for key, value in DEFAULT_SETTINGS.items():
@@ -212,10 +333,15 @@ def set_setting(key: str, value: str) -> None:
     encrypted = key in SECRET_SETTINGS
     with connect() as conn:
         if encrypted:
+            # Clearing a key has to actually clear it. Encrypting "" produces a
+            # perfectly good Fernet token, so the row stayed non-empty and the
+            # UI kept reporting the key as saved while every request failed
+            # with "no key set" -- and there was no way to remove one.
+            blob = encrypt(value) if (value or "").strip() else None
             conn.execute(
                 "INSERT INTO settings (key, value, secret, encrypted) VALUES (?, NULL, ?, 1) "
                 "ON CONFLICT(key) DO UPDATE SET value=NULL, secret=excluded.secret, encrypted=1",
-                (key, encrypt(value)),
+                (key, blob),
             )
         else:
             conn.execute(
@@ -290,6 +416,21 @@ def unclassified_email_ids(limit: int = 100) -> list[str]:
             (limit,),
         ).fetchall()
     return [r["id"] for r in rows]
+
+
+def structural_email_ids(limit: int = 100) -> list[str]:
+    """Mail that was only ever ranked structurally, oldest fallback first.
+
+    These are the rows a failed or absent model left behind. They are not
+    wrong, just thin -- no semantic bucket, no extracted to-dos -- so once AI
+    is working again they are worth asking about, a batch at a time."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT email_id FROM classifications WHERE source = 'structural' "
+            "ORDER BY created_at LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [r["email_id"] for r in rows]
 
 
 def get_emails(ids: list[str]) -> list[dict[str, Any]]:
@@ -417,52 +558,88 @@ def add_task(title: str, due_date: str, note: str | None = None,
              email_id: str | None = None, origin: str = "user") -> dict[str, Any]:
     with connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO tasks (title, due_date, note, status, created_at, email_id, origin) "
-            "VALUES (?, ?, ?, 'open', ?, ?, ?)",
-            (title, due_date, note, now_iso(), email_id, origin),
+            "INSERT INTO tasks (title, due_date, note, status, created_at, email_id, origin, dedup_key) "
+            "VALUES (?, ?, ?, 'open', ?, ?, ?, ?)",
+            (title, due_date, note, now_iso(), email_id, origin, dedup_key(title, due_date)),
         )
+        if email_id:
+            conn.execute(
+                "INSERT OR IGNORE INTO task_sources (task_id, email_id, source_key, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (cursor.lastrowid, email_id, dedup_key(title, due_date), now_iso()),
+            )
         conn.commit()
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (cursor.lastrowid,)).fetchone()
     return dict(row)
 
 
 def sync_email_tasks(email_id: str, wanted: list[dict[str, Any]]) -> dict[str, int]:
-    """Make the extracted to-dos for one email match what was just read out of
-    it, without stepping on anything the user has touched.
+    """Make the to-dos this email names match what was just read out of it,
+    without stepping on anything the user has touched or on another email.
 
-    Re-reading the same message has to be a no-op, so this is a reconcile, not
-    an insert:
+    Re-reading a message has to be a no-op, so this is a reconcile, not an
+    insert:
 
       * a commitment we already hold is left exactly as it is -- including one
         the user has ticked off or removed, which must not come back;
-      * a commitment that is no longer in the mail is dropped, but only if it
-        is still open and untouched;
-      * anything the user wrote by hand is invisible here (email_id is NULL).
+      * a commitment another message also names is adopted, not duplicated.
+        The department's copy of a deadline and the one you forwarded yourself
+        are one obligation; they used to be two rows on the same day;
+      * a commitment that is no longer in this mail loses this mail as a source,
+        and is deleted only if no other message still names it and the user
+        never acted on it;
+      * an item the user typed by hand is adopted as a source too, but never
+        deleted here. Whatever the mail stops saying, they wrote that one down.
     """
-    keys = {(t["title"], t["due_date"]) for t in wanted}
+    by_key = {dedup_key(t["title"], t["due_date"]): t for t in wanted}
     added = dropped = 0
+    stamp = now_iso()
+
     with connect() as conn:
-        existing = conn.execute(
-            "SELECT id, title, due_date, status, deleted_at FROM tasks WHERE email_id = ?",
+        linked = conn.execute(
+            "SELECT s.source_key, t.id, t.status, t.deleted_at, t.origin "
+            "FROM task_sources s JOIN tasks t ON t.id = s.task_id WHERE s.email_id = ?",
             (email_id,),
         ).fetchall()
 
-        for row in existing:
-            if (row["title"], row["due_date"]) in keys:
+        for row in linked:
+            if row["source_key"] in by_key:
                 continue
-            # Gone from the mail. Only clear it away if the user never acted.
-            if row["status"] == "open" and row["deleted_at"] is None:
+            conn.execute(
+                "DELETE FROM task_sources WHERE email_id = ? AND source_key = ?",
+                (email_id, row["source_key"]),
+            )
+            others = conn.execute(
+                "SELECT COUNT(*) AS n FROM task_sources WHERE task_id = ?", (row["id"],)
+            ).fetchone()["n"]
+            if (others == 0 and row["origin"] == "email"
+                    and row["status"] == "open" and row["deleted_at"] is None):
                 conn.execute("DELETE FROM tasks WHERE id = ?", (row["id"],))
                 dropped += 1
 
-        for task in wanted:
-            cursor = conn.execute(
-                "INSERT OR IGNORE INTO tasks "
-                "(title, due_date, note, status, created_at, email_id, origin) "
-                "VALUES (?, ?, ?, 'open', ?, ?, 'email')",
-                (task["title"], task["due_date"], task.get("note"), now_iso(), email_id),
+        held = {row["source_key"] for row in linked}
+        for key, task in by_key.items():
+            if key in held:
+                continue      # this mail already accounts for this one; leave it alone
+            existing = conn.execute(
+                "SELECT id FROM tasks WHERE dedup_key = ? ORDER BY id LIMIT 1", (key,)
+            ).fetchone()
+            if existing:
+                task_id = existing["id"]
+            else:
+                cursor = conn.execute(
+                    "INSERT INTO tasks "
+                    "(title, due_date, note, status, created_at, email_id, origin, dedup_key) "
+                    "VALUES (?, ?, ?, 'open', ?, ?, 'email', ?)",
+                    (task["title"], task["due_date"], task.get("note"), stamp, email_id, key),
+                )
+                task_id = cursor.lastrowid
+                added += 1
+            conn.execute(
+                "INSERT OR IGNORE INTO task_sources (task_id, email_id, source_key, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, email_id, key, stamp),
             )
-            added += cursor.rowcount
         conn.commit()
     return {"added": added, "dropped": dropped}
 
@@ -470,6 +647,13 @@ def sync_email_tasks(email_id: str, wanted: list[dict[str, Any]]) -> dict[str, i
 def email_task_ids() -> set[str]:
     """Emails whose body has been read into to-dos. Their subject line no longer
     needs a place on the calendar -- the to-dos say what is actually owed.
+
+    Sourced from the link table rather than from tasks.email_id, for two
+    reasons. The second message naming a commitment counts as read even though
+    the row belongs to the first -- without that, the duplicate the dedup just
+    removed comes straight back as a subject chip on the same day. And a message
+    that has stopped naming anything stops counting, which the column, holding
+    only whichever email got there first, could not express.
 
     Deliberately counts removed and completed to-dos as well as open ones. If
     the user deletes "Submit the Co-op progress report" from the 30th and the
@@ -479,7 +663,7 @@ def email_task_ids() -> set[str]:
     with connect() as conn:
         return {
             r["email_id"] for r in conn.execute(
-                "SELECT DISTINCT email_id FROM tasks WHERE email_id IS NOT NULL"
+                "SELECT DISTINCT email_id FROM task_sources"
             )
         }
 
@@ -502,12 +686,26 @@ def update_task(task_id: int, **fields: Any) -> dict[str, Any] | None:
         sets.append(("completed_at", now_iso() if status == "done" else None))
     if not sets:
         return get_task(task_id)
+    # Renaming an item or moving it to another day changes what counts as the
+    # same item. Leaving the key behind would let the old wording claim a match
+    # the row no longer has, and the mail that named it would find nothing.
+    if any(k in ("title", "due_date") for k, _ in sets):
+        current = get_task(task_id, include_deleted=True) or {}
+        merged = {**current, **dict(sets)}
+        sets.append(("dedup_key", dedup_key(merged.get("title", ""), merged.get("due_date", ""))))
     clause = ", ".join(f"{k} = ?" for k, _ in sets)
     with connect() as conn:
-        cursor = conn.execute(
-            f"UPDATE tasks SET {clause} WHERE id = ? AND deleted_at IS NULL",
-            (*[v for _, v in sets], task_id),
-        )
+        try:
+            cursor = conn.execute(
+                f"UPDATE tasks SET {clause} WHERE id = ? AND deleted_at IS NULL",
+                (*[v for _, v in sets], task_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            # Edited into an item that already exists. Saying so beats a 500,
+            # and beats silently merging two rows the user still sees as two.
+            raise DuplicateTask(
+                "There is already an item with that name on that day."
+            ) from exc
         conn.commit()
     return get_task(task_id) if cursor.rowcount else None
 
