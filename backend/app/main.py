@@ -22,7 +22,6 @@ from .routers import auth as auth_router
 from .routers import calendar as calendar_router
 from .routers import config as config_router
 from .routers import mail as mail_router
-from .routers import ranking as ranking_router
 from .sources.registry import get_source
 
 POLL_SECONDS = 300  # background refresh while the window is open
@@ -70,7 +69,6 @@ app.include_router(auth_router.router)
 app.include_router(mail_router.router)
 app.include_router(calendar_router.router)
 app.include_router(config_router.router)
-app.include_router(ranking_router.router)
 
 
 @app.get("/api/health")

@@ -13,7 +13,7 @@ import json
 from datetime import date
 from typing import Any
 
-from . import db, learning, priority
+from . import db, priority
 from .llm.base import Classification, ProviderUnavailable
 from .llm.registry import get_provider
 
@@ -118,14 +118,6 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
     me = user_address()
     today = date.today()
     correspondents, feedback, muted = _ranking_context()
-    # Loaded once for the whole batch. These are per-user state, not per-email,
-    # and re-reading them inside the loop was the easy way to make classifying
-    # 200 emails do 800 queries.
-    thresholds = learning.load_thresholds()
-    weights = db.ranking_weights()
-    centroids = db.priority_centroids(learning.EMBEDDER_NAME)
-    highlights = db.sender_highlights()
-    explorable: list[str] = []
     for c in classifications:
         email = emails_by_id.get(c.email_id)
         if email is None:
@@ -144,38 +136,8 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
             )
 
         deadline = _soonest_obligation(c)
-
-        # The bucket stops being the model's verdict and becomes derived from
-        # two axes it does not both own. `c.bucket` survives as a *hint about
-        # the text* feeding actionability; relevance is the user's half, and it
-        # is the half that moves. Deriving rather than accepting is what gives
-        # the fyi/action boundary a knob at all -- a category has none.
-        axes, axis_topics = learning.axes_for_email(
-            email,
-            model_bucket=c.bucket,
-            deadline=deadline,
-            task_count=len(c.tasks),
-            priorities=priorities,
-            llm_matched=c.matched,
-            user_address=me,
-            correspondents=correspondents,
-            highlights=highlights,
-            weights=weights,
-            centroids=centroids,
-        )
-        bucket = axes.bucket(thresholds)
-
-        # A muted sender is a standing decision, and exploration must not
-        # quietly overturn it -- "I do not want to see this" is a promise, not
-        # a probability. Everything else in `noise` is a guess, and a fraction
-        # of the guesses are surfaced labelled so the one-way door has a gap.
-        # The selection itself happens after the loop, over the whole suppressed
-        # set at once: a proportion cannot be honoured one email at a time.
-        if bucket == "noise" and (email.get("from_address") or "").lower() not in muted:
-            explorable.append(c.email_id)
-
         score, matched = priority.score_email(
-            email, bucket, deadline, priorities,
+            email, c.bucket, deadline, priorities,
             llm_matched=c.matched, user_address=me, today=today,
             correspondents=correspondents,
             verdict=(feedback.get(c.email_id) or {}).get("verdict"),
@@ -183,32 +145,15 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
         )
         db.save_classification({
             "email_id": c.email_id,
-            "bucket": bucket,
+            "bucket": c.bucket,
             "deadline": deadline,
             "rationale": c.rationale,
             "score": score,
-            "matched": ",".join(matched or axis_topics),
+            "matched": ",".join(matched),
             "model": model,
             "source": source,
             "created_at": db.now_iso(),
-            "actionability": axes.actionability,
-            "relevance": axes.relevance,
-            "explored": 0,
-            # Kept apart from `bucket` on purpose: `bucket` is derived and will
-            # be re-derived, so overwriting the model's own answer with it would
-            # destroy the only unrewritten input rescore_all has.
-            "model_bucket": c.bucket,
         })
-
-    # Exploration, decided over the whole suppressed batch. An oracle ranker
-    # maximises feedback-loop degeneracy, and `noise` is otherwise a one-way
-    # door: a muted sender can never be discovered to matter again, because
-    # nothing they send is ever shown to be corrected.
-    for email_id in learning.explored_in_batch(explorable):
-        with db.connect() as conn:
-            conn.execute("UPDATE classifications SET explored = 1 WHERE email_id = ?",
-                         (email_id,))
-            conn.commit()
 
 
 async def classify_pending(limit: int = 100) -> dict[str, Any]:
@@ -341,89 +286,34 @@ async def rescan(batch_limit: int = 100, max_passes: int = 40) -> dict[str, Any]
 
 
 def rescore_all() -> int:
-    """Re-derive both axes and re-score every classified email, with no model call.
-
-    This is what makes editing your priorities feel instant -- and it is now
-    load-bearing for a second reason. Relevance is the volatile axis: it moves
-    when the priority list changes, when a centroid drifts, and every time a
-    signal updates a weight. If only the *score* were recomputed here, an email
-    would keep whatever bucket it was given the day it arrived, and the entire
-    adaptive layer would be invisible until the user pressed "Re-read
-    everything" -- which calls the model, which is exactly what this function
-    exists to avoid.
-
-    So the bucket is derived again from the axes, using the stored model bucket
-    as the actionability hint it always was. Actionability is stable, so
-    re-deriving it costs nothing and changes nothing; relevance is not.
-    """
+    """Re-run scoring against the current priority list without re-calling the
+    model. This is what makes editing your priorities feel instant."""
     priorities = priority.active_priorities()
     me = user_address()
     today = date.today()
     correspondents, feedback, muted = _ranking_context()
-    # Loaded once for the whole batch. These are per-user state, not per-email,
-    # and re-reading them inside the loop was the easy way to make re-scoring
-    # 200 emails do 800 queries.
-    thresholds = learning.load_thresholds()
-    weights = db.ranking_weights()
-    centroids = db.priority_centroids(learning.EMBEDDER_NAME)
-    highlights = db.sender_highlights()
-    explorable: list[str] = []
     updated = 0
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT e.*, c.bucket, c.deadline, c.matched, c.model_bucket "
-            "FROM emails e JOIN classifications c ON c.email_id = e.id"
+            "SELECT e.*, c.bucket, c.deadline, c.matched FROM emails e "
+            "JOIN classifications c ON c.email_id = e.id"
         ).fetchall()
         for row in rows:
             email = dict(row)
             llm_matched = [m for m in (email.get("matched") or "").split(",") if m]
-
-            # `model_bucket` is what the provider actually said. Falling back to
-            # the derived `bucket` would feed this function its own previous
-            # output, and a loop whose input is its last output drifts wherever
-            # the first error pointed.
-            hint = email.get("model_bucket") or email.get("bucket")
-            axes, axis_topics = learning.axes_for_email(
-                email,
-                model_bucket=hint,
-                deadline=email.get("deadline"),
-                task_count=len(db.email_task_ids() & {email["id"]}),
-                priorities=priorities,
-                llm_matched=llm_matched,
-                user_address=me,
-                correspondents=correspondents,
-                highlights=highlights,
-                weights=weights,
-                centroids=centroids,
-            )
-            bucket = axes.bucket(thresholds)
-            if bucket == "noise" and (email.get("from_address") or "").lower() not in muted:
-                explorable.append(email["id"])
-
             score, matched = priority.score_email(
-                email, bucket, email.get("deadline"),
+                email, email.get("bucket") or "fyi", email.get("deadline"),
                 priorities, llm_matched=llm_matched, user_address=me, today=today,
                 correspondents=correspondents,
                 verdict=(feedback.get(email["id"]) or {}).get("verdict"),
                 sender_muted=(email.get("from_address") or "").lower() in muted,
             )
             conn.execute(
-                "UPDATE classifications SET score = ?, matched = ?, bucket = ?, "
-                "actionability = ?, relevance = ?, explored = 0 WHERE email_id = ?",
-                (score, ",".join(matched or axis_topics), bucket,
-                 axes.actionability, axes.relevance, email["id"]),
+                "UPDATE classifications SET score = ?, matched = ? WHERE email_id = ?",
+                (score, ",".join(matched), email["id"]),
             )
             updated += 1
         conn.commit()
-
-    chosen = learning.explored_in_batch(explorable)
-    if chosen:
-        with db.connect() as conn:
-            conn.executemany(
-                "UPDATE classifications SET explored = 1 WHERE email_id = ?",
-                [(i,) for i in chosen],
-            )
-            conn.commit()
     return updated
 
 

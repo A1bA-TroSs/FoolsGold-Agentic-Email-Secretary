@@ -29,30 +29,6 @@ export default function Settings({
   const [rescanning, setRescanning] = useState(false);
   const [draft, setDraft] = useState({});
   const [sourceInfo, setSourceInfo] = useState(null);
-  const [ranking, setRanking] = useState(null);
-  const [volume, setVolume] = useState('');
-  const [rankMsg, setRankMsg] = useState(null);
-
-  useEffect(() => {
-    api.ranking().then((r) => {
-      setRanking(r);
-      setVolume(String(r.target_action_volume ?? 8));
-    }).catch(() => {});
-  }, []);
-
-  /* One helper for all three buttons. Each reports its own outcome rather than
-     refreshing silently: this panel's whole job is telling you what the ranker
-     is doing, so an action that changes something and says nothing would be the
-     one place in the app that keeps a secret. */
-  async function rankAction(fn, message) {
-    try {
-      const result = await fn();
-      setRanking(await api.ranking());
-      setRankMsg({ ok: true, detail: typeof message === 'function' ? message(result) : message });
-    } catch (e) {
-      setRankMsg({ ok: false, detail: e.message });
-    }
-  }
 
   useEffect(() => { api.sources().then(setSourceInfo).catch(() => {}); }, [settings]);
 
@@ -347,6 +323,7 @@ export default function Settings({
         </section>
 
         <section>
+<<<<<<< HEAD
           <h3>{t('rankTitle')}</h3>
           <p className="hint">{t('rankHelp')}</p>
 
@@ -437,6 +414,8 @@ export default function Settings({
         </section>
 
         <section>
+=======
+>>>>>>> parent of f16b004 (Merge pull request #2 from A1bA-TroSs/feature/SLMaduitSetup)
           <h3>{t('rescanTitle')}</h3>
           <p className="hint">{t('rescanHelp')}</p>
           <button className="btn" disabled={rescanning}

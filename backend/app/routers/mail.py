@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/mail", tags=["mail"])
 _LIST_COLUMNS = (
     "e.id, e.subject, e.from_name, e.from_address, e.received_at, e.is_read, "
     "e.is_answered, e.is_flagged, e.has_attachments, e.importance, e.body_preview, "
-    "c.bucket, c.deadline, c.score, c.matched, c.rationale, c.source, c.explored, "
+    "c.bucket, c.deadline, c.score, c.matched, c.rationale, c.source, "
     "f.verdict, f.snooze_until, h.color AS highlight"
 )
 
