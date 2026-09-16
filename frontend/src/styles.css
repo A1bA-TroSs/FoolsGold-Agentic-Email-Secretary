@@ -227,7 +227,30 @@ button { align-items: stretch; }
   padding: 5px 11px;
   font-size: 12.5px;
   transition: background .12s, border-color .12s;
+
+  /* A label must never wrap, and a button must never be squeezed below it.
+
+     This broke only in Korean, Chinese and Japanese, and the reason is
+     specific: CJK text has no word boundaries, so it may break between ANY two
+     characters. That makes a button's min-content width ONE GLYPH. In a flex
+     row next to an input at width:100%, the button duly shrank to a single
+     column and "추가" stacked into two lines as a gold circle. English "Add"
+     is one unbreakable word, so its min-content is the whole label and it
+     never collapsed -- which is why four themes looked fine and one language
+     did not.
+
+     Shrinking the font per language was the other option and is worse: it is a
+     constant to re-tune for every new string, it degrades exactly the scripts
+     that need legibility most, and it does not fix the next language. Refusing
+     to wrap fixes all of them at once, including ones not yet added. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+
+/* The input is what yields, not the button. `min-width: 0` is what allows a
+   flex item to shrink below its content -- the same rule that made ellipsis
+   work in the mail list (bug #18). */
+.field .input, .row > .input { min-width: 0; }
 .btn:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--accent); }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
