@@ -69,3 +69,20 @@ def test_reset_clears_learned_weights_only(client):
     db.save_ranking_weights({"topic_match": 0.4})
     assert db.ranking_weights()
     assert client.post("/api/ranking/reset").json()["weights"] == {}
+
+
+def test_state_reports_how_many_rows_are_shown_as_a_guess(client):
+    """Exploration is otherwise unobservable. Without a count, "working and
+    nothing selected" and "silently broken" look identical from the UI -- and
+    it WAS silently broken: the mail list filtered out every noise row,
+    including the ones exploration had just chosen."""
+    assert client.get("/api/ranking").json()["explored_count"] == 0
+
+    for i, explored in enumerate([1, 0, 1]):
+        db.save_classification({
+            "email_id": f"x{i}", "bucket": "noise", "deadline": None, "rationale": "",
+            "score": 0, "matched": "", "model": "t", "source": "structural",
+            "created_at": db.now_iso(), "actionability": 0.1, "relevance": 0.1,
+            "explored": explored, "model_bucket": "noise",
+        })
+    assert client.get("/api/ranking").json()["explored_count"] == 2
