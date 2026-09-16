@@ -14,8 +14,13 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+# Anchored to the repo root. Unanchored, `lib/` matches a directory named
+# `lib` at ANY depth -- which silently untracked frontend/src/lib/, i.e. the
+# whole i18n dictionary, the API client and the date arithmetic. It is meant
+# for the top-level build directory distutils produces, and that is all it
+# should ever catch.
+/lib/
+/lib64/
 parts/
 sdist/
 var/

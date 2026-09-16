@@ -158,6 +158,44 @@ CREATE TABLE IF NOT EXISTS digests (
     model      TEXT,
     created_at TEXT
 );
+
+-- The learned half of relevance. Deliberately a table of scalars rather than a
+-- blob in `settings`: every weight is inspectable, one row at a time, and the
+-- thing that changed is legible in a diff.
+CREATE TABLE IF NOT EXISTS ranking_weights (
+    name       TEXT PRIMARY KEY,
+    value      REAL NOT NULL DEFAULT 0,
+    updated_at TEXT
+);
+
+-- Writeback as audit trail: current state and the record of how it got there
+-- are separate artifacts. Every signal offered to the model lands here --
+-- INCLUDING the refusals, with their reason. A refusal is information; a
+-- system that silently drops what it will not learn from cannot be asked why
+-- it failed to learn.
+CREATE TABLE IF NOT EXISTS learning_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_id   TEXT,
+    kind       TEXT NOT NULL,
+    target     REAL,
+    applied    INTEGER NOT NULL DEFAULT 0,
+    reason     TEXT NOT NULL,
+    confidence REAL DEFAULT 0,
+    error      REAL DEFAULT 0,
+    deltas     TEXT,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_learning_created ON learning_events(created_at DESC);
+
+-- One centroid per priority topic, drifting under Rocchio. `vector` is a JSON
+-- array; the embedder that produced it is named so a change of model does not
+-- silently compare vectors from two different spaces.
+CREATE TABLE IF NOT EXISTS priority_centroids (
+    topic      TEXT PRIMARY KEY,
+    vector     TEXT NOT NULL,
+    embedder   TEXT NOT NULL DEFAULT 'hashing',
+    updated_at TEXT
+);
 """
 
 
@@ -185,6 +223,19 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("tasks", "email_id", "TEXT"),
     ("tasks", "origin", "TEXT NOT NULL DEFAULT 'user'"),
     ("tasks", "dedup_key", "TEXT"),
+    # Two axes recorded alongside the bucket they produced, so a ranking can be
+    # re-derived and argued with rather than merely trusted.
+    ("classifications", "actionability", "REAL"),
+    ("classifications", "relevance", "REAL"),
+    ("classifications", "explored", "INTEGER DEFAULT 0"),
+    # What the provider said, before the two axes re-derived the bucket. Kept so
+    # that re-deriving never feeds on its own previous output.
+    ("classifications", "model_bucket", "TEXT"),
+    # How a signal arrived, not just that it did. This is what separates a QA
+    # click from a triage decision -- the rows were identical before.
+    ("feedback", "provenance", "TEXT"),
+    ("feedback", "dwell_ms", "INTEGER DEFAULT 0"),
+    ("feedback", "burst_index", "INTEGER DEFAULT 0"),
 ]
 
 # Indexes added after the first release. CREATE INDEX IF NOT EXISTS is safe to
@@ -445,12 +496,21 @@ def get_emails(ids: list[str]) -> list[dict[str, Any]]:
 def save_classification(rec: dict[str, Any]) -> None:
     with connect() as conn:
         conn.execute(
-            "INSERT INTO classifications (email_id, bucket, deadline, rationale, score, matched, model, source, created_at) "
-            "VALUES (:email_id, :bucket, :deadline, :rationale, :score, :matched, :model, :source, :created_at) "
+            "INSERT INTO classifications (email_id, bucket, deadline, rationale, score, matched, "
+            "model, source, created_at, actionability, relevance, explored, model_bucket) "
+            "VALUES (:email_id, :bucket, :deadline, :rationale, :score, :matched, :model, :source, "
+            ":created_at, :actionability, :relevance, :explored, :model_bucket) "
             "ON CONFLICT(email_id) DO UPDATE SET bucket=excluded.bucket, deadline=excluded.deadline, "
             "rationale=excluded.rationale, score=excluded.score, matched=excluded.matched, "
-            "model=excluded.model, source=excluded.source, created_at=excluded.created_at",
-            rec,
+            "model=excluded.model, source=excluded.source, created_at=excluded.created_at, "
+            "actionability=excluded.actionability, relevance=excluded.relevance, "
+            "explored=excluded.explored, model_bucket=excluded.model_bucket",
+            # The two axes are optional on the way in so an older caller -- or a
+            # test that only cares about the bucket -- does not have to know
+            # about them. A missing axis is NULL, which is honestly "not
+            # computed" rather than a plausible zero.
+            {"actionability": None, "relevance": None, "explored": 0,
+             "model_bucket": None, **rec},
         )
         conn.commit()
 
@@ -878,3 +938,147 @@ def highlighted_sender_rows() -> list[dict[str, Any]]:
             "GROUP BY h.address, h.color ORDER BY message_count DESC, h.address"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------
+# adaptive ranking: learned weights, the audit trail, and topic centroids
+# --------------------------------------------------------------------------
+# Three tables and a deliberate separation. `ranking_weights` is the current
+# state; `learning_events` is the record of how it got there. Keeping them
+# apart is what makes the question "why does it think that?" answerable at all
+# -- the state alone can only say what it believes, never how it came to.
+
+def ranking_weights() -> dict[str, float]:
+    """Learned deviation from the declared priors. Empty on day one, and empty
+    is the correct answer then -- the priors ARE the user's own priority list."""
+    with connect() as conn:
+        rows = conn.execute("SELECT name, value FROM ranking_weights").fetchall()
+    return {r["name"]: float(r["value"]) for r in rows}
+
+
+def save_ranking_weights(weights: dict[str, float]) -> None:
+    stamp = now_iso()
+    with connect() as conn:
+        for name, value in weights.items():
+            conn.execute(
+                "INSERT INTO ranking_weights (name, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                (name, float(value), stamp),
+            )
+        conn.commit()
+
+
+def reset_ranking_weights() -> None:
+    """Back to the declared priors. The undo for a learning run that went wrong
+    -- and the reason learning is safe to switch on at all."""
+    with connect() as conn:
+        conn.execute("DELETE FROM ranking_weights")
+        conn.commit()
+
+
+def record_learning_event(
+    email_id: str,
+    kind: str,
+    target: float,
+    applied: bool,
+    reason: str,
+    confidence: float = 0.0,
+    error: float = 0.0,
+    deltas: dict[str, float] | None = None,
+) -> None:
+    """Every signal offered to the model, accepted or refused, with the reason.
+
+    Refusals are the valuable half. "Nothing was learned from the last 40
+    actions because they were all pre-epoch" is a diagnosis; silence is not.
+    """
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO learning_events (email_id, kind, target, applied, reason, "
+            "confidence, error, deltas, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (email_id, kind, float(target), 1 if applied else 0, reason,
+             float(confidence), float(error), json.dumps(deltas or {}), now_iso()),
+        )
+        conn.commit()
+
+
+def learning_events(limit: int = 100, applied_only: bool = False) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM learning_events"
+    if applied_only:
+        sql += " WHERE applied = 1"
+    sql += " ORDER BY id DESC LIMIT ?"
+    with connect() as conn:
+        rows = conn.execute(sql, (int(limit),)).fetchall()
+    out = []
+    for row in rows:
+        rec = dict(row)
+        try:
+            rec["deltas"] = json.loads(rec.get("deltas") or "{}")
+        except (ValueError, TypeError):
+            rec["deltas"] = {}
+        out.append(rec)
+    return out
+
+
+def learning_summary() -> dict[str, Any]:
+    """What the learner has and has not been allowed to do, by reason.
+
+    Built for the case where the user asks why nothing is changing. The honest
+    answer is usually a reason code with a large count next to it.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT reason, applied, COUNT(*) AS n FROM learning_events GROUP BY reason, applied"
+        ).fetchall()
+    applied = sum(r["n"] for r in rows if r["applied"])
+    refused: dict[str, int] = {}
+    for row in rows:
+        if not row["applied"]:
+            refused[row["reason"]] = refused.get(row["reason"], 0) + row["n"]
+    return {
+        "applied": applied,
+        "refused": sum(refused.values()),
+        "refused_by_reason": dict(sorted(refused.items(), key=lambda kv: -kv[1])),
+        "weights": ranking_weights(),
+    }
+
+
+def priority_centroids(embedder: str = "hashing") -> dict[str, list[float]]:
+    """Centroids only from the embedder that is currently in use.
+
+    Vectors from two different models live in two different spaces, and a
+    cosine between them is a number with no meaning. Filtering here is what
+    stops a model swap silently producing confident nonsense.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT topic, vector FROM priority_centroids WHERE embedder = ?", (embedder,)
+        ).fetchall()
+    out: dict[str, list[float]] = {}
+    for row in rows:
+        try:
+            vec = json.loads(row["vector"])
+        except (ValueError, TypeError):
+            continue
+        if isinstance(vec, list) and vec:
+            out[row["topic"]] = [float(v) for v in vec]
+    return out
+
+
+def save_priority_centroid(topic: str, vector: list[float], embedder: str = "hashing") -> None:
+    topic = (topic or "").strip()
+    if not topic or not vector:
+        return
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO priority_centroids (topic, vector, embedder, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(topic) DO UPDATE SET vector=excluded.vector, "
+            "embedder=excluded.embedder, updated_at=excluded.updated_at",
+            (topic, json.dumps([round(float(v), 8) for v in vector]), embedder, now_iso()),
+        )
+        conn.commit()
+
+
+def drop_priority_centroid(topic: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM priority_centroids WHERE topic = ?", ((topic or "").strip(),))
+        conn.commit()

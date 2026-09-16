@@ -283,6 +283,12 @@ export default function App() {
       // moment it was given -- you colour an address and its mail is nowhere.
       // It does not change the ranking, only whether the row is on screen.
       || (m.highlight && !DISMISSED.has(m.verdict))
+      // An explored row is `noise` by definition -- it is mail the ranker
+      // suppressed and is showing anyway because it might be wrong. Without
+      // this line the badge could never appear: the filter below removed every
+      // row exploration had just chosen. Exactly bug #27 again, where a
+      // highlighted noise sender vanished from this same list.
+      || (m.explored && !DISMISSED.has(m.verdict))
       || (m.bucket !== 'noise' && !DISMISSED.has(m.verdict)));
   }, [mail, view, leaving]);
 
