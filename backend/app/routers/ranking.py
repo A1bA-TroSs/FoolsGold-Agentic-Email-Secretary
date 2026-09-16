@@ -31,7 +31,17 @@ class VolumeBody(BaseModel):
 def state() -> dict:
     thresholds = learning.load_thresholds()
     summary = db.learning_summary()
+    with db.connect() as conn:
+        explored = conn.execute(
+            "SELECT COUNT(*) AS n FROM classifications WHERE explored = 1"
+        ).fetchone()["n"]
     return {
+        # Reported because exploration is otherwise unobservable: it marks rows
+        # the ranker suppressed, and a user who never sees one cannot tell the
+        # difference between "working, nothing selected" and "silently broken".
+        # It was silently broken -- the mail list filtered out every noise row,
+        # including the ones exploration had just chosen.
+        "explored_count": explored,
         "thresholds": {
             "relevance": thresholds.relevance,
             "action": thresholds.action,

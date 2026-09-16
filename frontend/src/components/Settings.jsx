@@ -215,7 +215,16 @@ export default function Settings({
               <option value="openai">{t('providerOpenAI')}</option>
               <option value="copilot">GitHub Copilot</option>
             </select>
-            <p className="hint" style={{ marginTop: 6 }}>{t('providerBilling')}</p>
+            {/* Only cloud providers bill anyone. Under "none" -- and later
+                under a local model -- this sentence describes charges that do
+                not exist, which is the kind of stray text that makes a settings
+                screen feel untrustworthy. */}
+            {provider !== 'none' && (
+              <p className="hint" style={{ marginTop: 6 }}>{t('providerBilling')}</p>
+            )}
+            {provider === 'none' && (
+              <p className="hint" style={{ marginTop: 6 }}>{t('providerNoneHelp')}</p>
+            )}
           </div>
 
           {provider === 'copilot' && (
@@ -386,6 +395,16 @@ export default function Settings({
                   <> · {t('rankRefused', { n: ranking.learning.refused })}</>
                 )}
               </p>
+
+              {/* Exploration has no other visible surface. A user who never
+                  happens to scroll past a badged row cannot distinguish
+                  "working, nothing selected right now" from "quietly doing
+                  nothing" -- and it was quietly doing nothing, because the mail
+                  list filtered out every row it had chosen. */}
+              <p style={{ fontSize: 12, marginTop: 4 }}>
+                {t('rankExplored', { n: ranking.explored_count ?? 0 })}
+              </p>
+              <p className="hint">{t('rankExploredHelp')}</p>
               {ranking.learning.refused > 0 && (
                 <>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
