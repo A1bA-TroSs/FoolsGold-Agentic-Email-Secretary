@@ -175,6 +175,13 @@ export default function MailList({
 
             <div className="row" style={{ gap: 5, marginTop: 4, flexWrap: 'wrap' }}>
               {m.bucket && <span className={`tag ${m.bucket}`}>{t(`tag${m.bucket[0].toUpperCase()}${m.bucket.slice(1)}`)}</span>}
+              {/* Labelled, never silent. An unexplained wrong row reads as a
+                  bug; a labelled one is an invitation to correct it -- and that
+                  correction is the only unbiased evidence the ranker ever gets,
+                  because everything else it learns from was already shown. */}
+              {m.explored ? (
+                <span className="tag explored" title={t('exploredTitle')}>{t('exploredBadge')}</span>
+              ) : null}
               {due && <span className="tag due">{due}</span>}
               {m.is_flagged ? <span className="tag due">{t('tagStarred')}</span> : null}
               {m.is_answered ? <span className="tag noise">{t('tagReplied')}</span> : null}

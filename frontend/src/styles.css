@@ -227,7 +227,30 @@ button { align-items: stretch; }
   padding: 5px 11px;
   font-size: 12.5px;
   transition: background .12s, border-color .12s;
+
+  /* A label must never wrap, and a button must never be squeezed below it.
+
+     This broke only in Korean, Chinese and Japanese, and the reason is
+     specific: CJK text has no word boundaries, so it may break between ANY two
+     characters. That makes a button's min-content width ONE GLYPH. In a flex
+     row next to an input at width:100%, the button duly shrank to a single
+     column and "추가" stacked into two lines as a gold circle. English "Add"
+     is one unbreakable word, so its min-content is the whole label and it
+     never collapsed -- which is why four themes looked fine and one language
+     did not.
+
+     Shrinking the font per language was the other option and is worse: it is a
+     constant to re-tune for every new string, it degrades exactly the scripts
+     that need legibility most, and it does not fix the next language. Refusing
+     to wrap fixes all of them at once, including ones not yet added. */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+
+/* The input is what yields, not the button. `min-width: 0` is what allows a
+   flex item to shrink below its content -- the same rule that made ellipsis
+   work in the mail list (bug #18). */
+.field .input, .row > .input { min-width: 0; }
 .btn:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--accent); }
 .btn:disabled { opacity: .5; cursor: default; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
@@ -288,6 +311,25 @@ button { align-items: stretch; }
 .tag.action { background: var(--accent); color: var(--on-accent); }
 .tag.fyi { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
 .tag.noise { background: var(--border); color: var(--muted); }
+
+/* An explored row -- one the app suppressed but is showing anyway because it
+   may be wrong. It has to read as deliberate rather than as a stray item, and
+   it must not shout: it is a hedge, not an alert.
+
+   Outlined rather than filled, and built only from theme tokens. Every one of
+   the four themes redefines --accent and --muted, and a hex picked against
+   ivory is unreadable on dark -- which is exactly how the six highlight
+   swatches ended up invisible. */
+.tag.explored {
+  background: transparent;
+  color: var(--muted);
+  border: 1px dashed var(--accent);
+  padding: 0 5px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  opacity: .85;
+}
 .tag.due { background: color-mix(in srgb, var(--accent) 34%, transparent); color: var(--text); }
 
 /* -------------------------------------------------------------- detail -- */
