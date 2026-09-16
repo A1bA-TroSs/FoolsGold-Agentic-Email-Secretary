@@ -29,6 +29,30 @@ export default function Settings({
   const [rescanning, setRescanning] = useState(false);
   const [draft, setDraft] = useState({});
   const [sourceInfo, setSourceInfo] = useState(null);
+  const [ranking, setRanking] = useState(null);
+  const [volume, setVolume] = useState('');
+  const [rankMsg, setRankMsg] = useState(null);
+
+  useEffect(() => {
+    api.ranking().then((r) => {
+      setRanking(r);
+      setVolume(String(r.target_action_volume ?? 8));
+    }).catch(() => {});
+  }, []);
+
+  /* One helper for all three buttons. Each reports its own outcome rather than
+     refreshing silently: this panel's whole job is telling you what the ranker
+     is doing, so an action that changes something and says nothing would be the
+     one place in the app that keeps a secret. */
+  async function rankAction(fn, message) {
+    try {
+      const result = await fn();
+      setRanking(await api.ranking());
+      setRankMsg({ ok: true, detail: typeof message === 'function' ? message(result) : message });
+    } catch (e) {
+      setRankMsg({ ok: false, detail: e.message });
+    }
+  }
 
   useEffect(() => { api.sources().then(setSourceInfo).catch(() => {}); }, [settings]);
 
@@ -191,7 +215,16 @@ export default function Settings({
               <option value="openai">{t('providerOpenAI')}</option>
               <option value="copilot">GitHub Copilot</option>
             </select>
-            <p className="hint" style={{ marginTop: 6 }}>{t('providerBilling')}</p>
+            {/* Only cloud providers bill anyone. Under "none" -- and later
+                under a local model -- this sentence describes charges that do
+                not exist, which is the kind of stray text that makes a settings
+                screen feel untrustworthy. */}
+            {provider !== 'none' && (
+              <p className="hint" style={{ marginTop: 6 }}>{t('providerBilling')}</p>
+            )}
+            {provider === 'none' && (
+              <p className="hint" style={{ marginTop: 6 }}>{t('providerNoneHelp')}</p>
+            )}
           </div>
 
           {provider === 'copilot' && (
@@ -311,6 +344,96 @@ export default function Settings({
               </div>
             )}
           </div>
+        </section>
+
+        <section>
+          <h3>{t('rankTitle')}</h3>
+          <p className="hint">{t('rankHelp')}</p>
+
+          {ranking && (
+            <>
+              <p style={{ fontSize: 12.5, marginBottom: 10 }}>
+                {ranking.learning.enabled
+                  ? t('rankOn', { date: (ranking.learning.epoch_start || '').slice(0, 10) })
+                  : t('rankOff')}
+              </p>
+
+              {!ranking.learning.enabled && (
+                <button className="btn primary"
+                        onClick={() => rankAction(api.startLearning, t('rankStarted'))}>
+                  {t('rankStart')}
+                </button>
+              )}
+
+              <div className="field row" style={{ marginTop: 14, alignItems: 'flex-end' }}>
+                <label style={{ flex: 1 }}>
+                  {t('rankVolume')}
+                  <input className="input" type="number" min="1" max="200" value={volume}
+                         onChange={(e) => setVolume(e.target.value)} />
+                </label>
+                <button className="btn"
+                        onClick={() => rankAction(
+                          () => api.setActionVolume(Number(volume)),
+                          (r) => t('rankVolumeDone', { n: r.sampled }))}>
+                  {t('rankVolumeApply')}
+                </button>
+              </div>
+              <p className="hint">{t('rankVolumeHelp')}</p>
+
+              <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 10 }}>
+                {t('rankThresholds', {
+                  rel: ranking.thresholds.relevance.toFixed(2),
+                  act: ranking.thresholds.action.toFixed(2),
+                })}
+              </p>
+
+              {/* Refusals are the diagnosis for "it is not adapting", so they
+                  are shown next to the count of what did land, not hidden. */}
+              <p style={{ fontSize: 12, marginTop: 6 }}>
+                {t('rankApplied', { n: ranking.learning.applied })}
+                {ranking.learning.refused > 0 && (
+                  <> · {t('rankRefused', { n: ranking.learning.refused })}</>
+                )}
+              </p>
+
+              {/* Exploration has no other visible surface. A user who never
+                  happens to scroll past a badged row cannot distinguish
+                  "working, nothing selected right now" from "quietly doing
+                  nothing" -- and it was quietly doing nothing, because the mail
+                  list filtered out every row it had chosen. */}
+              <p style={{ fontSize: 12, marginTop: 4 }}>
+                {t('rankExplored', { n: ranking.explored_count ?? 0 })}
+              </p>
+              <p className="hint">{t('rankExploredHelp')}</p>
+              {ranking.learning.refused > 0 && (
+                <>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                    {Object.entries(ranking.learning.refused_by_reason).map(([reason, n]) => (
+                      <span key={reason} className="tag" title={reason}>{reason} {n}</span>
+                    ))}
+                  </div>
+                  <p className="hint">{t('rankRefusedHelp')}</p>
+                </>
+              )}
+
+              {Object.keys(ranking.learning.weights || {}).length > 0 && (
+                <div style={{ marginTop: 14 }}>
+                  <button className="btn ghost"
+                          onClick={() => rankAction(api.resetLearning, t('rankResetDone'))}>
+                    {t('rankReset')}
+                  </button>
+                  <p className="hint">{t('rankResetHelp')}</p>
+                </div>
+              )}
+
+              {rankMsg && (
+                <p style={{ fontSize: 12, marginTop: 8,
+                            color: rankMsg.ok ? 'var(--accent-strong)' : 'var(--danger)' }}>
+                  {rankMsg.detail}
+                </p>
+              )}
+            </>
+          )}
         </section>
 
         <section>

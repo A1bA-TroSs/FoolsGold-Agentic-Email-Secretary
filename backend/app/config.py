@@ -53,6 +53,23 @@ DEFAULT_SETTINGS = {
     "sync_days": "30",
     "sync_max_messages": "300",
     "classify_batch_size": "10",
+    # --- adaptive ranking -----------------------------------------------
+    # The fyi/action boundary, as two numbers that can actually be moved. A
+    # category has no knob; these do.
+    "theta_relevance": "0.35",
+    "theta_action": "0.55",
+    # How many things the user wants on today's action list. Nobody knows what
+    # 0.63 means; everybody knows this number, so it is the control we expose
+    # and theta_action is solved from it.
+    "target_action_volume": "8",
+    # Learning is OFF until this is set, and it is set by hand. The app spent
+    # weeks being clicked through for QA; a default of "learn from whatever is
+    # already in the tables" would have baked that in permanently on first run.
+    "learning_epoch_start": "",
+    # A fraction of suppressed mail is surfaced anyway, labelled as a guess. A
+    # perfectly accurate ranker maximises feedback-loop degeneracy, and `noise`
+    # is otherwise a one-way door. 0 disables it.
+    "explore_one_in": "20",
     "auto_digest": "true",
     # Daily checklist reminders. Times are local wall-clock, HH:MM, and the
     # Electron shell -- not this process -- is what actually posts them.
