@@ -288,6 +288,25 @@ button { align-items: stretch; }
 .tag.action { background: var(--accent); color: var(--on-accent); }
 .tag.fyi { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
 .tag.noise { background: var(--border); color: var(--muted); }
+
+/* An explored row -- one the app suppressed but is showing anyway because it
+   may be wrong. It has to read as deliberate rather than as a stray item, and
+   it must not shout: it is a hedge, not an alert.
+
+   Outlined rather than filled, and built only from theme tokens. Every one of
+   the four themes redefines --accent and --muted, and a hex picked against
+   ivory is unreadable on dark -- which is exactly how the six highlight
+   swatches ended up invisible. */
+.tag.explored {
+  background: transparent;
+  color: var(--muted);
+  border: 1px dashed var(--accent);
+  padding: 0 5px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  opacity: .85;
+}
 .tag.due { background: color-mix(in srgb, var(--accent) 34%, transparent); color: var(--text); }
 
 /* -------------------------------------------------------------- detail -- */
