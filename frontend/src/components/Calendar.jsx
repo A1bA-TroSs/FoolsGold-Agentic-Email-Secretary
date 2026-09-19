@@ -128,6 +128,11 @@ export default function Calendar({
   const t = useT();
   const weekdays = t('weekdaysShort');           // array, Monday-first
   const monthNames = t('monthNames');
+  // Which way the last move went, so the incoming month arrives from the side
+  // it travelled from. A ref, not state: it must not cause a render of its own,
+  // and it is read during the render that the move already triggered.
+  const direction = useRef(1);
+  const move = (delta) => { direction.current = delta; onMove(delta); };
 
   if (!month) {
     return <div className="cal-empty">{loading ? t('calLoading') : t('calEmpty')}</div>;
@@ -140,11 +145,11 @@ export default function Calendar({
   return (
     <div className={`cal ${loading ? 'busy' : ''}`}>
       <div className="cal-head">
-        <button className="btn ghost icon" onClick={() => onMove(-1)} aria-label={t('calPrev')}>
+        <button className="btn ghost icon" onClick={() => move(-1)} aria-label={t('calPrev')}>
           <ChevronLeftIcon />
         </button>
         <h2 className="cal-title">{title}</h2>
-        <button className="btn ghost icon" onClick={() => onMove(1)} aria-label={t('calNext')}>
+        <button className="btn ghost icon" onClick={() => move(1)} aria-label={t('calNext')}>
           <ChevronRightIcon />
         </button>
         <span className="spacer" />
@@ -157,7 +162,13 @@ export default function Calendar({
         ))}
       </div>
 
-      <div className="cal-grid" role="grid">
+      {/* Keyed on the month so React remounts the grid -- an animation on a
+          node that merely re-renders never restarts, which is why a month
+          change had no motion even once one was written for it. The direction
+          comes from which arrow was pressed, so the grid arrives from the side
+          it travelled from. */}
+      <div className={`cal-grid${direction.current < 0 ? ' from-prev' : ''}`}
+           key={`${month.year}-${month.month}`} role="grid">
         {month.weeks.map((week) => week.map((iso) => {
           const items = month.days[iso] || [];
           const open = items.filter((i) => !i.done);
@@ -306,7 +317,7 @@ export function DayPanel({
               <input type="checkbox" checked={it.done}
                      aria-label={`${it.done ? t('markNotDone') : t('markHandled')}: ${it.title}`}
                      onChange={() => onToggle(it, !it.done)} />
-              <span className="box"><Tick /></span>
+              <span className="box"><Tick spark on={it.done} /></span>
               <span className="ripple" />
             </label>
 

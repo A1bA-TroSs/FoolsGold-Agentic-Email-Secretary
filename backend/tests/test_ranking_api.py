@@ -86,3 +86,35 @@ def test_state_reports_how_many_rows_are_shown_as_a_guess(client):
             "explored": explored, "model_bucket": "noise",
         })
     assert client.get("/api/ranking").json()["explored_count"] == 2
+
+
+def test_rescore_rederives_buckets_without_a_model_call(client, monkeypatch):
+    """A ranking-rule change was invisible until "Re-read everything", which
+    calls the model over the whole mailbox -- the cheap fix gated behind the
+    expensive one."""
+    from app import db, pipeline
+
+    called = []
+    monkeypatch.setattr(pipeline, "get_provider",
+                        lambda *a, **k: called.append(1) or (_ for _ in ()).throw(AssertionError))
+    db.upsert_emails([dict(
+        id="r1", conversation_id=None, subject="Weekly round-up: 40% off",
+        from_name="ShopCo", from_address="noreply@shop.com", to_recipients="[]",
+        cc_recipients="[]", received_at="2026-09-16T09:00:00+00:00", is_read=0,
+        is_answered=0, is_flagged=0, has_attachments=0, importance="normal",
+        web_link="", folder="INBOX", body_preview="", body_text="Sale ends soon",
+        body_html="", synced_at=db.now_iso())])
+    db.save_classification({
+        "email_id": "r1", "bucket": "action", "deadline": None, "rationale": "",
+        "score": 90, "matched": "", "model": "old", "source": "llm",
+        "created_at": db.now_iso(), "actionability": 0.9, "relevance": 0.9,
+        "explored": 0, "model_bucket": "action", "reason_code": "none", "reason_arg": "",
+    })
+
+    body = client.post("/api/ranking/rescore").json()
+    assert body["rescored"] >= 1
+    assert not called, "rescore must not reach for a provider"
+    with db.connect() as conn:
+        assert conn.execute(
+            "SELECT bucket FROM classifications WHERE email_id='r1'").fetchone()[0] == "noise", (
+            "a promotional email stored as 'action' under the old rules must be re-derived")

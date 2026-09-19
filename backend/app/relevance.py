@@ -102,6 +102,23 @@ PA_MAX_STEP = 0.35           # no single email may swing a weight more than this
 # Rocchio's beta=0.75 against gamma=0.15 elsewhere in this file.
 PA_DEMOTE_SCALE = 0.85
 
+
+# Per-coordinate step scaling. A feature the model has never seen moves at the
+# full PA-II step; a well-observed one is damped toward a floor.
+#
+# Deliberately never ABOVE 1.0, so this can only slow a step down, never speed
+# one past what PA-II sanctioned -- the relative-loss bound stays an upper
+# bound. The fast half is not "move further than PA-II says", it is "stop
+# shrinking the step for features you have barely observed", which is exactly
+# the FTRL argument.
+#
+# Worth stating because the obvious alternative is wrong: the interactive-ML
+# literature is explicit that effective updates are *immediate, focused and
+# small*, not large. Cranking C up to make the app feel responsive is the thing
+# the evidence says not to do.
+LR_PRIOR_N = 5.0        # a fresh feature is worth about five observations of doubt
+LR_FLOOR = 0.35         # a mature feature still moves, just slowly
+
 # Confidence by signal provenance. This is where the contamination problem is
 # actually solved: a QA click does not need to be *identified and excluded*, it
 # only needs to arrive with a low C, and a low-C update against a zero-
@@ -136,6 +153,53 @@ THRESHOLD_DAILY_CAP = 0.10   # one unusual morning must not reset the system
 THRESHOLD_MIN = 0.05
 THRESHOLD_MAX = 0.95
 CONSISTENT_RUN = 3           # "marks in a consistent direction" -- how many
+
+# A fixed taxonomy, assigned by the model, one binary feature each.
+#
+# Fixed rather than discovered. BERTopic's own maintainers say that with "only
+# a few documents (~1000)" it is "very difficult to properly extract topics",
+# and that UMAP's stochasticity makes runs differ unless you fix the seed "at
+# the expense of performance". This mailbox holds ~1,200 emails, which is at or
+# below that line -- and a category whose meaning changes between runs is
+# unusable in a UI where the user is learning what the categories mean.
+#
+# Eight, not eighty. Each one has to earn its weight from the user's own
+# clicks, and a taxonomy with a long tail is a taxonomy where most entries
+# never get enough evidence to matter.
+#
+# This is the piece that lets the app learn "exam notices matter to me,
+# hackathon invitations do not" -- a thing neither the sender nor the keyword
+# can express, because both arrive from the same departmental address. It is
+# also, mechanically, nothing new: Gmail's Priority Inbox scores
+# s = sum(f_i*g_i) + sum(f_i*w_i), global prior plus per-user deviation, and a
+# per-category preference is just one more w_i. It composes with PA-II with no
+# architectural change at all.
+CATEGORIES = (
+    "exam",             # tests, grades, results
+    "coursework",       # assignments, submissions, projects
+    "announcement",     # LMS/Canvas notices, course admin
+    "career",           # recruiting, internships, co-op, employers
+    "event",            # talks, seminars, campus happenings
+    "competition",      # hackathons, contests, calls for application
+    "admin",            # registry, fees, IDs, visas, housing
+    "service",          # IT tickets, system notices, password resets
+)
+CATEGORY_FEATURE = "cat_"
+
+
+def category_features(category: str | None) -> dict[str, float]:
+    """One binary feature per category, or none at all.
+
+    An unrecognised or missing category contributes nothing rather than falling
+    back to a default bucket. A wrong category learned confidently is worse
+    than no category: it would attach the user's corrections to the wrong
+    drawer and there would be no way to see that it had.
+    """
+    key = (category or "").strip().lower()
+    if key not in CATEGORIES:
+        return {}
+    return {f"{CATEGORY_FEATURE}{key}": 1.0}
+
 
 FEATURE_NAMES = (
     "topic_match",
@@ -305,6 +369,7 @@ def features_for(
     addressed_directly: bool = False,
     affinity: float = 0.0,
     highlighted: bool = False,
+    category: str | None = None,
 ) -> dict[str, float]:
     """The relevance feature vector. Every value in [0, 1] so one feature
     cannot dominate purely by scale -- PA-II divides by ||f||^2, which makes an
@@ -319,6 +384,7 @@ def features_for(
         "unread": 0.0 if email.get("is_read") else 1.0,
         "attachment": 1.0 if email.get("has_attachments") else 0.0,
         "structural_noise": structural_noise(email),
+        **category_features(category),
     }
 
 
@@ -347,9 +413,10 @@ def axes_for(
     addressed_directly: bool = False,
     affinity: float = 0.0,
     highlighted: bool = False,
+    category: str | None = None,
     weights: dict[str, float] | None = None,
 ) -> Axes:
-    feats = features_for(email, topic_match, addressed_directly, affinity, highlighted)
+    feats = features_for(email, topic_match, addressed_directly, affinity, highlighted, category)
     return Axes(
         actionability=actionability(email, model_bucket, deadline, task_count, addressed_directly),
         relevance=relevance(feats, weights),
@@ -359,6 +426,62 @@ def axes_for(
 
 def derive_bucket(axes: Axes, thresholds: Thresholds | None = None) -> str:
     return axes.bucket(thresholds or Thresholds())
+
+
+# The single strongest reason an email is where it is, as a code the UI
+# translates. Ranked by how much a user could act on it: what you declared beats
+# what the app inferred, and an inference you can name beats a number.
+REASON_ORDER = (
+    "pinned", "explored", "topic", "deadline", "flagged",
+    "direct", "affinity", "answered", "noise", "none",
+)
+
+
+def reason_for(
+    axes: Axes,
+    *,
+    matched_topics: Sequence[str] = (),
+    deadline_days: int | None = None,
+    pinned: bool = False,
+    explored: bool = False,
+) -> tuple[str, str]:
+    """Why this email is ranked where it is, in one code and one argument.
+
+    Deliberately ONE reason, not a list. A ranking explained by six factors is
+    not explained; the user cannot act on it and cannot tell which one was wrong.
+
+    Deliberately derived, not generated. Asking the model for a sentence would
+    cost a call per email and add a hallucination surface to the one part of the
+    UI whose entire job is to be trustworthy. Every code below is computed from
+    the same features that produced the score, so the explanation cannot drift
+    from the thing it explains.
+
+    This is not decoration. The adaptive layer learns from corrections, and a
+    correction on an unexplained ranking is ambiguous -- demoted because the
+    topic was wrong, or because the timing was? Naming the reason makes the
+    correction interpretable, which is the difference between a training signal
+    and noise.
+    """
+    if pinned:
+        return "pinned", ""
+    if explored:
+        return "explored", ""
+    topics = [t for t in matched_topics if t]
+    if topics and axes.features.get("topic_match", 0.0) > 0.5:
+        return "topic", topics[0]
+    if deadline_days is not None:
+        return "deadline", str(deadline_days)
+    if axes.features.get("flagged"):
+        return "flagged", ""
+    if axes.features.get("direct_address"):
+        return "direct", ""
+    if axes.features.get("affinity", 0.0) >= 0.4:
+        return "affinity", ""
+    if axes.features.get("answered"):
+        return "answered", ""
+    if axes.features.get("structural_noise"):
+        return "noise", ""
+    return "none", ""
 
 
 def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None = None) -> dict[str, Any]:
@@ -478,12 +601,24 @@ def confidence_of(signal: Signal) -> tuple[float, str]:
     return base, "ok"
 
 
+def learning_rate(count: int) -> float:
+    """Step scaling for a feature that has been touched `count` times.
+
+    count 0 -> 1.00   the first correction on a new feature lands in full
+    count 5 -> 0.71
+    count 20 -> 0.45
+    count 45+ -> 0.35 (floor)
+    """
+    return max(LR_FLOOR, math.sqrt(LR_PRIOR_N / (LR_PRIOR_N + max(0, int(count)))))
+
+
 def apply_signal(
     signal: Signal,
     features: dict[str, float],
     weights: dict[str, float],
     *,
     epoch_start: str | None,
+    counts: dict[str, int] | None = None,
 ) -> Outcome:
     """Offer one signal to the relevance model. May refuse; refusal is the point.
 
@@ -495,6 +630,7 @@ def apply_signal(
     per-example confidence, set by where the signal came from rather than by
     what it claims to be.
     """
+    counts = counts or {}
     if not within_epoch(signal.at, epoch_start):
         return Outcome(False, "pre-epoch")
     conf, why = confidence_of(signal)
@@ -518,7 +654,7 @@ def apply_signal(
     for name, value in features.items():
         if not value:
             continue
-        step = sign * float(value) * magnitude
+        step = sign * float(value) * magnitude * learning_rate(counts.get(name, 0))
         step = max(-PA_MAX_STEP, min(PA_MAX_STEP, step))
         if abs(step) < 1e-9:
             continue
@@ -620,6 +756,14 @@ def is_explored(email_id: str, one_in: int = EXPLORE_ONE_IN, salt: str = EXPLORE
     system shows what it already believes, the faster observed behaviour
     collapses onto that belief and the faster it stops learning. `noise` is a
     one-way door, so a fraction of it is opened on purpose.
+
+    This is `Self-Reinforcing Error` from the ontology vault, applied: a belief
+    entrenches through disuse, and the evidence that would overturn it is never
+    gathered because the belief itself decides what gets shown. Suppression is
+    the self-concealing case -- which is also why `PA_DEMOTE_SCALE` makes
+    demotion slower than promotion. Jiang et al. (arXiv 1902.10730) prove the
+    same result formally and name the three levers: exploration noise, a wide
+    candidate pool, and a cap on repeated exposure. This function is the first.
 
     Deterministic on the id, not random: an email must not flicker in and out of
     the list between refreshes, and a test that cannot reproduce the selection

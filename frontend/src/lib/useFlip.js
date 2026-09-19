@@ -16,6 +16,9 @@ import { useLayoutEffect, useRef } from 'react';
 */
 const DURATION = 420;
 const EASING = 'cubic-bezier(.22,.98,.30,1.12)';
+/* Roughly one screen of slack either side, so a row scrolling into view
+   is not caught mid-animation. */
+const VIEWPORT_MARGIN = 600;
 
 export function useFlip(containerRef, deps, { enabled = true } = {}) {
   const positions = useRef(new Map());
@@ -39,6 +42,22 @@ export function useFlip(containerRef, deps, { enabled = true } = {}) {
 
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
+    /* Only animate what the user can actually see.
+
+       Measured: ticking the top row of a 187-row list changed its score, which
+       moved every row below it, which created 186 Web Animations inside one
+       frame -- a 233ms long animation frame with 182ms of blocking script and
+       *zero* style-and-layout time. It was never paint; it was allocating one
+       animation per row for rows nobody was looking at.
+
+       FLIP exists to answer "where did the thing I just touched go?", and that
+       question can only be asked about rows on screen. Everything outside the
+       viewport is allowed to teleport, because teleporting offscreen is
+       invisible by definition. The margin keeps a row that is about to scroll
+       into view from arriving mid-flight. */
+    const viewportTop = -VIEWPORT_MARGIN;
+    const viewportBottom = (window.innerHeight || 0) + VIEWPORT_MARGIN;
+
     for (const node of nodes) {
       const id = node.dataset.id;
       const before = positions.current.get(id);
@@ -47,6 +66,10 @@ export function useFlip(containerRef, deps, { enabled = true } = {}) {
 
       const delta = before - after;
       if (Math.abs(delta) < 2) continue;
+
+      // Offscreen both before and after: nobody saw it move.
+      if ((before < viewportTop || before > viewportBottom)
+          && (after < viewportTop || after > viewportBottom)) continue;
 
       if (reduced) continue;
       node.animate(

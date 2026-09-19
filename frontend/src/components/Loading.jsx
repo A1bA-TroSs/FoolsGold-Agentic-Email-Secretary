@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { MailSyncIcon, ThinkingIcon } from './Icons.jsx';
 import { useT } from '../lib/i18n.js';
 
@@ -33,4 +34,35 @@ export function ThinkingNote({ children }) {
 
 export function Sweep() {
   return <div className="sweep"><i /></div>;
+}
+
+
+/* What the sync is actually doing, in the user's language.
+
+   This replaced a hardcoded English `Syncing…` -- a generic label in one
+   language, on a wait that runs for seconds. Published guidance puts anything
+   in the 2-10 second band past the point where a bare spinner is the right
+   instrument: it says "wait" without saying what for. The sweep already carries
+   the motion, so this carries the words, and they change as the work does.
+
+   Steps advance on a timer rather than from real progress, because the sync is
+   a single POST with no interim signal. That is honest as long as the words
+   stay true of the whole operation -- "reading your mailbox" then "ranking what
+   arrived" are both things that are happening -- and it never claims a
+   percentage it does not have. */
+export function SyncStep() {
+  const t = useT();
+  const [step, setStep] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => setStep((s) => Math.min(1, s + 1)), 1400);
+    return () => clearInterval(timer);
+  }, []);
+
+  return (
+    <span className="sync-step">
+      <i className="dot" />
+      {t(step === 0 ? 'syncReading' : 'syncRanking')}
+    </span>
+  );
 }

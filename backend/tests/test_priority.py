@@ -70,10 +70,47 @@ def test_invalid_date_does_not_raise():
 
 def test_deadline_points_decay_with_distance():
     d = lambda n: (TODAY + timedelta(days=n)).isoformat()  # noqa: E731
-    assert priority.deadline_points(d(0), TODAY) > priority.deadline_points(d(1), TODAY)
+    # Day 0 and day 1 are now deliberately EQUAL. They sit inside the "urgent"
+    # plateau, and ranking today's deadline above tomorrow's was a distinction
+    # the user never asked for -- both are simply urgent, and the tie is broken
+    # by relevance, which is the axis that should break it.
+    assert priority.deadline_points(d(0), TODAY) == priority.deadline_points(d(1), TODAY)
     assert priority.deadline_points(d(1), TODAY) > priority.deadline_points(d(5), TODAY)
     assert priority.deadline_points(d(5), TODAY) > priority.deadline_points(d(30), TODAY)
     assert priority.deadline_points(None, TODAY) == 0.0
+
+
+def test_the_look_ahead_window_is_a_slope_not_a_wall():
+    """A linear decay hits exactly zero at the edge of the window, so with a
+    7-day horizon something due on day 8 would score the same as something due
+    next year. The user typed "7" to say how far they want to see, not to
+    declare day 8 worthless."""
+    edge = priority.horizon_weight(7, horizon=7, urgent=2)
+    past = priority.horizon_weight(9, horizon=7, urgent=2)
+    assert 0.3 < edge < 0.45, edge          # clearly demoted, still visible
+    assert 0.0 < past < edge                 # a tail, not a cliff
+
+
+def test_the_window_is_the_users_to_set():
+    """Both knobs mean something a person can answer: how far ahead do I want
+    to see, and how many days count as right now."""
+    near = priority.horizon_weight(7, horizon=3, urgent=1)
+    far = priority.horizon_weight(7, horizon=14, urgent=1)
+    assert far > near, (far, near)
+    for h, u in ((3, 1), (7, 2), (14, 3), (30, 7)):
+        assert priority.horizon_weight(0, h, u) == 1.0
+        assert priority.horizon_weight(u, h, u) == 1.0
+        assert priority.horizon_weight(u + 1, h, u) < 1.0
+
+
+def test_urgency_is_capped_so_it_cannot_overrule_relevance():
+    """A field experiment (Cox et al., 45 participants, 16,200 emails) found
+    time-sensitive mail crowding out everything else -- people answered
+    low-value urgent mail ahead of high-value non-urgent mail. An unbounded
+    urgency term reproduces that in the ranker."""
+    hottest = max(priority.deadline_points((TODAY + timedelta(days=n)).isoformat(), TODAY)
+                  for n in range(0, 60))
+    assert hottest <= priority.DEADLINE_MAX
 
 
 def test_today_outranks_overdue():

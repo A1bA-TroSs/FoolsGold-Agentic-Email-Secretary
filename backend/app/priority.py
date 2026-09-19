@@ -13,6 +13,7 @@ rate-limited, or offline.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -213,17 +214,62 @@ def match_priorities(email: dict[str, Any], priorities: list[dict[str, Any]]) ->
     hits = []
     for prio in priorities:
         topic = (prio.get("topic") or "").strip().lower()
-        if not topic:
-            continue
-        terms = [t for t in re.split(r"[^a-z0-9]+", topic) if len(t) > 2 and t not in _STOPWORDS]
-        if not terms:
-            continue
-        if all(t in haystack for t in terms) or topic in haystack:
+        if topic and _topic_hits(topic, haystack):
             hits.append(prio)
     return hits
 
 
-def deadline_points(deadline: str | None, today: date | None = None) -> float:
+# Any run of word characters, Unicode-aware. The previous splitter was
+# `[^a-z0-9]+`, which treats every character outside ASCII as a separator --
+# so a Korean topic tokenised to NOTHING and was then skipped by the
+# `if not terms: continue` below it. `논문 심사` could not match an email whose
+# subject was literally `논문 심사 일정 확정 안내`, and neither could `장학금`
+# or `인턴십`. On a Korean mailbox, with the default provider `none`, the
+# declared priority list did exactly nothing and said nothing about it.
+#
+# Found by running the real model: three emails came back with relevance
+# 0.4013 each, which is sigmoid(PRIOR_BIAS) exactly -- the bare prior, with the
+# topic feature contributing zero. 360 tests were green, because every fixture
+# topic was an English word longer than three letters.
+_WORD_RUN = re.compile(r"\w+", re.UNICODE)
+
+# `len(t) > 2` was not arbitrary: it stops `ai` matching "said" and "email",
+# because the test below is a substring test, not a word test. The fix is to
+# make the test right rather than to throw short topics away -- `CO-OP`, `AI`,
+# `R&D` and `TA` are exactly the kind of thing a person puts on a priority list.
+_SHORT_ASCII = 3
+
+
+def _term_hit(term: str, haystack: str) -> bool:
+    """Short ASCII terms must match as words; everything else as substrings.
+
+    Korean and Japanese have no spaces between words, so a word-boundary test
+    would fail on the languages that need substring matching most. ASCII short
+    terms have the opposite problem and need the boundary.
+    """
+    if term.isascii() and len(term) <= _SHORT_ASCII:
+        return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", haystack) is not None
+    return term in haystack
+
+
+def _topic_hits(topic: str, haystack: str) -> bool:
+    # The whole topic, verbatim, is the strongest and least ambiguous signal.
+    # Checked first, and never skipped -- the old code could `continue` past
+    # this line for a topic that was sitting in the subject in plain sight.
+    #
+    # Through `_term_hit`, not a bare `in`: a two-letter topic like `AI` is a
+    # substring of "said" and "email", so the verbatim check needs the same
+    # word-boundary rule as the token check. Caught by the false-positive half
+    # of the test, which is the half worth writing.
+    if _term_hit(topic, haystack):
+        return True
+    terms = [t for t in _WORD_RUN.findall(topic)
+             if len(t) >= 2 and t not in _STOPWORDS]
+    return bool(terms) and all(_term_hit(t, haystack) for t in terms)
+
+
+def deadline_points(deadline: str | None, today: date | None = None,
+                    horizon: int | None = None, urgent: int | None = None) -> float:
     """Points for how close a deadline is -- and, crucially, how *stale* it is.
 
     An overdue deadline used to score a flat +26 forever, which is why a print
@@ -250,15 +296,54 @@ def deadline_points(deadline: str | None, today: date | None = None) -> float:
         if overdue <= 21:
             return 5.0
         return 0.0           # a month past due is history, not a priority
-    if days == 0:
-        return 30.0
-    if days <= 2:
-        return 22.0
-    if days <= 7:
-        return 12.0
-    if days <= 14:
-        return 5.0
-    return 0.0
+    return round(DEADLINE_MAX * horizon_weight(days, horizon, urgent), 2)
+
+
+def horizon_days() -> int:
+    """The user's look-ahead window, in days. One reader for one setting."""
+    try:
+        return max(1, int(db.get_setting("deadline_horizon_days", "7") or 7))
+    except (TypeError, ValueError):
+        return 7
+
+
+def horizon_weight(days: int, horizon: int | None = None, urgent: int | None = None) -> float:
+    """How pressing a deadline `days` away is, on 0..1.
+
+    Two knobs, both meaning something a person can answer:
+
+      `urgent`  -- "how many days count as right now" (default 2). A flat
+                   plateau: today and tomorrow are not ranked against each
+                   other, because they are both simply urgent.
+      `horizon` -- "how far ahead do I want to see" (default 7).
+
+    Gaussian, not linear, and not a hard cutoff. A linear decay hits exactly
+    zero at the edge of the window, so an email due on day 8 with a 7-day
+    horizon scores the same as one due in a year -- which is a cliff the user
+    did not ask for when they typed "7". The Gaussian is flat over the urgent
+    plateau, falls steeply through the window, and flattens into a small
+    non-zero tail, so the window is a slope rather than a wall.
+
+    Capped rather than unbounded on purpose. A field experiment (Cox et al.,
+    45 participants, 16,200 emails) found that time-sensitive mail crowded out
+    everything else: people answered low-value urgent mail ahead of high-value
+    non-urgent mail, which the authors call irrational. An urgency term that
+    can grow without limit reproduces that pathology in the ranker. Urgency
+    moves an email within its relevance band; it does not overrule the band.
+    """
+    horizon = int(horizon if horizon is not None else db.get_setting("deadline_horizon_days", "7") or 7)
+    urgent = int(urgent if urgent is not None else db.get_setting("deadline_urgent_days", "2") or 2)
+    horizon = max(1, horizon)
+    urgent = max(0, min(urgent, horizon))
+    if days <= urgent:
+        return 1.0
+    # sigma chosen so the far edge of the window sits at ~0.37 (e^-1) rather
+    # than at zero: still visible, clearly demoted.
+    sigma = max(1.0, (horizon - urgent) / 1.4142)
+    return math.exp(-((days - urgent) ** 2) / (2.0 * sigma * sigma))
+
+
+DEADLINE_MAX = 30.0
 
 
 def affinity_points(from_address: str, correspondents: dict[str, int] | None) -> float:

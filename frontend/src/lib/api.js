@@ -25,13 +25,16 @@ export const api = {
   login: (email) => request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email }) }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
 
-  listMail: ({ bucket, search, sort = 'priority', muted = false } = {}) => {
+  listMail: ({ bucket, search, sort = 'priority', muted = false, verdict } = {}) => {
     const q = new URLSearchParams({ sort });
     if (bucket) q.set('bucket', bucket);
     if (search) q.set('search', search);
     if (muted) q.set('muted', 'true');
+    if (verdict) q.set('verdict', verdict);
     return request(`/api/mail?${q}`);
   },
+
+  rankCategories: () => request('/api/ranking/categories'),
 
   mutedSenders: () => request('/api/mail/senders/muted'),
   highlightedSenders: () => request('/api/mail/senders/highlighted'),
@@ -88,6 +91,7 @@ export const api = {
       method: 'POST', body: JSON.stringify({ target_per_day: targetPerDay }),
     }),
   resetLearning: () => request('/api/ranking/reset', { method: 'POST' }),
+  rescore: () => request('/api/ranking/rescore', { method: 'POST' }),
   explainRanking: (id) => request(`/api/ranking/explain/${encodeURIComponent(id)}`),
 
   priorities: () => request('/api/priorities'),

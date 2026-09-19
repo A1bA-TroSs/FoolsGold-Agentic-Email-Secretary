@@ -33,6 +33,24 @@ export default function Splash({ done, detail }) {
 
   return (
     <div className={`splash ${done ? 'leaving' : ''}`} role="status" aria-live="polite">
+      {/* Pyrite, falling. Eight shards, not a particle storm -- restraint even
+          in the one place this app allows itself a flourish, because the splash
+          is the only screen with no content to compete with.
+
+          Angular, because pyrite grows in cubes and its whole trick is a flat
+          facet catching light; round sparkles would be some other mineral. Each
+          shard is dull on the way down and turns gold for a moment as it passes
+          -- which is the name, animated: it looks like gold exactly once.
+
+          Pure CSS on purpose. This runs while the backend is waking, the
+          mailbox is being read and 200 emails are being ranked, so a
+          requestAnimationFrame particle loop would take main-thread time from
+          the work the user is actually waiting for. Transform and opacity only,
+          so it stays on the compositor. */}
+      <div className="splash-flecks" aria-hidden="true">
+        {Array.from({ length: 8 }, (_, i) => <i key={i} />)}
+      </div>
+
       <div className="splash-mark">
         <span className="splash-ring" />
         <img src="./logo.png" alt="" />

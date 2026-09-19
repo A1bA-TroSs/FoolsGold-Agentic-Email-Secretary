@@ -149,7 +149,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border: 1px solid var(--logo-plate-border);
   margin-bottom: 12px;
   box-shadow: 0 1px 4px var(--shadow);
-  transition: transform .18s cubic-bezier(.34,1.56,.64,1);
+  transition: transform var(--dur-base) var(--ease-spring);
 }
 .rail .logo:hover { transform: scale(1.07) rotate(-3deg); }
 
@@ -160,7 +160,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border-radius: 9px;
   display: grid; place-items: center;
   color: var(--muted);
-  transition: background .15s, color .15s, transform .15s;
+  transition: background var(--dur-fast) var(--ease-move), color var(--dur-fast) var(--ease-move), transform var(--dur-base) var(--ease-spring);
 }
 .rail button:hover { background: var(--surface-hover); color: var(--text); transform: translateY(-1px); }
 .rail button:active { transform: translateY(0) scale(.94); }
@@ -226,7 +226,7 @@ button { align-items: stretch; }
   border-radius: 7px;
   padding: 5px 11px;
   font-size: 12.5px;
-  transition: background .12s, border-color .12s;
+  transition: background var(--dur-instant) var(--ease-move), border-color var(--dur-instant) var(--ease-move);
 
   /* A label must never wrap, and a button must never be squeezed below it.
 
@@ -242,9 +242,15 @@ button { align-items: stretch; }
      Shrinking the font per language was the other option and is worse: it is a
      constant to re-tune for every new string, it degrades exactly the scripts
      that need legibility most, and it does not fix the next language. Refusing
-     to wrap fixes all of them at once, including ones not yet added. */
+     to wrap fixes all of them at once, including ones not yet added.
+
+     `flex-shrink: 0` was here too and has been removed: it was redundant and
+     it caused a 3px overflow in `.row-actions`. A flex item's default
+     `min-width: auto` already resolves to its min-content, and with nowrap that
+     min-content IS the whole label -- so the item cannot shrink below its text
+     without anyone pinning it. Pinning it as well only stopped icon buttons,
+     which have no text to protect, from giving back the last few pixels. */
   white-space: nowrap;
-  flex-shrink: 0;
 }
 
 /* The input is what yields, not the button. `min-width: 0` is what allows a
@@ -285,7 +291,7 @@ button { align-items: stretch; }
   border: none; border-bottom: 1px solid var(--border);
   border-left: 3px solid transparent;
   background: var(--surface);
-  transition: background .1s;
+  transition: background var(--dur-instant) var(--ease-move);
 }
 .mail-item:hover { background: var(--surface-hover); }
 .mail-item.selected { background: var(--surface-hover); border-left-color: var(--accent); }
@@ -307,6 +313,27 @@ button { align-items: stretch; }
 .tag {
   display: inline-block; font-size: 9.5px; font-weight: 700; letter-spacing: .04em;
   text-transform: uppercase; padding: 1px 6px; border-radius: 4px; vertical-align: middle;
+  /* Same rule as .btn, same reason. "FROM MAIL" broke at its space and CJK
+     badges broke between any two glyphs, both because a badge in a narrow flex
+     column is allowed to shrink to its min-content. A label that wraps stops
+     being a badge. `flex-shrink` is deliberately not set -- see .btn. */
+  white-space: nowrap;
+}
+
+/* Why a row is where it is. Quiet by design -- it sits under a subject line and
+   must never compete with it, but it has to be readable or it is worse than
+   nothing. Tokens only, so it survives all four themes. */
+.tag.why {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  font-size: 10px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .tag.action { background: var(--accent); color: var(--on-accent); }
 .tag.fyi { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
@@ -428,31 +455,58 @@ button { align-items: stretch; }
 
 @keyframes fade-up   { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 @keyframes fade-in   { from { opacity: 0; } to { opacity: 1; } }
+@keyframes toast-in  { from { opacity: 0; transform: translate(-50%, 6px); }
+                       to   { opacity: 1; transform: translateX(-50%); } }
 @keyframes pop       { 0% { transform: scale(.8); opacity: 0; } 60% { transform: scale(1.06); } 100% { transform: scale(1); opacity: 1; } }
 @keyframes shimmer   { 0% { background-position: -320px 0; } 100% { background-position: 320px 0; } }
 @keyframes envelope  { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
 @keyframes think     { 0%, 80%, 100% { transform: scale(.55); opacity: .35; } 40% { transform: scale(1); opacity: 1; } }
 @keyframes sweep     { from { transform: translateX(-100%); } to { transform: translateX(320%); } }
-@keyframes lift-out  { to { opacity: 0; transform: translateX(28px); max-height: 0; } }
+/* Transform and opacity only -- no max-height, no padding, no border-width.
+
+   Those are layout properties: animating them recalculates layout on every
+   frame, for the row AND everything under it. The collapse they were there to
+   produce is already handled, and better, by the FLIP reorder: the row leaves,
+   React removes it, and the rows below animate up into the gap on the
+   compositor. Two mechanisms were closing the same gap and only one of them
+   was cheap. */
+@keyframes lift-out  { to { opacity: 0; transform: translateX(28px) scaleY(.96); } }
 
 /* view transitions ------------------------------------------------------- */
-.view-enter { animation: fade-up .22s ease both; }
-.pane-detail > .scroll, .pane-detail > .settings-wrap { animation: fade-in .2s ease both; }
+.view-enter { animation: fade-up var(--dur-medium) var(--ease-enter) backwards; }
+.pane-detail > .scroll, .pane-detail > .settings-wrap { animation: fade-in var(--dur-base) var(--ease-enter) backwards; }
 
 /* list items stagger in, but only the first dozen -- past that it just delays
    the content the user is waiting for. */
-.mail-item { animation: fade-up .22s ease both; }
-.mail-item:nth-child(1)  { animation-delay: 0ms; }
-.mail-item:nth-child(2)  { animation-delay: 18ms; }
-.mail-item:nth-child(3)  { animation-delay: 36ms; }
-.mail-item:nth-child(4)  { animation-delay: 54ms; }
-.mail-item:nth-child(5)  { animation-delay: 72ms; }
-.mail-item:nth-child(6)  { animation-delay: 90ms; }
-.mail-item:nth-child(7)  { animation-delay: 108ms; }
-.mail-item:nth-child(8)  { animation-delay: 126ms; }
-.mail-item:nth-child(n+9) { animation-delay: 140ms; }
+/* `backwards`, not `both`.
 
-.mail-item.leaving { animation: lift-out .28s ease forwards; overflow: hidden; }
+   A CSS animation with a forwards fill never finishes in the sense that
+   matters: the browser keeps it alive to hold the final frame, so every
+   element that has ever entered stays on the animated-style path. Measured on
+   a 187-row list, `document.getAnimations()` returned 375 finished `fade-up`
+   animations, all of them being ticked and style-resolved on every frame of
+   every subsequent animation -- which is why the app felt uniformly slightly
+   stuttery rather than slow in one identifiable place.
+
+   The forwards half was never needed. These entrances end exactly where the
+   element's static style already is (opacity 1, no transform), so the fill was
+   holding a value identical to the one underneath it. The backwards half IS
+   needed: without it a staggered row paints at full opacity for its delay and
+   then jumps to the start of its own entrance. */
+.mail-item { animation: fade-up var(--dur-base) var(--ease-enter) backwards; }
+.mail-item:nth-child(1) { animation-delay: calc(var(--stagger) * 0); }
+.mail-item:nth-child(2) { animation-delay: calc(var(--stagger) * 1); }
+.mail-item:nth-child(3) { animation-delay: calc(var(--stagger) * 2); }
+.mail-item:nth-child(4) { animation-delay: calc(var(--stagger) * 3); }
+.mail-item:nth-child(5) { animation-delay: calc(var(--stagger) * 4); }
+.mail-item:nth-child(6) { animation-delay: calc(var(--stagger) * 5); }
+.mail-item:nth-child(7) { animation-delay: calc(var(--stagger) * 6); }
+.mail-item:nth-child(8) { animation-delay: calc(var(--stagger) * 7); }
+/* Past the eighth row the cascade stops. The rest arrive together: a list
+   of two hundred must not take nine seconds to appear. */
+.mail-item:nth-child(n+9) { animation-delay: calc(var(--stagger) * 8); }
+
+.mail-item.leaving { animation: lift-out var(--dur-exit) var(--ease-exit) forwards; overflow: hidden; }
 
 /* skeleton rows: a shape of the thing being loaded beats a spinner, because it
    tells you what is coming and how much of it. */
@@ -486,7 +540,7 @@ button { align-items: stretch; }
   position: absolute; top: 8px; right: 8px;
   display: flex; gap: 3px;
   opacity: 0; transform: translateX(5px);
-  transition: opacity .14s, transform .14s;
+  transition: opacity var(--dur-fast) var(--ease-enter), transform var(--dur-base) var(--ease-enter);
   background: linear-gradient(90deg, transparent, var(--surface-hover) 22%);
   padding-left: 16px;
 }
@@ -499,12 +553,12 @@ button { align-items: stretch; }
   border: 1px solid var(--border); background: var(--surface);
   color: var(--muted);
   display: grid; place-items: center; padding: 0;
-  transition: background .12s, color .12s, border-color .12s, transform .12s;
+  transition: background var(--dur-instant) var(--ease-move), color var(--dur-instant) var(--ease-move), border-color var(--dur-instant) var(--ease-move), transform var(--dur-fast) var(--ease-spring);
 }
 .row-actions button:hover { color: var(--text); border-color: var(--accent); transform: translateY(-1px); }
 .row-actions button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 
-.mail-item .verdict-chip { animation: pop .2s ease both; }
+.mail-item .verdict-chip { animation: pop var(--dur-base) var(--ease-spring) backwards; }
 /* A pin has to be unmistakable -- it is the user overriding the ranking. */
 .mail-item.pinned {
   border-left-color: var(--accent-strong);
@@ -529,9 +583,9 @@ button { align-items: stretch; }
   content: '';
   position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
   background: var(--accent);
-  animation: fade-in .12s ease both;
+  animation: fade-in .12s ease backwards;
 }
-.mail-item .tag { transition: transform .12s; }
+.mail-item .tag { transition: transform var(--dur-fast) var(--ease-spring); }
 .mail-item:hover .tag.due { transform: translateY(-1px); }
 
 /* Keyboard hint strip.
@@ -561,12 +615,21 @@ button { align-items: stretch; }
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 9px; padding: 8px 12px; font-size: 12.5px;
   box-shadow: 0 6px 20px var(--shadow); z-index: 20;
-  animation: fade-up .2s ease both;
+  /* Its own keyframes, because `fade-up` ends at `transform: none` and this
+     element is centred with `translateX(-50%)`: a forwards fill was holding
+     "no transform" over the centring and leaving the toast off to the left
+     for as long as it was on screen. */
+  animation: toast-in .2s ease backwards;
 }
 
 .settings-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
 @media (prefers-reduced-motion: reduce) {
+  /* Removed, not slowed. Falling objects are precisely what this
+     setting exists to suppress, and a frozen shard mid-air is worse
+     than none. */
+  .splash-flecks { display: none !important; }
+
   *, *::before, *::after {
     animation-duration: .001ms !important;
     animation-iteration-count: 1 !important;
@@ -621,6 +684,126 @@ select.input { appearance: none; padding-right: 28px;
   border-right-color: color-mix(in srgb, var(--accent) 35%, transparent);
   animation: splash-orbit 1.5s linear infinite;
 }
+
+/* ---- completion ---------------------------------------------------------
+   Approved for the tick, and only the tick. Ticking something off is the one
+   moment in this app that is allowed to feel like a small reward -- everywhere
+   else the product's job is to get out of the way.
+
+   The same material as the splash: one facet catching the light, not confetti.
+   It fires once, it is 420ms, and it leaves nothing behind. */
+@keyframes tick-glint {
+  0%   { opacity: 0; transform: scale(.4) rotate(-12deg); }
+  38%  { opacity: 1; transform: scale(1.12) rotate(4deg); }
+  100% { opacity: 0; transform: scale(1.5) rotate(16deg); }
+}
+
+.tick-spark {
+  position: absolute; inset: -6px; pointer-events: none; z-index: 2;
+}
+.tick-spark i {
+  position: absolute; display: block; width: 9px; height: 9px;
+  clip-path: polygon(16% 0%, 100% 24%, 84% 100%, 0% 70%);
+  background: var(--accent);
+  animation: tick-glint var(--dur-medium) var(--ease-exit) forwards;
+  opacity: 0;
+}
+/* Three shards, thrown apart. Positioned rather than randomised so the gesture
+   is the same every time -- a reward that looks different on each tick reads as
+   a glitch rather than as a reward. */
+.tick-spark i:nth-child(1) { left: 2px;  top: 0;   animation-delay: 0ms; }
+.tick-spark i:nth-child(2) { right: 0;   top: 6px; animation-delay: 55ms; width: 7px; height: 7px; }
+.tick-spark i:nth-child(3) { left: 8px;  bottom: 0; animation-delay: 95ms; width: 6px; height: 6px; }
+
+/* ---- fool's gold ------------------------------------------------------- */
+
+/* Eight shards, 11-16px. The first attempt used twelve at 5-9px and they read
+   as dots: at that size a four-point facet is three pixels of detail, so the
+   whole point of the shape was invisible. Fewer and larger says the same thing
+   and says it legibly. */
+
+@keyframes fleck-fall {
+  0%   { opacity: 0; transform: translate3d(0, -14vh, 0) rotate(0deg); }
+  9%   { opacity: .85; }
+  92%  { opacity: .85; }
+  100% { opacity: 0; transform: translate3d(var(--drift), 98vh, 0) rotate(var(--spin)); }
+}
+
+/* The glint, as a cross-fade rather than a colour animation.
+   `background` was animated directly at first, from a `color-mix()` to the
+   accent -- and Chrome interpolated the two in oklab, producing intermediate
+   chroma around 123, far outside any displayable gamut. It clipped to bright
+   red, so half the shards fell as sparks. Two stacked layers have no colour to
+   interpolate, and opacity composites instead of repainting: this runs while
+   the backend is waking and 200 emails are being ranked, so paint work here is
+   taken straight from the thing the user is waiting for. */
+@keyframes fleck-glint {
+  0%, 34%   { opacity: 0; }
+  46%, 54%  { opacity: 1; }
+  66%, 100% { opacity: 0; }
+}
+
+.splash-flecks { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+
+.splash-flecks i {
+  position: absolute; top: 0; display: block;
+  /* An irregular quadrilateral: a cleaved fragment, not a grown crystal. */
+  clip-path: polygon(16% 0%, 100% 24%, 84% 100%, 0% 70%);
+  background: var(--fleck-dull);
+  animation-name: fleck-fall;
+  animation-timing-function: cubic-bezier(.33, .1, .55, 1);
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+
+/* The face that catches the light. Same silhouette, accent-coloured, faded in
+   for a moment at a different point in each shard's fall -- so it looks like
+   gold exactly once, which is the name. */
+.splash-flecks i::after {
+  content: ''; position: absolute; inset: 0;
+  clip-path: polygon(16% 0%, 100% 24%, 84% 100%, 0% 70%);
+  background: var(--accent);
+  animation-name: fleck-glint;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  opacity: 0;
+}
+
+:root { --fleck-dull: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+
+.splash-flecks i:nth-child(1) { left: 9.1%; width: 14px; height: 14px;
+  --spin: 440deg; --drift: 22px;
+  animation-duration: 4.72s; animation-delay: 0.38s; }
+.splash-flecks i:nth-child(1)::after { animation-duration: 4.72s; animation-delay: 0.38s; }
+.splash-flecks i:nth-child(2) { left: 19.5%; width: 14px; height: 14px;
+  --spin: 440deg; --drift: -10px;
+  animation-duration: 3.81s; animation-delay: 0.66s; }
+.splash-flecks i:nth-child(2)::after { animation-duration: 3.81s; animation-delay: 0.66s; }
+.splash-flecks i:nth-child(3) { left: 28.5%; width: 13px; height: 13px;
+  --spin: -380deg; --drift: -10px;
+  animation-duration: 4.04s; animation-delay: 1.21s; }
+.splash-flecks i:nth-child(3)::after { animation-duration: 4.04s; animation-delay: 1.21s; }
+.splash-flecks i:nth-child(4) { left: 45.1%; width: 13px; height: 13px;
+  --spin: 240deg; --drift: 14px;
+  animation-duration: 3.79s; animation-delay: 0.36s; }
+.splash-flecks i:nth-child(4)::after { animation-duration: 3.79s; animation-delay: 0.36s; }
+.splash-flecks i:nth-child(5) { left: 52.4%; width: 13px; height: 13px;
+  --spin: -260deg; --drift: 14px;
+  animation-duration: 5.03s; animation-delay: 2.09s; }
+.splash-flecks i:nth-child(5)::after { animation-duration: 5.03s; animation-delay: 2.09s; }
+.splash-flecks i:nth-child(6) { left: 63.0%; width: 14px; height: 14px;
+  --spin: 240deg; --drift: -18px;
+  animation-duration: 4.39s; animation-delay: 1.23s; }
+.splash-flecks i:nth-child(6)::after { animation-duration: 4.39s; animation-delay: 1.23s; }
+.splash-flecks i:nth-child(7) { left: 75.2%; width: 14px; height: 14px;
+  --spin: 240deg; --drift: 22px;
+  animation-duration: 4.99s; animation-delay: 2.1s; }
+.splash-flecks i:nth-child(7)::after { animation-duration: 4.99s; animation-delay: 2.1s; }
+.splash-flecks i:nth-child(8) { left: 91.2%; width: 16px; height: 16px;
+  --spin: 440deg; --drift: -18px;
+  animation-duration: 3.8s; animation-delay: 2.8s; }
+.splash-flecks i:nth-child(8)::after { animation-duration: 3.8s; animation-delay: 2.8s; }
+
 .splash-name { font-size: 17px; font-weight: 650; animation: splash-text .4s .18s ease both; opacity: 1; }
 .splash-stage { font-size: 12.5px; color: var(--muted); animation: splash-text .4s .28s ease both; }
 .splash-track {
@@ -644,7 +827,7 @@ select.input { appearance: none; padding-right: 28px;
   width: 258px; padding: 14px;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 12px; box-shadow: 0 10px 32px var(--shadow);
-  animation: fade-up .16s ease both;
+  animation: fade-up .16s ease backwards;
 }
 .lm-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .lm-head img {
@@ -677,16 +860,14 @@ select.input { appearance: none; padding-right: 28px;
 
 @keyframes tick-draw   { from { stroke-dashoffset: 22; } to { stroke-dashoffset: 0; } }
 @keyframes box-pop     { 0% { transform: scale(1); } 45% { transform: scale(1.22); } 100% { transform: scale(1); } }
-@keyframes done-wash   { 0% { background-position: 100% 0; } 100% { background-position: -60% 0; } }
 @keyframes strike      { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-@keyframes done-out    { 0%   { opacity: 1; transform: translateX(0) scale(1); max-height: 260px; }
+/* See lift-out: layout properties removed from every exit. */
+@keyframes done-out    { 0%   { opacity: 1; transform: translateX(0) scale(1); }
                          35%  { opacity: 1; transform: translateX(6px) scale(1.01); }
-                         100% { opacity: 0; transform: translateX(64px) scale(.97); max-height: 0;
-                                padding-top: 0; padding-bottom: 0; border-bottom-width: 0; } }
-@keyframes banish-out  { 0%   { opacity: 1; filter: none; transform: none; max-height: 260px; }
+                         100% { opacity: 0; transform: translateX(64px) scale(.97); } }
+@keyframes banish-out  { 0%   { opacity: 1; filter: none; transform: none; }
                          30%  { opacity: .55; filter: grayscale(1); transform: scale(.985); }
-                         100% { opacity: 0; filter: grayscale(1); transform: translateX(-40px) scale(.9);
-                                max-height: 0; padding-top: 0; padding-bottom: 0; border-bottom-width: 0; } }
+                         100% { opacity: 0; filter: grayscale(1); transform: translateX(-40px) scale(.9); } }
 @keyframes ripple      { from { opacity: .5; transform: scale(0); } to { opacity: 0; transform: scale(2.6); } }
 
 .mail-item { padding-left: 40px; }        /* room for the checkbox gutter */
@@ -741,14 +922,10 @@ select.input { appearance: none; padding-right: 28px;
 
 /* -- completing ---------------------------------------------------------- */
 
-.mail-item.completing {
-  background-image: linear-gradient(90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--accent) 26%, transparent) 45%,
-    transparent 90%);
-  background-size: 220% 100%;
-  animation: done-wash .5s ease both;
-}
+/* The wash that used to live here animated `background-position` across a
+   220%-wide gradient: a full repaint of the row on every frame, for half a
+   second. It was also dead -- overridden further down -- so it cost a reader's
+   attention as well. The colour now arrives through `.done-fx`, on opacity. */
 .mail-item.completing .subj { position: relative; }
 .mail-item.completing .subj::after {
   content: ''; position: absolute; left: 0; right: 0; top: 52%; height: 1.5px;
@@ -815,8 +992,8 @@ select.input { appearance: none; padding-right: 28px;
   padding: 8px 8px 8px 34px;
   border-radius: 8px;
   border: 1px solid transparent;
-  transition: background .13s, border-color .13s;
-  animation: fade-up .24s ease both;
+  transition: background var(--dur-instant) var(--ease-move), border-color var(--dur-instant) var(--ease-move);
+  animation: fade-up .24s ease backwards;
 }
 .agenda-item:hover { background: var(--surface-hover); border-color: var(--border); }
 .agenda-item.active { border-color: var(--accent); background: var(--surface-hover); }
@@ -861,6 +1038,47 @@ select.input { appearance: none; padding-right: 28px;
    ========================================================================== */
 
 :root { --r-sm: 9px; --r-md: 13px; --r-lg: 18px; --r-xl: 24px; }
+
+:root {
+  /* ---- motion ---------------------------------------------------------
+     Measured before changed. The app was not under-animated: 23 transitions,
+     12 keyframes, FLIP reordering. It read as static for three reasons a
+     screenshot cannot show and a stopwatch can:
+
+       * 136 elements transitioned in 120ms and 56 more in 160ms. 120ms is at
+         the bottom of the perceptible range -- it reads as a jump with a blur
+         rather than as movement. Published scales put a standard interaction
+         at ~240ms.
+       * `ease` appeared 229 times against exactly one custom curve. Generic
+         `ease` is the browser's default flavour: the "web page" feel, not the
+         "app" feel.
+       * the list stagger was 18ms per row. Five rows finished in 90ms, so the
+         cascade was invisible and the list appeared as one block.
+
+     So: a scale, and three curves named by intent. No animation gets a custom
+     duration -- guessed numbers are exactly what makes motion feel cheap. */
+  --dur-instant: 90ms;   /* hover, focus ring: feedback, not movement */
+  --dur-fast:   160ms;   /* chips, tags, small state flips */
+  --dur-base:   240ms;   /* the default for anything that moves */
+  --dur-medium: 360ms;   /* panels, month changes, anything crossing the pane */
+  --dur-slow:   520ms;   /* first paint of a view */
+
+  /* Close is faster than open, about 2:3. Someone dismissing something has
+     already decided to move on; someone opening it needs time to register
+     what arrived. */
+  --dur-exit:   160ms;
+
+  --ease-enter: cubic-bezier(.16, 1, .3, 1);    /* decelerating: arrivals */
+  --ease-exit:  cubic-bezier(.7, 0, .84, 0);    /* accelerating: departures */
+  --ease-move:  cubic-bezier(.65, 0, .35, 1);   /* symmetric: state changes */
+  --ease-spring: cubic-bezier(.22, .98, .30, 1.12); /* settles with a little overshoot */
+
+  /* Perceptible, and capped. Total duration is what the user feels: eight rows
+     at 45ms is 360ms of cascade, which reads as orchestrated. The same eight at
+     160ms would be 1.3s, which reads as a broken loader. */
+  --stagger: 45ms;
+}
+
 
 body { font-size: 14px; letter-spacing: .002em; }
 
@@ -1028,28 +1246,68 @@ body { font-size: 14px; letter-spacing: .002em; }
    it is a standing decision about every future message from that address.
    ========================================================================== */
 
-@keyframes done-flash {
-  0%   { background-color: var(--surface); }
-  30%  { background-color: color-mix(in srgb, var(--ok) 30%, var(--surface)); }
-  100% { background-color: color-mix(in srgb, var(--ok) 14%, var(--surface)); }
+/* The completion glow, on the compositor.
+
+   This was two animations on two of the most expensive properties in CSS:
+   `background-color`, which repaints the row every frame, and `box-shadow`
+   with a growing spread, which repaints the row AND the strip of list around
+   it every frame. Traced over the 800ms completion, that produced a
+   full-viewport paint on nearly every frame while the main thread sat idle --
+   which is exactly what "smooth by every number I can measure, stuttery to
+   look at" means. Long-frame timing never showed it because paint and raster
+   are not script.
+
+   The colour and the ring now live on a dedicated overlay element that is
+   mounted only while the row is completing, and only `opacity` and `transform`
+   animate. Both run off the main thread entirely. The overlay is its own
+   element rather than `::before`/`::after` on the row, because the row already
+   spends both on the pin marker and the cursor ring, and a pinned row being
+   ticked off would otherwise lose one of them.
+
+   `will-change` is set by the state classes below rather than permanently:
+   promoting one row for 800ms is cheap, promoting 187 rows forever is not. */
+@keyframes done-tint {
+  0%   { opacity: 0; }
+  30%  { opacity: .30; }
+  100% { opacity: .14; }
 }
 @keyframes done-slide-left {
-  0%   { opacity: 1; transform: translateX(0) scale(1); max-height: 300px; }
+  0%   { opacity: 1; transform: translateX(0) scale(1); }
   25%  { transform: translateX(10px) scale(1.012); }
-  100% { opacity: 0; transform: translateX(-96px) scale(.96); max-height: 0;
-         margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
+  100% { opacity: 0; transform: translateX(-96px) scale(.96); }
 }
-@keyframes ok-ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
-                     100% { box-shadow: 0 0 0 12px transparent; } }
+@keyframes ok-ring { 0%   { opacity: 0;  transform: scale(.985); }
+                     35%  { opacity: 1;  transform: scale(1); }
+                     100% { opacity: 0;  transform: scale(1); } }
+
+.done-fx { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.done-fx::before {
+  content: ''; position: absolute; inset: 0;
+  background: var(--ok);
+  animation: done-tint .42s ease both;
+}
+/* Kept inside the row's own box on purpose: `.done-out` sets `overflow:
+   hidden`, so a ring that grew outward would be sliced off at the edges. */
+.done-fx i {
+  position: absolute; inset: 0;
+  border: 2px solid color-mix(in srgb, var(--ok) 60%, transparent);
+  animation: ok-ring .55s var(--ease-exit) both;
+}
 
 .mail-item.completing {
   background-image: none;
-  animation: done-flash .42s ease both, ok-ring .55s ease-out both;
   border-left-color: var(--ok) !important;
 }
 .mail-item.completing .row-check .box { background: var(--ok); border-color: var(--ok); }
 .mail-item.completing .subj::after { background: var(--ok); }
 .mail-item.done-out { animation: done-slide-left .46s .3s cubic-bezier(.5,0,.2,1) forwards; overflow: hidden; }
+
+/* One row at a time carries these classes, so this promotes exactly one row
+   for the length of one gesture. Without it the row shares the list's paint
+   layer, and every frame of its exit re-rasters the rows around it. */
+.mail-item.completing, .mail-item.done-out,
+.mail-item.banishing, .mail-item.burning,
+.day-item.burning { will-change: transform, opacity; }
 
 /* -- burning -------------------------------------------------------------- */
 
@@ -1060,18 +1318,25 @@ body { font-size: 14px; letter-spacing: .002em; }
   100% { background-color: color-mix(in srgb, var(--muted) 22%, var(--surface)); }
 }
 /* The ember line sweeps down the row; everything above it is already ash. */
-@keyframes ember-sweep { from { top: -4px; } to { top: 104%; } }
+/* `top` is a layout property even on an absolutely positioned element, and
+   this one runs for 620ms over a blurred gradient. Translating it instead
+   keeps the whole sweep on the compositor. */
+@keyframes ember-sweep { from { transform: translateY(-10px); }
+                         to   { transform: translateY(100%); } }
 @keyframes to-ash {
   0%   { filter: none; opacity: 1; }
   40%  { filter: grayscale(.5) contrast(1.08); opacity: .9; }
   100% { filter: grayscale(1) blur(1.6px); opacity: 0; }
 }
+/* See lift-out and done-out: the last exit still animating layout. `max-height`
+   and the paddings re-ran layout for this row and every row beneath it on every
+   frame of the burn, and the collapse they produced is already produced -- more
+   cheaply and more correctly -- by the FLIP reorder once React removes the row. */
 @keyframes crumble {
-  0%   { transform: translate(0, 0) rotate(0); max-height: 300px; }
-  35%  { transform: translate(-1px, 1px) rotate(-.25deg); }
-  60%  { transform: translate(1px, 3px) rotate(.35deg); }
-  100% { transform: translate(-6px, 16px) rotate(-1.2deg); max-height: 0;
-         margin-bottom: 0; padding-top: 0; padding-bottom: 0; }
+  0%   { transform: translate(0, 0) rotate(0) scaleY(1); }
+  35%  { transform: translate(-1px, 1px) rotate(-.25deg) scaleY(1); }
+  60%  { transform: translate(1px, 3px) rotate(.35deg) scaleY(.99); }
+  100% { transform: translate(-6px, 16px) rotate(-1.2deg) scaleY(.94); }
 }
 
 .mail-item.burning {
@@ -1083,12 +1348,16 @@ body { font-size: 14px; letter-spacing: .002em; }
 }
 .mail-item.burning .row-actions, .mail-item.burning .row-check { opacity: 0; }
 .mail-item.burning::after {
-  content: ''; position: absolute; left: 0; right: 0; height: 10px;
+  /* The band is 10px of paint inside a full-height element, so the sweep can
+     be a `translateY(100%)` -- a percentage of the element's own height, which
+     is the row's -- instead of animating `top`. Same picture, no layout. */
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 100%;
   background: linear-gradient(180deg,
               transparent,
               color-mix(in srgb, var(--ember) 85%, transparent) 45%,
               color-mix(in srgb, var(--danger) 70%, transparent) 70%,
-              transparent);
+              transparent) no-repeat;
+  background-size: 100% 10px;
   filter: blur(2px);
   animation: ember-sweep .62s .1s linear forwards;
   pointer-events: none;
@@ -1166,7 +1435,7 @@ body { font-size: 14px; letter-spacing: .002em; }
   position: absolute; top: 12px; bottom: 12px; left: 50%;
   width: 2px; margin-left: -1px; border-radius: 2px;
   background: transparent;
-  transition: background .15s ease;
+  transition: background var(--dur-instant) var(--ease-move);
 }
 .pane-resizer:hover span,
 .pane-resizer:focus-visible span,
@@ -1200,7 +1469,50 @@ body.resizing iframe { pointer-events: none; }
 
 .cal-scroll { padding: 10px 12px 14px; }
 .cal { display: flex; flex-direction: column; gap: 10px; min-height: 0; }
-.cal.busy { opacity: .72; transition: opacity .18s; }
+.cal.busy { opacity: .72; transition: opacity var(--dur-fast) var(--ease-move); }
+
+/* ---- calendar motion ---------------------------------------------------
+   The calendar had none at all. A month changed by being replaced, so the one
+   surface where the user is navigating *through* something gave no sense of
+   travel -- which is most of why the app read as static.
+
+   Two ideas only. The grid arrives as a grid, and the chips inside a day
+   cascade, because a day holding eleven things should look like it is filling
+   rather than blinking. */
+@keyframes cal-in-next { from { opacity: 0; transform: translateX(10px); }
+                         to   { opacity: 1; transform: none; } }
+@keyframes cal-in-prev { from { opacity: 0; transform: translateX(-10px); }
+                         to   { opacity: 1; transform: none; } }
+
+.cal-grid { animation: cal-in-next var(--dur-medium) var(--ease-enter) backwards; }
+.cal-grid.from-prev { animation-name: cal-in-prev; }
+
+/* Days cascade across the grid rather than down it -- reading order, so the
+   eye is led the way it already wants to go. Capped at two weeks' worth; a
+   six-row grid staggered to the end would take most of a second. */
+.cal-day { animation: fade-up var(--dur-base) var(--ease-enter) backwards; }
+.cal-day:nth-child(7n+1) { animation-delay: calc(var(--stagger) * .4); }
+.cal-day:nth-child(7n+2) { animation-delay: calc(var(--stagger) * .8); }
+.cal-day:nth-child(7n+3) { animation-delay: calc(var(--stagger) * 1.2); }
+.cal-day:nth-child(7n+4) { animation-delay: calc(var(--stagger) * 1.6); }
+.cal-day:nth-child(7n+5) { animation-delay: calc(var(--stagger) * 2); }
+.cal-day:nth-child(7n+6) { animation-delay: calc(var(--stagger) * 2.4); }
+.cal-day:nth-child(7n)   { animation-delay: calc(var(--stagger) * 2.8); }
+
+.cal-day { transition: background var(--dur-instant) var(--ease-move),
+                       border-color var(--dur-fast) var(--ease-move),
+                       transform var(--dur-fast) var(--ease-spring); }
+
+/* A chip is small and there may be sixteen of them, so this is the fast token,
+   not the base one: duration follows distance. */
+.cal-chip { animation: fade-in var(--dur-fast) var(--ease-enter) backwards; }
+.cal-chips .cal-chip:nth-child(1) { animation-delay: calc(var(--stagger) * .6); }
+.cal-chips .cal-chip:nth-child(2) { animation-delay: calc(var(--stagger) * 1); }
+.cal-chips .cal-chip:nth-child(3) { animation-delay: calc(var(--stagger) * 1.4); }
+.cal-chips .cal-chip:nth-child(n+4) { animation-delay: calc(var(--stagger) * 1.8); }
+.cal-chip { transition: background var(--dur-instant) var(--ease-move),
+                        transform var(--dur-fast) var(--ease-spring); }
+.cal-chip:hover { transform: translateX(2px); }
 
 .cal-head { display: flex; align-items: center; gap: 6px; }
 .cal-head .spacer { flex: 1; }
@@ -1235,7 +1547,7 @@ body.resizing iframe { pointer-events: none; }
   border-radius: var(--r-md);
   cursor: pointer;
   overflow: hidden;
-  transition: background .13s, border-color .13s, transform .13s;
+  transition: background var(--dur-instant) var(--ease-move), border-color var(--dur-instant) var(--ease-move), transform var(--dur-fast) var(--ease-spring);
 }
 .cal-day:hover { background: var(--surface-hover); border-color: var(--border); }
 .cal-day:active { transform: scale(.985); }
@@ -1255,8 +1567,38 @@ body.resizing iframe { pointer-events: none; }
   color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
 }
-.cal-chip.task { background: color-mix(in srgb, var(--ok, #2f7d4f) 16%, transparent); }
+/* A to-do is told apart from an email by FILL, not by hue.
+
+   It used to be a green tint from `--ok` (#3E7A48 light, #63B074 dark) while a
+   green-highlighted sender paints from `--hl-green` (#2E7D45 / #6BBF7E) -- two
+   different meanings in almost exactly the same colour, and the only thing
+   separating them was a 2px inset bar. So a day full of extracted to-dos read
+   as a day full of highlighted senders, which is what Danny reported: things
+   look highlighted when nothing is.
+
+   Hue now belongs to the highlight system alone. Everything else earns its
+   distinction from shape: a message is filled, a to-do you owe is outlined. */
+.cal-chip.task {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+  color: var(--text);
+}
 .cal-chip.done { text-decoration: line-through; opacity: .5; }
+/* Sync sits in the 2-10s band, where published guidance says a spinner is the
+   wrong instrument: it says "wait" without saying what for. The sweep stays as
+   the motion, and this carries the words -- reading, ranking, done -- so the
+   wait reads as work. */
+.sync-step {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--muted);
+  animation: fade-in var(--dur-fast) var(--ease-enter) backwards;
+}
+.sync-step .dot {
+  width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent);
+  animation: think 1.05s ease-in-out infinite;
+}
+
 .cal-more { font-size: 10px; color: var(--muted); padding-left: 5px; }
 .cal-foot { display: flex; justify-content: flex-end; }
 .cal-empty { padding: 24px; color: var(--muted); font-size: 13px; }
@@ -1282,7 +1624,7 @@ body.resizing iframe { pointer-events: none; }
   background: var(--surface);
   border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   border-radius: var(--r-md);
-  animation: fade-up .22s ease both;
+  animation: fade-up .22s ease backwards;
 }
 .day-item .row-check { left: 8px; top: 10px; }
 .day-item.busy { opacity: .55; pointer-events: none; }
@@ -1301,11 +1643,16 @@ body.resizing iframe { pointer-events: none; }
   font-size: 11px; color: var(--muted);
 }
 .day-sender { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.tag.task { background: color-mix(in srgb, var(--ok, #2f7d4f) 18%, transparent); }
+/* Same rule as the calendar chip: outlined, not tinted. See .cal-chip.task. */
+.tag.task {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent);
+  color: var(--muted);
+}
 
 .day-confirm { display: flex; gap: 4px; flex: 0 0 auto; }
 .btn.sm { padding: 2px 8px; font-size: 11px; }
-.icon-btn.danger { opacity: 0; transition: opacity .13s, color .13s; }
+.icon-btn.danger { opacity: 0; transition: opacity var(--dur-instant) var(--ease-move), color var(--dur-instant) var(--ease-move); }
 .day-item:hover .icon-btn.danger,
 .icon-btn.danger:focus-visible { opacity: .75; }
 .icon-btn.danger:hover { opacity: 1; color: var(--danger, #b4402f); }
@@ -1321,7 +1668,7 @@ body.resizing iframe { pointer-events: none; }
   width: 26px; height: 26px; padding: 0;
   background: none; border: 1px solid transparent; border-radius: 7px;
   color: var(--muted); cursor: pointer;
-  transition: background .13s, color .13s, border-color .13s, opacity .13s;
+  transition: background var(--dur-instant) var(--ease-move), color var(--dur-instant) var(--ease-move), border-color var(--dur-instant) var(--ease-move), opacity var(--dur-instant) var(--ease-move);
 }
 .icon-btn:hover { background: var(--surface-hover); border-color: var(--border); }
 .icon-btn svg { width: 15px; height: 15px; }
@@ -1356,12 +1703,16 @@ body.resizing iframe { pointer-events: none; }
 }
 .day-item.burning .day-actions, .day-item.burning .row-check { opacity: 0; }
 .day-item.burning::after {
-  content: ''; position: absolute; left: 0; right: 0; height: 10px;
+  /* The band is 10px of paint inside a full-height element, so the sweep can
+     be a `translateY(100%)` -- a percentage of the element's own height, which
+     is the row's -- instead of animating `top`. Same picture, no layout. */
+  content: ''; position: absolute; left: 0; right: 0; top: 0; height: 100%;
   background: linear-gradient(180deg,
               transparent,
               color-mix(in srgb, var(--ember) 85%, transparent) 45%,
               color-mix(in srgb, var(--danger) 70%, transparent) 70%,
-              transparent);
+              transparent) no-repeat;
+  background-size: 100% 10px;
   filter: blur(2px);
   animation: ember-sweep .62s .1s linear forwards;
   pointer-events: none;
@@ -1378,7 +1729,7 @@ body.resizing iframe { pointer-events: none; }
   cursor: pointer;
 }
 .cal-senders-toggle:hover { color: var(--text); }
-.cal-senders-toggle .caret { transition: transform .15s ease; display: inline-block; }
+.cal-senders-toggle .caret { transition: transform var(--dur-fast) var(--ease-spring); display: inline-block; }
 .cal-senders-toggle .caret.open { transform: rotate(180deg); }
 .cal-senders-hint { margin: 6px 0 8px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
 
@@ -1386,7 +1737,7 @@ body.resizing iframe { pointer-events: none; }
   list-style: none; margin: 0; padding: 0;
   display: flex; flex-direction: column; gap: 4px;
   max-height: 190px; overflow-y: auto; overflow-x: hidden;
-  animation: fade-up .2s ease both;
+  animation: fade-up .2s ease backwards;
 }
 .cal-sender-list li {
   display: flex; align-items: center; gap: 8px;
@@ -1428,7 +1779,7 @@ body.resizing iframe { pointer-events: none; }
   background: var(--surface);
   border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   border-radius: var(--r-md);
-  animation: fade-up .2s ease both;
+  animation: fade-up .2s ease backwards;
 }
 .removed-list li.busy { opacity: .5; pointer-events: none; }
 
@@ -1511,7 +1862,7 @@ body.resizing iframe { pointer-events: none; }
   border: 1px solid var(--border);
   border-radius: 999px;
   box-shadow: 0 6px 18px color-mix(in srgb, var(--shadow) 60%, transparent);
-  animation: fade-up .16s ease both;
+  animation: fade-up .16s ease backwards;
 }
 .cal-sender-list .hl-picker, .day-item .hl-picker { top: 38px; }
 
@@ -1557,3 +1908,108 @@ body.resizing iframe { pointer-events: none; }
 .hl-list .who b { font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hl-list .who span { font-size: 11px; color: var(--muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* -- the completed box ----------------------------------------------------- */
+
+/* Rows here are already dismissed, so the global `.done { opacity: .5 }` would
+   render the whole box half-faded -- a list you came to read, printed in grey.
+   Inside the box the verdict is the premise, not a demotion. */
+.from-done.mail-item.done, .from-done.mail-item.not_important,
+.from-done.mail-item.snoozed { opacity: 1; }
+.from-done .subj { text-decoration: line-through; text-decoration-thickness: 1px;
+                   text-decoration-color: color-mix(in srgb, var(--muted) 70%, transparent); }
+.tag.done-at { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 32%, transparent);
+               background: transparent; }
+
+/* -- not relevant ---------------------------------------------------------- */
+
+/* Its own colour, between the neutral actions and the destructive mute. The
+   gesture sits between them in meaning too: stronger than "later", weaker than
+   "never again from this address". */
+.row-actions button.dismissed:hover { border-color: var(--muted); color: var(--muted); }
+.row-actions button.dismissed.on { border-color: var(--muted); color: var(--muted); }
+.tag.cat { text-transform: none; letter-spacing: 0; color: var(--muted);
+           border-color: color-mix(in srgb, var(--muted) 32%, transparent);
+           background: transparent; }
+
+/* The category table in Settings: a row the user can argue with. */
+.cat-rows { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; }
+.cat-row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px;
+           align-items: center; padding: 6px 8px; border-radius: var(--r-md);
+           background: var(--surface);
+           border: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
+.cat-row .cat-name { font-size: 12.5px; }
+.cat-row .cat-count { font-size: 11.5px; color: var(--muted); }
+/* A bar, not a number. The sign is the whole message -- "shown more" or "shown
+   less" -- and a signed decimal makes the reader do arithmetic to find it. */
+.cat-bar { position: relative; width: 84px; height: 6px; border-radius: 3px;
+           background: color-mix(in srgb, var(--border) 60%, transparent); }
+.cat-bar i { position: absolute; top: 0; height: 6px; border-radius: 3px; }
+.cat-bar i.up { left: 50%; background: var(--accent); }
+.cat-bar i.down { right: 50%; background: var(--muted); }
+.cat-bar::after { content: ''; position: absolute; left: 50%; top: -2px;
+                  width: 1px; height: 10px;
+                  background: color-mix(in srgb, var(--muted) 45%, transparent); }
+
+/* -- the put-away group ---------------------------------------------------- */
+
+/* The glyph box is widened to hold the chevron rather than letting it hang
+   outside: `.rail-glyph` is an overflow container, and a 27px child in an 18px
+   box is a horizontal scrollbar waiting for a narrower window. Caught by the
+   overflow check, which is exactly what it is for. */
+.rail-group .rail-glyph { position: relative; width: 30px; }
+.rail-chevron { position: absolute; right: 0; bottom: -2px; opacity: .8;
+                transition: transform var(--dur-fast) var(--ease-move); }
+.rail-group.open .rail-chevron { transform: rotate(180deg); }
+
+/* Indented, smaller, dimmer until chosen. The children have to read as
+   contents of the folder rather than as three more top-level destinations --
+   which is the whole reason for grouping them. */
+.rail-child { padding-left: 6px; }
+.rail-child .rail-glyph { transform: scale(.82); }
+.rail-child .rail-label { font-size: 9.5px; opacity: .72; }
+.rail-child.active .rail-label { opacity: 1; }
+/* A hairline down the left of the group, so the eye reads them as one block
+   even mid-animation. */
+/* Overshoots its own box top and bottom so the segments meet across the gap
+   between rail items -- without it the "line" is three short ticks. */
+.rail-child::before {
+  content: ''; position: absolute; left: 7px; top: -5px; bottom: -5px; width: 1px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+.rail-child { position: relative; }
+.rail-child:last-of-type::before { bottom: 50%; }
+/* Each child fades in on its own beat, capped at three because there are
+   three. Without the stagger the folder opens as one block and reads as a
+   layout jump rather than a disclosure. */
+.rail-child { animation: fade-up var(--dur-fast) var(--ease-enter) backwards; }
+.rail-child:nth-of-type(1) { animation-delay: 0ms; }
+.rail-child:nth-of-type(2) { animation-delay: calc(var(--stagger) * .5); }
+.rail-child:nth-of-type(3) { animation-delay: var(--stagger); }
+
+/* -- settings: drawers and a way past them -------------------------------- */
+
+.settings-bar {
+  position: sticky; top: 0; z-index: 4;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 2px 0 10px;
+  background: var(--bg);
+  /* Sticky, because the tabs are useless the moment you scroll past them --
+     and a settings screen is a place you scroll. */
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  margin-bottom: 14px;
+}
+.settings-search { width: 100%; }
+.settings-tabs { margin: 0; flex-wrap: wrap; }
+.settings-tabs .chip:disabled { opacity: .4; cursor: default; }
+/* The native search clear button renders in the platform's accent — a blue ✕
+   on a gold screen. Recoloured rather than removed: it is the fastest way out
+   of a search and it should stay reachable. */
+.settings-search::-webkit-search-cancel-button {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; cursor: pointer; opacity: .55;
+  background: var(--muted);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M2 2l8 8M10 2l-8 8' stroke='black' stroke-width='1.6' stroke-linecap='round' fill='none'/></svg>") center/contain no-repeat;
+          mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M2 2l8 8M10 2l-8 8' stroke='black' stroke-width='1.6' stroke-linecap='round' fill='none'/></svg>") center/contain no-repeat;
+}
+.settings-search::-webkit-search-cancel-button:hover { opacity: 1; }

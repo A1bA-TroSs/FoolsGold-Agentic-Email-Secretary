@@ -20,8 +20,9 @@ from .. import db
 from .api_providers import AnthropicProvider, OpenAIProvider
 from .base import LLMProvider, ProviderUnavailable
 from .copilot_provider import CopilotProvider
+from .ollama_provider import OllamaProvider
 
-PROVIDERS = ("none", "anthropic", "openai", "copilot")
+PROVIDERS = ("none", "ollama", "anthropic", "openai", "copilot")
 
 # Which setting holds the key for each provider, so the UI and the checks below
 # agree about what "configured" means.
@@ -44,6 +45,11 @@ def is_configured(name: str | None = None) -> bool:
         return False
     if name == "copilot":
         return True
+    # A local model needs no credential at all. "Configured" therefore means
+    # "chosen" -- whether the server is actually up is a question for check(),
+    # which can answer it without spending a generation.
+    if name == "ollama":
+        return True
     setting = KEY_SETTING.get(name)
     return bool(setting and db.get_setting(setting, "").strip())
 
@@ -59,7 +65,9 @@ def get_provider() -> LLMProvider:
     if name not in PROVIDERS:
         raise ProviderUnavailable(f"Unknown AI provider '{name}'. Pick one in Settings.")
 
-    if name == "copilot":
+    if name == "ollama":
+        model = db.get_setting("ollama_model", "")
+    elif name == "copilot":
         model = db.get_setting("copilot_model", "auto")
     elif name == "anthropic":
         model = db.get_setting("anthropic_model", "claude-sonnet-4-5")
@@ -78,8 +86,10 @@ def get_provider() -> LLMProvider:
         return _cached[2]
 
     reset_cache()
-    if name == "copilot":
-        provider: LLMProvider = CopilotProvider(model)
+    if name == "ollama":
+        provider: LLMProvider = OllamaProvider(model, db.get_setting("ollama_host", ""))
+    elif name == "copilot":
+        provider = CopilotProvider(model)
     elif name == "anthropic":
         provider = AnthropicProvider(db.get_setting("anthropic_api_key", ""), model)
     else:
