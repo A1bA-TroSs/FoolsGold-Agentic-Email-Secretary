@@ -24,6 +24,22 @@ EMBEDDER_NAME = "hashing"
 # buttons, not about relevance ranking in general.
 VERDICT_SIGNALS: dict[str, tuple[str, float]] = {
     "pinned":        ("explicit_correction", 1.0),
+    # "This is not about me." The only gesture in the app that produces a clean
+    # negative, and the reason it had to be added rather than folded into the
+    # ones above: implicit feedback is structurally positive-only. Reading,
+    # replying and dwelling all say "yes"; nothing a user does passively says
+    # "this kind of thing does not concern me", so no amount of watching can
+    # learn it. Only an explicit act can.
+    #
+    # Worth recording the counter-evidence with it. Mozilla's RegretsReporter
+    # study (22,722 participants, 568M videos) measured what fraction of
+    # unwanted recommendations each control actually prevented: the
+    # source-scoped control ("don't recommend this channel" -- our mute sender)
+    # prevented 43%, while the content-scoped one ("not interested" -- this
+    # gesture) prevented 11%. Four times worse. That is not an argument against
+    # having it; it is an argument that it must carry real weight or it is
+    # theatre, which is exactly what their participants reported experiencing.
+    "not_relevant":  ("explicit_correction", 0.0),
     "not_important": ("explicit_correction", 0.0),
     "done":          ("replied", 0.0),
     "snoozed":       ("opened_dwelled", 0.0),
@@ -111,6 +127,11 @@ def learn(signals: Iterable[Signal], features_by_email: dict[str, dict[str, floa
     """
     batch = relevance.detect_bursts(list(signals))
     weights = db.ranking_weights()
+    # Per-coordinate step sizes. Read once for the batch and updated in memory
+    # as it goes, so ten signals in one batch do not all act as if they were
+    # the first one to touch a feature.
+    counts = db.weight_counts()
+    touched: set[str] = set()
     applied = 0
     refused: dict[str, int] = {}
 
@@ -122,7 +143,7 @@ def learn(signals: Iterable[Signal], features_by_email: dict[str, dict[str, floa
             refused["no-features"] = refused.get("no-features", 0) + 1
             continue
         outcome: Outcome = relevance.apply_signal(
-            signal, features, weights, epoch_start=epoch_start()
+            signal, features, weights, epoch_start=epoch_start(), counts=counts
         )
         db.record_learning_event(
             signal.email_id, signal.kind, signal.target, outcome.applied,
@@ -130,11 +151,14 @@ def learn(signals: Iterable[Signal], features_by_email: dict[str, dict[str, floa
         )
         if outcome.applied:
             applied += 1
+            for name in outcome.deltas:
+                counts[name] = counts.get(name, 0) + 1
+                touched.add(name)
         else:
             refused[outcome.reason] = refused.get(outcome.reason, 0) + 1
 
     if applied:
-        db.save_ranking_weights(weights)
+        db.save_ranking_weights(weights, touched)
     return {"offered": len(batch), "applied": applied, "refused": refused, "weights": weights}
 
 
@@ -174,6 +198,7 @@ def axes_for_email(
     task_count: int = 0,
     priorities: list[dict[str, Any]] | None = None,
     llm_matched: Iterable[str] = (),
+    category: str | None = None,
     user_address: str = "",
     correspondents: dict[str, int] | None = None,
     highlights: dict[str, str] | None = None,
@@ -183,7 +208,19 @@ def axes_for_email(
     """Both axes for one email, plus the topics it matched."""
     priorities = priorities if priorities is not None else priority.active_priorities()
     keyword_hits = [p.get("topic") for p in priority.match_priorities(email, priorities) if p.get("topic")]
-    keyword_hits += [str(t) for t in (llm_matched or ()) if str(t).strip()]
+
+    # The model's opinion about which topics an email matched is only meaningful
+    # for topics that still exist. `matched` is stored on the classification, so
+    # without this filter a deleted priority kept ranking mail forever: the
+    # keyword side correctly stopped matching, the stored side did not, and
+    # `rescore_all` faithfully reproduced the old score.
+    #
+    # That is precisely the case this design exists to handle -- "a professor
+    # matters less once the course ends" -- failing in the one place nobody
+    # looks, because the number did not change.
+    live = {(p.get("topic") or "").strip().lower() for p in priorities}
+    keyword_hits += [str(t) for t in (llm_matched or ())
+                     if str(t).strip() and str(t).strip().lower() in live]
 
     match, matched = relevance.topic_match(
         email, centroids if centroids is not None else db.priority_centroids(EMBEDDER_NAME),
@@ -203,9 +240,40 @@ def axes_for_email(
         addressed_directly=priority._addressed_directly(email, user_address),
         affinity=affinity,
         highlighted=bool(highlights and address in highlights),
+        category=category,
         weights=weights if weights is not None else db.ranking_weights(),
     )
     return axes, matched
+
+
+def reason_for_email(
+    axes,
+    matched_topics: Sequence[str],
+    deadline: str | None,
+    *,
+    verdict: str | None = None,
+    explored: bool = False,
+    today: date | None = None,
+) -> tuple[str, str]:
+    """The stored one-line reason. Days-to-deadline is resolved here because the
+    pure layer has no clock and should not acquire one."""
+    days = None
+    if deadline:
+        try:
+            days = (date.fromisoformat(str(deadline)[:10]) - (today or date.today())).days
+        except (ValueError, TypeError):
+            days = None
+        if days is not None and (days < -priority.FORGET_AFTER_DAYS or days > 14):
+            # Outside the window the app is willing to talk about a date, the
+            # date is not the reason for anything.
+            days = None
+    return relevance.reason_for(
+        axes,
+        matched_topics=matched_topics,
+        deadline_days=days,
+        pinned=(verdict == "pinned"),
+        explored=explored,
+    )
 
 
 def explain_email(email_id: str) -> dict[str, Any] | None:

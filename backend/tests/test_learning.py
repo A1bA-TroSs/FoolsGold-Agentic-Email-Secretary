@@ -394,3 +394,118 @@ def test_rescoring_is_cheap_enough_to_run_on_every_priority_edit(store):
     elapsed = time.monotonic() - started
     assert updated >= 200
     assert elapsed < 5.0, f"200 emails took {elapsed:.2f}s"
+
+
+# --------------------------------------------------------------------------
+# why a row is where it is
+# --------------------------------------------------------------------------
+
+def test_every_classified_email_can_say_why_it_ranks(store):
+    """Not decoration. The adaptive layer learns from corrections, and a
+    correction on an unexplained ranking is ambiguous -- demoted because the
+    topic was wrong, or the timing? The reason makes it interpretable."""
+    from app import pipeline, relevance
+    from app.llm.base import Classification
+
+    rows = emails(store, ["junk1", "real1"])
+    pipeline._persist(
+        [Classification(email_id="junk1", bucket="noise", deadline=None, rationale=""),
+         Classification(email_id="real1", bucket="action", deadline="2026-09-20",
+                        rationale="")],
+        rows, source="llm", model="test",
+    )
+    with db.connect() as conn:
+        stored = {r["email_id"]: dict(r) for r in
+                  conn.execute("SELECT * FROM classifications").fetchall()}
+    assert len(stored) == 2, "nothing stored -- the asserts below would be vacuous"
+    for rec in stored.values():
+        assert rec["reason_code"] in relevance.REASON_ORDER, rec["reason_code"]
+    assert stored["real1"]["reason_code"] == "topic"
+    assert stored["real1"]["reason_arg"] == "thesis"
+
+
+def test_the_reason_names_one_thing_not_six(store):
+    from app import relevance
+    from app.relevance import Axes
+
+    axes = Axes(actionability=0.9, relevance=0.9, features={
+        "topic_match": 1.0, "direct_address": 1.0, "flagged": 1.0, "affinity": 1.0,
+    })
+    code, arg = relevance.reason_for(axes, matched_topics=["thesis"], deadline_days=1)
+    assert (code, arg) == ("topic", "thesis"), "what the user declared outranks what we inferred"
+
+
+def test_a_pin_outranks_every_inferred_reason(store):
+    from app import relevance
+    from app.relevance import Axes
+
+    axes = Axes(actionability=0.9, relevance=0.9, features={"topic_match": 1.0})
+    assert relevance.reason_for(axes, matched_topics=["thesis"], pinned=True)[0] == "pinned"
+
+
+def test_a_stale_deadline_is_not_a_reason(store):
+    """`FORGET_AFTER_DAYS` says the app stops mentioning a date a month past
+    due. A reason chip saying "due" about it would reintroduce exactly what
+    that rule removed."""
+    from app import learning
+    from app.relevance import Axes
+    from datetime import date
+
+    axes = Axes(actionability=0.5, relevance=0.5, features={"direct_address": 1.0})
+    code, _ = learning.reason_for_email(
+        axes, [], "2026-01-01", today=date(2026, 9, 16))
+    assert code != "deadline"
+    code2, arg2 = learning.reason_for_email(
+        axes, [], "2026-09-18", today=date(2026, 9, 16))
+    assert (code2, arg2) == ("deadline", "2")
+
+
+def test_an_explored_row_says_so(store):
+    from app import pipeline
+    from app.llm.base import Classification
+
+    db.set_setting("explore_one_in", "1")
+    rows = emails(store, ["junk1"])
+    pipeline._persist(
+        [Classification(email_id="junk1", bucket="noise", deadline=None, rationale="")],
+        rows, source="structural", model="test",
+    )
+    with db.connect() as conn:
+        rec = dict(conn.execute(
+            "SELECT * FROM classifications WHERE email_id='junk1'").fetchone())
+    assert rec["explored"] == 1
+    assert rec["reason_code"] == "explored"
+
+
+def test_deleting_a_priority_stops_it_ranking_mail(store):
+    """The headline case of the whole design -- "a professor matters less once
+    the course ends" -- and it was broken in the one place nobody looks.
+
+    `matched` is stored on the classification, so re-scoring fed the model's old
+    opinion back in: the keyword side correctly stopped matching a deleted
+    topic, the stored side did not, and the score came out identical. Found by
+    the local-model check script, not by any unit test.
+    """
+    from app import pipeline
+    from app.llm.base import Classification
+
+    rows = emails(store, ["real1"])
+    pipeline._persist(
+        [Classification(email_id="real1", bucket="action", deadline="2026-09-20",
+                        rationale="", matched=["thesis"])],
+        rows, source="llm", model="test",
+    )
+
+    def relevance_now():
+        with db.connect() as conn:
+            return conn.execute(
+                "SELECT relevance FROM classifications WHERE email_id='real1'").fetchone()[0]
+
+    before = relevance_now()
+    with db.connect() as conn:
+        conn.execute("DELETE FROM priorities WHERE topic = 'thesis'")
+        conn.commit()
+    pipeline.rescore_all()
+
+    assert relevance_now() < before, (
+        f"relevance stayed at {before} after its only topic was deleted")

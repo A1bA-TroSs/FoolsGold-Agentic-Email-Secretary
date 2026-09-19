@@ -1,0 +1,34 @@
+model: qwen3.5:4b
+host: default
+when: 2026-09-19T05:52:30.393970+00:00
+exit: 0
+
+--------------------------------------------------------------------------
+1. Ollama is running and the model is pulled                       PASS
+    qwen3.5:4b ready on http://127.0.0.1:11434
+2. every email in the batch came back, and only those              PASS
+    4 results in 15.0s (3.7s per email)
+3. every bucket is one of the three the schema allows              PASS
+    the enum in `format` is what makes anything else impossible to emit
+4. the model agrees with the obvious answer on all four            PASS
+    2 action (1 English, 1 Korean), 1 fyi, 1 noise
+5. Korean is not quietly worse than English                        PASS
+    c2 -> action; the whole mailbox is mixed, so an average would hide this
+6. a to-do is extracted where one exists                           PASS
+    c1: Confirm CO-OP placement; c2: Reply with thesis review preference
+7. no to-do is invented where none exists                          PASS
+    over-extraction from newsletters is the documented failure mode
+8. the deadline in the text is found                               PASS
+    both dated cases resolved to 2026-09-22
+9. the pipeline stored both axes and a reason for every email      PASS
+    c1: A=0.993 R=0.8131 (topic/CO-OP); c2: A=0.9677 R=0.8131 (topic/thesis defence); c3: A=0.0832 R=0.0832 (explored); c4: A=0.2142 R=0.4013 (direct)
+10. the declared priority outranks the promotion                   PASS
+    c1(action,99.0) > c2(action,99.0) > c4(fyi,37.0) > c3(noise,20.0); c1 ranked because of topic
+11. editing the priority list re-ranks without calling the model   PASS
+    c1 relevance 0.8131 -> 0.4013 in 0.01s (no model call: rescore_all never touches the provider)
+12. a Korean email matches an English priority                     PASS
+    c2 matched ['thesis defence'] against ['CO-OP', 'thesis defence']
+--------------------------------------------------------------------------
+claims: 12/12
+
+qwen3.5:4b is wired in and priority lands. 3.7s per email on this machine.

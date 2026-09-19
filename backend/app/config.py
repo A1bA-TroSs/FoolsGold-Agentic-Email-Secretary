@@ -45,11 +45,25 @@ DEFAULT_SETTINGS = {
     # structural signals -- which works, and says so.
     "llm_provider": "none",
     "copilot_model": "auto",
+    # The local model. Empty host means Ollama's default on this machine; the
+    # point of this provider is that the mail never leaves it.
+    "ollama_model": "qwen3.5:9b",
+    "ollama_host": "",
     "anthropic_model": "claude-sonnet-4-5",
     "openai_model": "gpt-4o-mini",
     # Anything speaking the OpenAI API: Azure, OpenRouter, a local server.
     "openai_base_url": "",
     "entra_client_id": "",
+    # How far ahead a deadline still counts as pressing, and how long the flat
+    # "maximally urgent" zone lasts. Both in days, both user-editable.
+    #
+    # 7 is a default, not a finding. The closest empirical number I could find
+    # is a p90 of 11 days to task completion from one small task-manager's
+    # published data -- suggestive, not evidence. The shape matters more than
+    # the number: a Gaussian decay has no cliff at the window edge, where a
+    # linear one drops to zero the moment you step outside it.
+    "deadline_horizon_days": "7",
+    "deadline_urgent_days": "2",
     "sync_days": "30",
     "sync_max_messages": "300",
     "classify_batch_size": "10",

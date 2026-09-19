@@ -159,6 +159,57 @@ CREATE TABLE IF NOT EXISTS digests (
     created_at TEXT
 );
 
+-- Every sync run, with its outcome. Writeback as audit trail, applied to the
+-- one operation the user experiences as "is this thing working".
+--
+-- The background poller swallowed every exception on purpose -- a flaky
+-- network must not take down the app someone is reading mail in -- and the
+-- cost of that was a mailbox frozen on 14 September with nothing anywhere
+-- saying why. "Nothing new arrived" and "this has been broken for five days"
+-- produced identical screens.
+--
+-- `newest_received` is the freshness fact that matters and is not derivable
+-- from the counts: a sync can succeed, write fifty rows, and still be looking
+-- at a mail store that stopped updating days ago, because this app reads Apple
+-- Mail's files rather than the mail server. That distinction is invisible
+-- without this column.
+CREATE TABLE IF NOT EXISTS sync_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at      TEXT NOT NULL,
+    finished_at     TEXT,
+    trigger         TEXT NOT NULL,          -- poller | user | startup
+    ok              INTEGER NOT NULL DEFAULT 0,
+    error           TEXT NOT NULL DEFAULT '',
+    scanned         INTEGER NOT NULL DEFAULT 0,
+    fetched         INTEGER NOT NULL DEFAULT 0,
+    written         INTEGER NOT NULL DEFAULT 0,
+    newest_received TEXT                    -- the newest received_at now in the db
+);
+
+-- The evaluation set: the user's own mail, labelled by hand, kept in the user's
+-- own database and nowhere else.
+--
+-- There is no published Korean benchmark for any of the models this app can
+-- run -- I looked, and the gap is real -- so the only ground truth available is
+-- this mailbox. That makes the labels the most valuable artifact in the
+-- project, and also the most sensitive: they are a judgement about real mail
+-- from real people. They live here, beside the mail they describe, and no
+-- script in this repo writes them anywhere else.
+--
+-- `bucket IS NULL` means sampled but not yet labelled, which is what lets the
+-- labeller be resumed across sittings instead of demanding one long one.
+CREATE TABLE IF NOT EXISTS eval_labels (
+    email_id     TEXT PRIMARY KEY,
+    bucket       TEXT,                    -- action | fyi | noise, NULL = unlabelled
+    deadline     TEXT,                    -- YYYY-MM-DD, or NULL for "none in the text"
+    tasks        TEXT NOT NULL DEFAULT '[]',   -- JSON list of {title, due}
+    addressed    INTEGER,                 -- 1 if it is addressed to the user personally
+    language     TEXT,                    -- ko | en | mixed, assigned at sampling
+    stratum      TEXT,                    -- how it was chosen, so coverage is auditable
+    note         TEXT NOT NULL DEFAULT '',
+    labelled_at  TEXT
+);
+
 -- The learned half of relevance. Deliberately a table of scalars rather than a
 -- blob in `settings`: every weight is inspectable, one row at a time, and the
 -- thing that changed is legible in a diff.
@@ -203,12 +254,50 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Databases this process has already brought up to schema. Keyed on the path,
+# not a bare boolean, because the tests repoint DB_PATH per test and a global
+# flag would leave every database after the first one uninitialised.
+_SCHEMA_READY: set[str] = set()
+
+
 def connect() -> sqlite3.Connection:
+    """A connection to a database that is guaranteed to have the current schema.
+
+    The guarantee is the point. `init_db()` used to run in exactly one place --
+    the FastAPI lifespan hook -- so any code path that did not start the web app
+    was working against whatever schema happened to be on disk. That is not
+    hypothetical: `scripts/build_eval_set.py` died with `no such table:
+    eval_labels` on a database created before that table existed, because a
+    standalone script has no lifespan hook to run.
+
+    The same trap was set for `sync_events`, one layer deeper and worse: it is
+    read by `GET /api/mail`, so an older database would have answered the mail
+    list with a 500 until someone restarted the backend.
+
+    Both are the shape this project keeps re-learning -- a rule that holds only
+    while everybody remembers to follow it. Making the connection itself
+    responsible removes the remembering. `init_db()` is idempotent (every
+    statement is IF NOT EXISTS, every migration checks first), and this runs at
+    most once per database per process.
+    """
+    global _SCHEMA_READY
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+
+    key = str(DB_PATH)
+    if key not in _SCHEMA_READY:
+        # Added BEFORE the call, because init_db() calls connect() and would
+        # otherwise recurse until the stack ran out.
+        _SCHEMA_READY.add(key)
+        try:
+            init_db()
+        except Exception:
+            _SCHEMA_READY.discard(key)
+            conn.close()
+            raise
     return conn
 
 
@@ -230,7 +319,21 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     ("classifications", "explored", "INTEGER DEFAULT 0"),
     # What the provider said, before the two axes re-derived the bucket. Kept so
     # that re-deriving never feeds on its own previous output.
+    # How many signals have touched this feature. Not bookkeeping: the step
+    # size is scaled by it, so a feature the model has never seen moves at full
+    # speed on its first correction and a well-estimated one settles down.
+    ("ranking_weights", "count", "INTEGER NOT NULL DEFAULT 0"),
+    # What KIND of thing this is, from a fixed eight-way taxonomy. Stored so a
+    # per-category preference can be learned and, more importantly, inspected:
+    # "you have marked six of eight hackathon invitations irrelevant" is a
+    # sentence the user can agree or disagree with. A hidden weight is not.
+    ("classifications", "category", "TEXT"),
     ("classifications", "model_bucket", "TEXT"),
+    # Why this email ranks where it does, as a code the UI translates. Stored
+    # rather than computed on read so the list does not need one API call per
+    # row, and so the explanation is the same object the score was.
+    ("classifications", "reason_code", "TEXT"),
+    ("classifications", "reason_arg", "TEXT"),
     # How a signal arrived, not just that it did. This is what separates a QA
     # click from a triage decision -- the rows were identical before.
     ("feedback", "provenance", "TEXT"),
@@ -497,20 +600,23 @@ def save_classification(rec: dict[str, Any]) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT INTO classifications (email_id, bucket, deadline, rationale, score, matched, "
-            "model, source, created_at, actionability, relevance, explored, model_bucket) "
+            "model, source, created_at, actionability, relevance, explored, model_bucket, "
+            "reason_code, reason_arg) "
             "VALUES (:email_id, :bucket, :deadline, :rationale, :score, :matched, :model, :source, "
-            ":created_at, :actionability, :relevance, :explored, :model_bucket) "
+            ":created_at, :actionability, :relevance, :explored, :model_bucket, "
+            ":reason_code, :reason_arg) "
             "ON CONFLICT(email_id) DO UPDATE SET bucket=excluded.bucket, deadline=excluded.deadline, "
             "rationale=excluded.rationale, score=excluded.score, matched=excluded.matched, "
             "model=excluded.model, source=excluded.source, created_at=excluded.created_at, "
             "actionability=excluded.actionability, relevance=excluded.relevance, "
-            "explored=excluded.explored, model_bucket=excluded.model_bucket",
+            "explored=excluded.explored, model_bucket=excluded.model_bucket, "
+            "reason_code=excluded.reason_code, reason_arg=excluded.reason_arg",
             # The two axes are optional on the way in so an older caller -- or a
             # test that only cares about the bucket -- does not have to know
             # about them. A missing axis is NULL, which is honestly "not
             # computed" rather than a plausible zero.
             {"actionability": None, "relevance": None, "explored": 0,
-             "model_bucket": None, **rec},
+             "model_bucket": None, "reason_code": None, "reason_arg": None, **rec},
         )
         conn.commit()
 
@@ -519,7 +625,15 @@ def save_classification(rec: dict[str, Any]) -> None:
 # feedback
 # --------------------------------------------------------------------------
 
-VALID_VERDICTS = {"done", "pinned", "not_important", "snoozed"}
+# `not_relevant` is new and deliberately NOT a rename of `not_important`.
+#
+# Two reasons. The meanings differ -- "not important" is a judgement about one
+# message, "not relevant" is a judgement about a kind of thing, and the second
+# is the one that can teach a category weight. And `not_important` already has
+# stored rows from the QA period with murky provenance; folding the new gesture
+# into it would poison, on day one, the single cleanest negative signal this
+# app will ever get.
+VALID_VERDICTS = {"done", "pinned", "not_important", "not_relevant", "snoozed"}
 
 
 def set_feedback(email_id: str, verdict: str, snooze_until: str | None = None) -> None:
@@ -956,14 +1070,37 @@ def ranking_weights() -> dict[str, float]:
     return {r["name"]: float(r["value"]) for r in rows}
 
 
-def save_ranking_weights(weights: dict[str, float]) -> None:
+def weight_counts() -> dict[str, int]:
+    """How many signals have touched each feature.
+
+    This is the per-coordinate half of the learning rate. Google's FTRL paper
+    argues the case with a coin-flipping analogy: a single global step size
+    "decreases for coin i even when it is not being flipped", which is simply
+    wrong -- a feature you have barely observed should move further per
+    observation than one you have seen a hundred times. They measured an 11.2%
+    AucLoss reduction from per-coordinate rates.
+
+    For this app it is the mechanism behind the thing the user actually asked
+    for: a handful of clicks visibly changing the ranking. A brand-new category
+    has a count of zero, so its first correction moves it the full distance.
+    """
+    with connect() as conn:
+        rows = conn.execute("SELECT name, count FROM ranking_weights").fetchall()
+    return {r["name"]: int(r["count"] or 0) for r in rows}
+
+
+def save_ranking_weights(weights: dict[str, float], touched: Iterable[str] = ()) -> None:
     stamp = now_iso()
+    bump = {str(t) for t in touched}
     with connect() as conn:
         for name, value in weights.items():
             conn.execute(
-                "INSERT INTO ranking_weights (name, value, updated_at) VALUES (?, ?, ?) "
-                "ON CONFLICT(name) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                (name, float(value), stamp),
+                "INSERT INTO ranking_weights (name, value, updated_at, count) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET value=excluded.value, "
+                "updated_at=excluded.updated_at, "
+                "count=ranking_weights.count + excluded.count",
+                (name, float(value), stamp, 1 if name in bump else 0),
             )
         conn.commit()
 
@@ -1082,3 +1219,125 @@ def drop_priority_centroid(topic: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM priority_centroids WHERE topic = ?", ((topic or "").strip(),))
         conn.commit()
+
+
+# --------------------------------------------------------------------------
+# sync events
+# --------------------------------------------------------------------------
+
+def record_sync(trigger: str, started_at: str, *, ok: bool, error: str = "",
+                scanned: int = 0, fetched: int = 0, written: int = 0) -> None:
+    """One row per attempt, successes and failures alike.
+
+    A failure that is only logged to a console nobody reads is a failure the
+    user experiences as "the app is stuck" with no way to find out more.
+    """
+    with connect() as conn:
+        newest = conn.execute("SELECT MAX(received_at) FROM emails").fetchone()[0]
+        conn.execute(
+            "INSERT INTO sync_events (started_at, finished_at, trigger, ok, error, "
+            "scanned, fetched, written, newest_received) VALUES (?,?,?,?,?,?,?,?,?)",
+            (started_at, now_iso(), trigger, 1 if ok else 0, (error or "")[:500],
+             scanned, fetched, written, newest),
+        )
+        # Bounded on purpose: this is a diagnostic tail, not a history.
+        conn.execute("DELETE FROM sync_events WHERE id <= "
+                     "(SELECT MAX(id) - 200 FROM sync_events)")
+        conn.commit()
+
+
+def last_sync() -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM sync_events ORDER BY id DESC LIMIT 1").fetchone()
+        failing = conn.execute(
+            "SELECT COUNT(*) FROM sync_events WHERE id > "
+            "COALESCE((SELECT MAX(id) FROM sync_events WHERE ok = 1), 0)").fetchone()[0]
+    if row is None:
+        return None
+    out = dict(row)
+    out["ok"] = bool(out["ok"])
+    # How long it has been broken, not just that the last one broke. One failed
+    # attempt is a blip; forty in a row is the thing the user is looking at.
+    out["consecutive_failures"] = failing
+    return out
+
+
+def source_freshness() -> dict[str, Any]:
+    """How long the mail source has been producing nothing, and how hard we looked.
+
+    Not a timeout and not a guess. The app reads Apple Mail's files rather than
+    the mail server, so it is exactly as fresh as Apple Mail is -- and when
+    Mail.app is closed, or has stopped syncing, this app faithfully shows a
+    frozen inbox with no way to tell that apart from a quiet week.
+
+    The evidence that distinguishes them is already recorded: a run of
+    SUCCESSFUL syncs over which `newest_received` never moved. Two successful
+    checks an hour apart finding the same newest message is a quiet hour. Sixty
+    of them over five days is a source that has stopped.
+    """
+    with connect() as conn:
+        newest = conn.execute("SELECT MAX(received_at) FROM emails").fetchone()[0]
+        if not newest:
+            return {"newest_received": None, "frozen_since": None,
+                    "frozen_checks": 0, "frozen_hours": 0.0}
+        # The earliest successful sync that already saw this same newest message.
+        row = conn.execute(
+            "SELECT MIN(finished_at) AS since, COUNT(*) AS n FROM sync_events "
+            "WHERE ok = 1 AND newest_received = ?", (newest,)).fetchone()
+    since, checks = (row["since"], row["n"]) if row else (None, 0)
+    hours = 0.0
+    if since:
+        try:
+            delta = datetime.now(timezone.utc) - datetime.fromisoformat(since)
+            hours = round(delta.total_seconds() / 3600.0, 1)
+        except ValueError:
+            hours = 0.0
+    return {"newest_received": newest, "frozen_since": since,
+            "frozen_checks": checks, "frozen_hours": hours}
+
+
+def category_evidence() -> list[dict[str, Any]]:
+    """Per category: how many, and what the user did with them.
+
+    The point of this is not the model. It is the sentence it lets the UI
+    write: "you have marked six of eight competition emails as not relevant".
+    That is a claim the user can agree with, disagree with, or correct -- and a
+    learned weight on its own is none of those things.
+
+    The interactive-ML literature is blunt about why this matters: in a
+    77-participant email-classification study, showing people what the model
+    believed and letting them correct it directly cut the labels needed from
+    182 to 47 -- a quarter as many -- and produced a classifier that was ~10%
+    more accurate (F1 0.85 vs 0.77). The lever behind "a handful of clicks
+    changes things" is explanation, not a bigger step size.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT COALESCE(NULLIF(c.category, ''), 'uncategorised') AS category, "
+            "       COUNT(*) AS total, "
+            "       SUM(CASE WHEN f.verdict = 'not_relevant' THEN 1 ELSE 0 END) AS dismissed, "
+            "       SUM(CASE WHEN f.verdict = 'done' THEN 1 ELSE 0 END) AS done, "
+            "       SUM(CASE WHEN f.verdict = 'pinned' THEN 1 ELSE 0 END) AS pinned "
+            "FROM classifications c LEFT JOIN feedback f ON f.email_id = c.email_id "
+            "GROUP BY category ORDER BY total DESC"
+        ).fetchall()
+    weights = ranking_weights()
+    counts = weight_counts()
+    out = []
+    for row in rows:
+        name = row["category"]
+        key = f"cat_{name}"
+        out.append({
+            "category": name,
+            "total": int(row["total"]),
+            "dismissed": int(row["dismissed"] or 0),
+            "done": int(row["done"] or 0),
+            "pinned": int(row["pinned"] or 0),
+            "weight": round(float(weights.get(key, 0.0)), 4),
+            # How settled the weight is. A category touched twice moves fast and
+            # should be presented as provisional; one touched forty times has
+            # earned its number.
+            "signals": int(counts.get(key, 0)),
+        })
+    return out

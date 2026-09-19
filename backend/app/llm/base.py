@@ -5,6 +5,8 @@ Copilot for Claude for a local model changes one setting and nothing else.
 """
 from __future__ import annotations
 
+from .. import relevance
+
 import json
 import re
 from abc import ABC, abstractmethod
@@ -99,6 +101,7 @@ class Classification:
     deadline: str | None = None
     rationale: str = ""
     matched: list[str] = field(default_factory=list)
+    category: str = ""
     tasks: list[ExtractedTask] = field(default_factory=list)
 
 
@@ -188,10 +191,24 @@ Rules for tasks:
 List which of the user's active priorities the email relates to, using their exact
 wording. Empty list if none.
 
+Also give one "category" from exactly this list, describing what KIND of thing the
+email is. This is independent of the bucket: an exam notice can be "fyi" and a
+hackathon invitation can be "action".
+- "exam"          tests, quizzes, grades, results, invigilation
+- "coursework"    assignments, submissions, projects, labs, reports
+- "announcement"  course or LMS notices, timetable changes, class admin
+- "career"        recruiting, internships, co-op, employers, career services
+- "event"         talks, seminars, socials, campus happenings
+- "competition"   hackathons, contests, calls for application, prizes
+- "admin"         registry, fees, ID cards, visas, housing, enrolment
+- "service"       IT tickets, system notices, password and account mail
+Use "" if genuinely none of them fit. Do not invent a category outside this list.
+
 Reply with a JSON array and nothing else. One object per email, same order as given:
 [{"id": "<id>", "bucket": "action|fyi|noise", "deadline": "YYYY-MM-DD or null",
   "tasks": [{"title": "<verb-first, max 12 words>", "due": "YYYY-MM-DD"}],
-  "matched": ["priority", ...], "rationale": "<max 15 words>"}]"""
+  "matched": ["priority", ...], "category": "<one of the list above, or \"\">",
+  "rationale": "<max 15 words>"}]"""
 
 DIGEST_SYSTEM = """You write one short morning briefing for a busy person, in the voice of
 a trusted assistant who has already read everything.
@@ -202,7 +219,12 @@ emails that matter today, each with a one-line reason, plus a single headline
 sentence for the whole day.
 
 Rules:
-- Order by what is time-critical today. Deadlines and decisions first.
+- The window is what matters. Prefer things due TODAY or within the next few
+  days, then things due later in the window. An item whose deadline has already
+  passed belongs here only if it passed very recently and can still be caught;
+  something overdue by a week is not what "today" means, however important it
+  once was.
+- Within the same urgency, order by how much it matters to this person.
 - At most 7 items. Leave out anything that does not need them today.
 - Each note is at most 14 words, names concrete people and dates, and says what
   the user must actually DO. Not "an email about X" -- "confirm the room by 5pm".
@@ -247,8 +269,22 @@ def build_digest_prompt(
 ) -> str:
     prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
     lines = []
+    today = date.today()
     for e in emails:
-        deadline = f" | due {e['deadline']}" if e.get("deadline") else ""
+        # The model is told how far off each deadline is, not only its date.
+        # Asking it to prefer "today or this week" while handing it bare ISO
+        # dates makes it do calendar arithmetic it is bad at, on the one field
+        # the instruction turns on.
+        deadline = ""
+        if e.get("deadline"):
+            try:
+                days = (date.fromisoformat(e["deadline"]) - today).days
+                when = ("due today" if days == 0
+                        else f"due in {days}d" if days > 0
+                        else f"{-days}d OVERDUE")
+                deadline = f" | {when} ({e['deadline']})"
+            except ValueError:
+                deadline = f" | due {e['deadline']}"
         lines.append(
             f"id: {e['id']}\n"
             f"[{e.get('bucket','fyi')}{deadline}] {e.get('subject','')} "
@@ -393,6 +429,13 @@ def parse_classifications(raw: str, expected_ids: list[str]) -> list[Classificat
                 continue
         bucket = str(item.get("bucket") or "").strip().lower()
         matched = item.get("matched") or []
+        # Validated against the taxonomy, not trusted. An unknown category is
+        # dropped to "" rather than kept, because a category the app does not
+        # know is a feature nothing will ever learn a weight for -- it would
+        # sit in the vector as a permanent zero and look like data.
+        category = str(item.get("category") or "").strip().lower()
+        if category not in relevance.CATEGORIES:
+            category = ""
         out.append(
             Classification(
                 email_id=email_id,
@@ -400,6 +443,7 @@ def parse_classifications(raw: str, expected_ids: list[str]) -> list[Classificat
                 deadline=_clean_deadline(item.get("deadline")),
                 rationale=str(item.get("rationale") or "")[:300],
                 matched=[str(m) for m in matched if m] if isinstance(matched, list) else [],
+                category=category,
                 tasks=parse_tasks(item.get("tasks")),
             )
         )

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './lib/api.js';
+import { useEvent } from './lib/useEvent.js';
+import { reuseUnchanged } from './lib/reconcile.js';
 import { I18nContext, translator } from './lib/i18n.js';
 import Connect from './components/Connect.jsx';
 import Digest from './components/Digest.jsx';
@@ -13,8 +15,8 @@ import Settings from './components/Settings.jsx';
 import Calendar, { DayPanel, useCalendar, todayIso } from './components/Calendar.jsx';
 import Splash from './components/Splash.jsx';
 import LogoMenu from './components/LogoMenu.jsx';
-import { SkeletonList, Sweep, SyncingNote, ThinkingNote } from './components/Loading.jsx';
-import { AgendaIcon, BackIcon, CalendarIcon, GearIcon, InboxIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
+import { SkeletonList, Sweep, SyncStep, ThinkingNote } from './components/Loading.jsx';
+import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
 
 /* Views are a flat list including Settings, not a modal on top of everything
    else. Settings used to be a boolean overlay, which meant clicking a sidebar
@@ -34,8 +36,37 @@ const VIEWS = [
   { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: AgendaIcon },
   { id: 'all',      key: 'viewAll',      hintKey: 'viewAllHint',      short: 'railAll',      icon: InboxIcon },
   { id: 'calendar', key: 'viewCalendar', hintKey: 'viewCalendarHint', short: 'railCalendar', icon: CalendarIcon },
-  { id: 'muted',    key: 'viewMuted',    hintKey: 'viewMutedHint',    short: 'railMuted',    icon: MuteIcon },
 ];
+
+/* The three lists of decisions already made, folded into one group.
+
+   They arrived one at a time -- done, then dismissed, then muted was already
+   there -- and by the third the rail was six items deep before Settings, with
+   the three you look at least often sitting in the middle of the three you
+   look at constantly. They are also the same KIND of thing: none of them is a
+   place you read mail, all of them are places you go to check or reverse
+   something you did. A group says that; six equal buttons said the opposite.
+
+   Collapsed by default, and opened automatically when one of them is the
+   current view -- otherwise clicking into a list would leave the thing you are
+   looking at hidden inside a closed folder. */
+const PUT_AWAY = [
+  { id: 'done',      key: 'viewDone',      hintKey: 'viewDoneHint',      short: 'railDone',      icon: CheckIcon },
+  { id: 'dismissed', key: 'viewDismissed', hintKey: 'viewDismissedHint', short: 'railDismissed', icon: IrrelevantIcon },
+  { id: 'muted',     key: 'viewMuted',     hintKey: 'viewMutedHint',     short: 'railMuted',     icon: MuteIcon },
+];
+const PUT_AWAY_IDS = PUT_AWAY.map((v) => v.id);
+const PUT_AWAY_KEY = 'foolsgold.putAwayOpen';
+
+/* A date for a banner, not for a row. Deliberately separate from the list's
+   `when()`: that one says "09:14" for today, which is exactly wrong in a
+   sentence whose whole point is that the date is days old. */
+const shortDate = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? String(iso).slice(0, 10)
+    : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
 
 /* The divider between the list and the reading pane is draggable. The chosen
    width lives in localStorage rather than in settings, because it describes
@@ -64,6 +95,21 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [source, setSource] = useState({ name: 'applemail', label: '', ready: false });
   const [view, setView] = useState('priority');
+  /* Folded by default, and the choice is remembered -- it describes how this
+     person likes their window, not anything about the account.
+     `try` because a private window can make localStorage throw on read. */
+  const [putAwayOpen, setPutAwayOpen] = useState(() => {
+    try { return localStorage.getItem(PUT_AWAY_KEY) === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(PUT_AWAY_KEY, putAwayOpen ? '1' : '0'); } catch { /* private window */ }
+  }, [putAwayOpen]);
+  /* Opened whenever one of its lists becomes the current view. Without this,
+     arriving at Dismissed from a keyboard shortcut or a restored session would
+     show the list with its own folder shut above it. */
+  useEffect(() => {
+    if (PUT_AWAY_IDS.includes(view)) setPutAwayOpen(true);
+  }, [view]);
   const [settings, setSettings] = useState(null);
   const [theme, setTheme] = useState('gold');
   const [lang, setLang] = useState('en');
@@ -72,13 +118,25 @@ export default function App() {
   const [mail, setMail] = useState([]);
   const [counts, setCounts] = useState({});
   const [aiStatus, setAiStatus] = useState({ available: true, off: false, detail: '' });
+  /* What the last sync actually did. The app reads Apple Mail's files rather
+     than the mail server, so it is exactly as fresh as Apple Mail is -- and
+     until this existed, a source that had stopped producing looked identical
+     to a quiet week. */
+  const [syncState, setSyncState] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [cursorId, setCursorId] = useState(null);
   const [bucketFilter, setBucketFilter] = useState(null);
   const [search, setSearch] = useState('');
   const [listLoading, setListLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [digest, setDigest] = useState(null);
+  const [digest, setDigestState] = useState(null);
+  /* The briefing is one entry per actionable email, so on a full mailbox it is
+     the same size as the list and re-renders for the same reason. */
+  const setDigest = useCallback((next) => setDigestState((prev) => {
+    if (!next || !prev) return next;
+    const items = reuseUnchanged(prev.items, next.items);
+    return items === prev.items ? { ...next, items: prev.items } : { ...next, items };
+  }), []);
   const [digestLoading, setDigestLoading] = useState(false);
   const [banner, setBanner] = useState('');
   const [leaving, setLeaving] = useState(null);   // { id, kind } while a row plays out
@@ -145,14 +203,21 @@ export default function App() {
       const data = await api.listMail({
         // The muted box hides the bucket chips, so applying a filter the user
         // cannot see (or clear) would silently shrink it.
-        bucket: view === 'muted' ? null : bucketFilter,
+        bucket: (view === 'muted' || view === 'done' || view === 'dismissed') ? null : bucketFilter,
         search: search.trim() || undefined,
-        sort: view === 'all' ? 'date' : 'priority',
+        sort: view === 'all' ? 'date' : (view === 'done' || view === 'dismissed') ? 'decided' : 'priority',
         muted: view === 'muted',
+        // Sorted by the decision, newest first: the tick you want back is the
+        // one you just made.
+        verdict: view === 'done' ? 'done' : view === 'dismissed' ? 'not_relevant' : undefined,
       });
-      setMail(data.items);
+      /* Not `setMail(data.items)`. Reusing the row objects that did not
+         change is what lets the memoised rows stay put through a reload --
+         see lib/reconcile.js. */
+      setMail((prev) => reuseUnchanged(prev, data.items));
       setCounts(data.counts || {});
       setAiStatus(data.ai || { available: true });
+      setSyncState(data.sync || null);
       setFirstPaint(true);
     } catch (e) {
       setBanner(e.message);
@@ -169,6 +234,36 @@ export default function App() {
     try { setHighlighted((await api.highlightedSenders()).items || []); } catch { /* offline */ }
   }, []);
   useEffect(() => { if (source.ready) loadMuted(); }, [source.ready, loadMuted, view]);
+
+  /* Keep the open window in step with the mailbox.
+
+     The backend has synced every five minutes since it was written, and the
+     window never showed the result: `loadMail` ran on a user action and on
+     nothing else. So the app could pull twelve new emails an hour and display
+     none of them until someone pressed refresh -- which is the difference
+     between an inbox and a screenshot of one.
+
+     Two triggers, because they answer different questions. The interval keeps
+     a window left open on a second monitor current. The focus handler covers
+     the far more common case: the laptop was shut, the poller never ran, and
+     the first thing the user does on coming back is look at it. Polling on an
+     interval alone would leave that first look stale for up to five minutes.
+
+     `document.hidden` is checked so a background window does no work at all --
+     a hidden tab refetching every ninety seconds is battery spent on pixels
+     nobody is looking at. */
+  useEffect(() => {
+    if (!source.ready) return undefined;
+    const tick = () => { if (!document.hidden) loadMail(); };
+    const timer = setInterval(tick, 90_000);
+    window.addEventListener('focus', tick);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', tick);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [source.ready, loadMail]);
 
   /* What has been taken off the calendar. Loaded with the muted box, which is
      where it lives, and refreshed after a delete so the two views agree. */
@@ -270,29 +365,46 @@ export default function App() {
     return ids;
   }, [mail, justDone]);
 
+  /* What the list shows.
+
+     The priority view used to hide `noise`, which made it a second opinion
+     about what deserved to exist rather than an ordering of what does. Two
+     things went wrong with that. The briefing beside it answers "what needs me
+     today" and was answering it from the same narrowed set, so the two panes
+     said nearly the same thing in different words. And a ranked list that also
+     hides things asks the user to trust a judgement they cannot check --
+     suppression is the self-concealing case, which is the whole reason the
+     exploration quota had to exist.
+
+     Now the division of labour is clean: the BRIEFING is the short answer,
+     scoped to the deadline window, and the PRIORITY LIST is every email you
+     have not already dealt with, in rank order, with the bucket chips there to
+     narrow it when you want that. Nothing is hidden by the app; things are
+     only hidden by you, and everything you hid is in Put away.
+
+     Worth noting what this costs: the explored badge meant "the ranker
+     suppressed this and is showing it anyway". In a list that suppresses
+     nothing it is no longer a gap in a one-way door -- it still marks a row the
+     ranker is unsure about, which is useful, but the door it was propping open
+     is now simply not shut. The badge stays; its justification changed. */
   const visible = useMemo(() => {
-    if (view === 'all') return mail;
+    // The put-away lists are made of dismissed mail by definition, so the
+    // filter below -- which exists to hide dismissed mail -- would empty them.
+    if (view === 'all' || view === 'done' || view === 'dismissed') return mail;
     return mail.filter((m) =>
       // The row being animated out has to stay mounted until its exit finishes.
       // Filtering on the optimistic verdict alone unmounted it on the same tick
       // the checkbox was ticked, so the completion animation never played --
       // the row simply blinked out of existence.
       m.id === leaving?.id
-      // Highlighting is an explicit "I want to spot these". Leaving such a
-      // sender filtered out as noise would contradict the instruction the
-      // moment it was given -- you colour an address and its mail is nowhere.
-      // It does not change the ranking, only whether the row is on screen.
-      || (m.highlight && !DISMISSED.has(m.verdict))
-      // An explored row is `noise` by definition -- it is mail the ranker
-      // suppressed and is showing anyway because it might be wrong. Without
-      // this line the badge could never appear: the filter below removed every
-      // row exploration had just chosen. Exactly bug #27 again, where a
-      // highlighted noise sender vanished from this same list.
-      || (m.explored && !DISMISSED.has(m.verdict))
-      || (m.bucket !== 'noise' && !DISMISSED.has(m.verdict)));
+      || !DISMISSED.has(m.verdict));
   }, [mail, view, leaving]);
 
-  const applyFeedback = useCallback(async (id, verdict) => {
+  /* `useEvent`, not `useCallback`. This handler reads `mail`, and `mail` is
+     replaced by the very click it is handling -- so under `useCallback` it was
+     reborn at the exact moment the memoised rows needed it to hold still, and
+     all 187 re-rendered underneath the completion animation. */
+  const applyFeedback = useEvent(async (id, verdict) => {
     const previous = mail.find((m) => m.id === id)?.verdict ?? null;
 
     // Completing and dismissing get different exits on purpose. Ticking
@@ -302,6 +414,11 @@ export default function App() {
     // left. Two different feelings for two different meanings.
     const kind = verdict === 'done' ? 'done'
       : verdict === 'not_important' || verdict === 'snoozed' ? 'banish'
+      // Un-ticking inside the completed box means the row leaves that box, and
+      // it should leave the way anything neutral leaves -- not with the gold
+      // wash of completion, and not with the grey collapse of a rejection.
+      : verdict === 'not_relevant' ? 'banish'
+      : (verdict === null && (view === 'done' || view === 'dismissed')) ? 'restore'
       : null;
     const exits = view !== 'all' && kind !== null;
 
@@ -324,7 +441,7 @@ export default function App() {
       else await api.clearFeedback(id);
       // Hold the list still until the exit animation finishes, or the row is
       // yanked out from under the animation and the gesture reads as a glitch.
-      const settle = kind === 'done' ? 800 : kind === 'banish' ? 480 : 0;
+      const settle = kind === 'done' ? 800 : kind === 'banish' ? 480 : kind === 'restore' ? 360 : 0;
       setTimeout(() => {
         setLeaving(null);
         loadMail();
@@ -337,17 +454,17 @@ export default function App() {
       setLeaving(null);
       loadMail();
     }
-  }, [mail, view, loadMail]);
+  });
 
   /* Muting is a decision about a correspondent, so it confirms first and then
      burns the row away rather than sliding it out like a completed task. */
-  async function askMute(email) {
+  const askMute = useEvent(async (email) => {
     const address = email.from_address;
     if (!address) return;
     let count = 0;
     try { count = (await api.muteImpact(address)).message_count; } catch { /* offline */ }
     setMuteTarget({ email, count });
-  }
+  });
 
   async function confirmMute() {
     if (!muteTarget) return;
@@ -387,7 +504,7 @@ export default function App() {
      about the correspondent -- so one call updates both surfaces at once and
      neither can hold a stale idea of who is coloured. It also un-mutes, which
      is why the mail list has to be reloaded and not merely repainted. */
-  async function setHighlight(address, color) {
+  const setHighlight = useEvent(async (address, color) => {
     if (!address) return;
     try {
       if (color) await api.highlightSender(address, color);
@@ -398,7 +515,7 @@ export default function App() {
     } catch (e) {
       setBanner(e.message);
     }
-  }
+  });
 
   async function undoFeedback() {
     if (!undo) return;
@@ -445,6 +562,7 @@ export default function App() {
         case 'Enter': case 'o': e.preventDefault(); return setSelectedId(cursorId || ids[0]);
         case 'p': return applyFeedback(cursorId || ids[0], 'pinned');
         case 'e': return applyFeedback(cursorId || ids[0], 'done');
+        case 'i': return applyFeedback(cursorId || ids[0], 'not_relevant');
         case 'x': {
           const target = visible.find((m) => m.id === (cursorId || ids[0]));
           return target ? askMute(target) : undefined;
@@ -570,6 +688,7 @@ export default function App() {
         <Titlebar title={t('appName')} sub={t('notConnected')} />
         <div className="app">
           <Rail view={view} setView={setView} counts={counts} t={t}
+                putAwayOpen={putAwayOpen} setPutAwayOpen={setPutAwayOpen}
                 logoOpen={logoOpen} onLogo={() => setLogoOpen((v) => !v)} />
           <div className="pane-detail">
             {banner && <div className="banner"><span className="dot" />{banner}</div>}
@@ -589,12 +708,13 @@ export default function App() {
       <Titlebar
         title={inSettings ? t('viewSettings') : t(currentView?.key || 'viewPriority')}
         sub={inSettings ? t('settingsSub') : source.account || source.label}
-        right={!inSettings && syncing ? <SyncingNote>Syncing…</SyncingNote> : null}
+        right={!inSettings && syncing ? <SyncStep /> : null}
       />
       {syncing && <Sweep />}
 
       <div className="app">
         <Rail view={view} setView={setView} counts={counts} t={t}
+              putAwayOpen={putAwayOpen} setPutAwayOpen={setPutAwayOpen}
               logoOpen={logoOpen} onLogo={() => setLogoOpen((v) => !v)} />
         <LogoMenu
           open={logoOpen} onClose={() => setLogoOpen(false)}
@@ -629,7 +749,7 @@ export default function App() {
                 </button>
               </div>
 
-              {view !== 'muted' && view !== 'calendar' && <div className="filters">
+              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && <div className="filters">
                 {[
                   { id: null, label: `${t('filterAll')} ${visible.length ? `(${visible.length})` : ''}` },
                   { id: 'action', label: `${t('filterAction')} ${counts.action ? `(${counts.action})` : ''}` },
@@ -669,6 +789,8 @@ export default function App() {
                       ? <SkeletonList />
                       : <MailList items={visible} selectedId={selectedId} cursorId={cursorId}
                                   leaving={leaving} mutedView={view === 'muted'}
+                                  doneView={view === 'done'}
+                                  dismissedView={view === 'dismissed'}
                                   onSelect={openEmail} onFeedback={applyFeedback} onMute={askMute}
                                   onHighlight={setHighlight} />}
                   </>
@@ -680,6 +802,7 @@ export default function App() {
                 <span><kbd>↵</kbd> {t('keyOpen')}</span>
                 <span><kbd>p</kbd> {t('keyPin')}</span>
                 <span><kbd>e</kbd> {t('keyDone')}</span>
+                <span><kbd>i</kbd> {t('keyDismissed')}</span>
                 <span><kbd>x</kbd> {t('keyMute')}</span>
                 <span><kbd>s</kbd> {t('keySnooze')}</span>
                 <span><kbd>u</kbd> {t('keyUndo')}</span>
@@ -721,6 +844,33 @@ export default function App() {
                 </div>
               )}
 
+              {/* The mailbox stopped, and the app used to have no way to say so.
+
+                  Two different sentences on purpose. `failing` means this app
+                  is erroring and names the error. `frozen` means this app is
+                  working perfectly and the thing it reads has stopped -- which
+                  is not the user's fault, not a bug they can report, and
+                  needs the one instruction that actually fixes it. Showing
+                  "something went wrong" for both would be worse than silence,
+                  because it would send them looking in the wrong place. */}
+              {syncState?.state === 'failing' && (
+                <div className="banner">
+                  <span className="dot" />
+                  {t('syncFailing', { arg: String(syncState.consecutive_failures || 1) })}
+                  {syncState.error ? ` — ${syncState.error.slice(0, 120)}` : ''}
+                </div>
+              )}
+              {syncState?.state === 'frozen' && (
+                <div className="banner">
+                  <span className="dot" />
+                  {t('syncFrozen', {
+                    date: shortDate(syncState.newest_received),
+                    hours: String(Math.round(syncState.frozen_hours || 0)),
+                    checks: String(syncState.frozen_checks || 0),
+                  })}
+                </div>
+              )}
+
               {selectedId ? (
                 <>
                   {/* The way back. Reading an email is a detour from a list, a
@@ -755,6 +905,7 @@ export default function App() {
                     digest={digest} loading={digestLoading} onRefresh={refreshDigest}
                     selectedId={selectedId} checkedIds={doneIds}
                     onOpen={openEmail} onDone={applyFeedback}
+                    onOpenSettings={() => setView('settings')}
                   />
                   <div className="empty">
                     {listLoading ? <ThinkingNote>{t('thinking')}</ThinkingNote> : t('selectEmail')}
@@ -802,7 +953,7 @@ function Titlebar({ title, sub, right }) {
   );
 }
 
-function Rail({ view, setView, counts, logoOpen, onLogo, t }) {
+function Rail({ view, setView, counts, logoOpen, onLogo, t, putAwayOpen, setPutAwayOpen }) {
   return (
     <nav className="rail">
       <img className={`logo ${logoOpen ? 'open' : ''}`} src="./logo.png"
@@ -814,6 +965,7 @@ function Rail({ view, setView, counts, logoOpen, onLogo, t }) {
           game -- a sun in particular read as a brightness control. */}
       {VIEWS.map(({ id, key, hintKey, short, icon: Icon }) => (
         <button key={id} className={`rail-item ${view === id ? 'active' : ''}`}
+                data-view={id}
                 title={`${t(key)} — ${t(hintKey)}`}
                 onClick={() => setView(id)}>
           <span className="rail-glyph">
@@ -823,8 +975,30 @@ function Rail({ view, setView, counts, logoOpen, onLogo, t }) {
           <span className="rail-label">{t(short)}</span>
         </button>
       ))}
+
+      {/* Decisions already made. One folder, three lists. */}
+      <button className={`rail-item rail-group ${putAwayOpen ? 'open' : ''} ${
+                !putAwayOpen && PUT_AWAY_IDS.includes(view) ? 'active' : ''}`}
+              data-view="put-away"
+              aria-expanded={putAwayOpen}
+              title={t('viewPutAwayHint')}
+              onClick={() => setPutAwayOpen((v) => !v)}>
+        <span className="rail-glyph"><ArchiveIcon /><ChevronDownIcon /></span>
+        <span className="rail-label">{t('railPutAway')}</span>
+      </button>
+      {putAwayOpen && PUT_AWAY.map(({ id, key, hintKey, short, icon: Icon }) => (
+        <button key={id} className={`rail-item rail-child ${view === id ? 'active' : ''}`}
+                data-view={id}
+                title={`${t(key)} — ${t(hintKey)}`}
+                onClick={() => setView(id)}>
+          <span className="rail-glyph"><Icon /></span>
+          <span className="rail-label">{t(short)}</span>
+        </button>
+      ))}
+
       <div className="spacer" />
       <button className={`rail-item ${view === 'settings' ? 'active' : ''}`} title={t('viewSettings')}
+              data-view="settings"
               onClick={() => setView('settings')}>
         <span className="rail-glyph"><GearIcon /></span>
         <span className="rail-label">{t('railSettings')}</span>

@@ -131,18 +131,6 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
         if email is None:
             continue
 
-        # The to-dos read out of the body are the real answer to "what do I owe
-        # anyone?". Reconciled rather than inserted, so re-reading a message
-        # neither duplicates its commitments nor resurrects ones already dealt
-        # with. A structural pass carries no tasks and must not wipe the ones a
-        # previous model pass found, so an empty list from the fallback is
-        # skipped rather than synced.
-        if c.tasks or source == "llm":
-            db.sync_email_tasks(
-                c.email_id,
-                [{"title": t.title, "due_date": t.due_date} for t in c.tasks],
-            )
-
         deadline = _soonest_obligation(c)
 
         # The bucket stops being the model's verdict and becomes derived from
@@ -157,6 +145,7 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
             task_count=len(c.tasks),
             priorities=priorities,
             llm_matched=c.matched,
+            category=c.category,
             user_address=me,
             correspondents=correspondents,
             highlights=highlights,
@@ -174,12 +163,43 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
         if bucket == "noise" and (email.get("from_address") or "").lower() not in muted:
             explorable.append(c.email_id)
 
+        # The to-dos read out of the body are the real answer to "what do I owe
+        # anyone?". Reconciled rather than inserted, so re-reading a message
+        # neither duplicates its commitments nor resurrects ones already dealt
+        # with. A structural pass carries no tasks and must not wipe the ones a
+        # previous model pass found, so an empty list from the fallback is
+        # skipped rather than synced.
+        #
+        # **A noise email contributes no to-dos at all**, and this runs after
+        # the bucket is derived so it can know that. Extracting obligations from
+        # mail the app has just decided is not about your life is incoherent,
+        # and it was the mechanism behind the calendar filling up: one
+        # departmental newsletter listing four programmes became four personal
+        # commitments. Syncing to an empty list rather than skipping is what
+        # clears the ones already there -- and `sync_email_tasks` deletes only
+        # rows no other message names and the user never touched, so a to-do
+        # that was ticked, removed, or typed by hand survives.
+        if bucket == "noise":
+            db.sync_email_tasks(c.email_id, [])
+        elif c.tasks or source == "llm":
+            db.sync_email_tasks(
+                c.email_id,
+                [{"title": t.title, "due_date": t.due_date} for t in c.tasks],
+            )
+
+        verdict = (feedback.get(c.email_id) or {}).get("verdict")
         score, matched = priority.score_email(
             email, bucket, deadline, priorities,
             llm_matched=c.matched, user_address=me, today=today,
             correspondents=correspondents,
-            verdict=(feedback.get(c.email_id) or {}).get("verdict"),
+            verdict=verdict,
             sender_muted=(email.get("from_address") or "").lower() in muted,
+        )
+        # Computed after scoring so it can name the topic that actually matched,
+        # and stored beside the score rather than recomputed on read -- the list
+        # must not need one API call per row to say why a row is there.
+        reason_code, reason_arg = learning.reason_for_email(
+            axes, matched or axis_topics, deadline, verdict=verdict, today=today,
         )
         db.save_classification({
             "email_id": c.email_id,
@@ -194,20 +214,31 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
             "actionability": axes.actionability,
             "relevance": axes.relevance,
             "explored": 0,
+            "reason_code": reason_code,
+            "reason_arg": reason_arg,
             # Kept apart from `bucket` on purpose: `bucket` is derived and will
             # be re-derived, so overwriting the model's own answer with it would
             # destroy the only unrewritten input rescore_all has.
             "model_bucket": c.bucket,
+            "category": c.category,
         })
 
     # Exploration, decided over the whole suppressed batch. An oracle ranker
     # maximises feedback-loop degeneracy, and `noise` is otherwise a one-way
     # door: a muted sender can never be discovered to matter again, because
     # nothing they send is ever shown to be corrected.
-    for email_id in learning.explored_in_batch(explorable):
+    chosen = learning.explored_in_batch(explorable)
+    if chosen:
         with db.connect() as conn:
-            conn.execute("UPDATE classifications SET explored = 1 WHERE email_id = ?",
-                         (email_id,))
+            # "Shown as a guess" outranks every inferred reason -- it IS the
+            # reason the row is on screen. A pin is the user's own word and
+            # keeps precedence over both.
+            conn.executemany(
+                "UPDATE classifications SET explored = 1, "
+                "reason_code = CASE WHEN reason_code = 'pinned' THEN reason_code "
+                "ELSE 'explored' END WHERE email_id = ?",
+                [(i,) for i in chosen],
+            )
             conn.commit()
 
 
@@ -371,7 +402,7 @@ def rescore_all() -> int:
     updated = 0
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT e.*, c.bucket, c.deadline, c.matched, c.model_bucket "
+            "SELECT e.*, c.bucket, c.deadline, c.matched, c.model_bucket, c.category "
             "FROM emails e JOIN classifications c ON c.email_id = e.id"
         ).fetchall()
         for row in rows:
@@ -390,6 +421,7 @@ def rescore_all() -> int:
                 task_count=len(db.email_task_ids() & {email["id"]}),
                 priorities=priorities,
                 llm_matched=llm_matched,
+                category=email.get("category"),
                 user_address=me,
                 correspondents=correspondents,
                 highlights=highlights,
@@ -400,18 +432,25 @@ def rescore_all() -> int:
             if bucket == "noise" and (email.get("from_address") or "").lower() not in muted:
                 explorable.append(email["id"])
 
+            verdict = (feedback.get(email["id"]) or {}).get("verdict")
             score, matched = priority.score_email(
                 email, bucket, email.get("deadline"),
                 priorities, llm_matched=llm_matched, user_address=me, today=today,
                 correspondents=correspondents,
-                verdict=(feedback.get(email["id"]) or {}).get("verdict"),
+                verdict=verdict,
                 sender_muted=(email.get("from_address") or "").lower() in muted,
+            )
+            reason_code, reason_arg = learning.reason_for_email(
+                axes, matched or axis_topics, email.get("deadline"),
+                verdict=verdict, today=today,
             )
             conn.execute(
                 "UPDATE classifications SET score = ?, matched = ?, bucket = ?, "
-                "actionability = ?, relevance = ?, explored = 0 WHERE email_id = ?",
+                "actionability = ?, relevance = ?, explored = 0, "
+                "reason_code = ?, reason_arg = ? WHERE email_id = ?",
                 (score, ",".join(matched or axis_topics), bucket,
-                 axes.actionability, axes.relevance, email["id"]),
+                 axes.actionability, axes.relevance, reason_code, reason_arg,
+                 email["id"]),
             )
             updated += 1
         conn.commit()
@@ -420,7 +459,9 @@ def rescore_all() -> int:
     if chosen:
         with db.connect() as conn:
             conn.executemany(
-                "UPDATE classifications SET explored = 1 WHERE email_id = ?",
+                "UPDATE classifications SET explored = 1, "
+                "reason_code = CASE WHEN reason_code = 'pinned' THEN reason_code "
+                "ELSE 'explored' END WHERE email_id = ?",
                 [(i,) for i in chosen],
             )
             conn.commit()
@@ -431,34 +472,106 @@ def rescore_all() -> int:
 # digest
 # --------------------------------------------------------------------------
 
+# How far past due a thing can be and still belong in "today". Two days,
+# because the deadline curve already treats an overdue-by-two as very likely
+# still actionable -- past that it is a thing you missed, not a thing today.
+DIGEST_OVERDUE_GRACE = 2
+
+
+def _digest_rank(deadline: str | None, score: float, today: date) -> tuple[int, float, float]:
+    """Sort key for the briefing: when it is due first, how it ranks second.
+
+    The briefing answers "what should I do today", and the score alone does not
+    answer that. Score mixes urgency with relevance, so a strongly-relevant
+    email whose deadline passed last week outranks a moderately-relevant one due
+    this afternoon -- which is how a list headed "What's crucial today" filled
+    with things that were crucial last Tuesday.
+
+    Three tiers, then score inside each:
+
+      0  due today or within the look-ahead window   <- what today is for
+      1  overdue by no more than the grace period    <- still catchable
+      2  everything else, dated or not
+
+    Deliberately an ordering and not a filter. When nothing at all is due this
+    week the briefing should still say something useful rather than go blank,
+    and a two-day-overdue item is exactly what it should say.
+    """
+    if not deadline:
+        return (2, 0.0, -score)
+    try:
+        days = (date.fromisoformat(deadline) - today).days
+    except ValueError:
+        return (2, 0.0, -score)
+    horizon = priority.horizon_days()
+    if 0 <= days <= horizon:
+        # Nearest first inside the window: today beats Friday.
+        return (0, float(days), -score)
+    if -DIGEST_OVERDUE_GRACE <= days < 0:
+        # Most recently missed first -- yesterday is likelier to be live.
+        return (1, float(-days), -score)
+    return (2, 0.0, -score)
+
+
 def _digest_candidates(limit: int = 25, today: date | None = None) -> list[dict[str, Any]]:
-    """Top-ranked mail that still needs the user. Anything already ticked off,
-    muted or snoozed is excluded -- a briefing that lists things you have
-    already dealt with trains you to ignore the briefing."""
+    """Mail that still needs the user, ordered by when it is due.
+
+    Anything already ticked off, muted or snoozed is excluded -- a briefing
+    that lists things you have already dealt with trains you to ignore the
+    briefing.
+    """
+    today = today or date.today()
+    where = ("WHERE c.bucket != 'noise' "
+             "  AND (f.verdict IS NULL OR f.verdict = 'pinned') "
+             "  AND e.from_address NOT IN (SELECT address FROM muted_senders) ")
+    join = ("FROM emails e JOIN classifications c ON c.email_id = e.id "
+            "LEFT JOIN feedback f ON f.email_id = e.id ")
+
+    # Two passes, and the reason is not performance alone.
+    #
+    # Selecting the top N by score and then re-sorting them by date decides the
+    # shortlist on the wrong axis: an email due tomorrow that sits below the cut
+    # never reaches the sort meant to promote it, so the briefing would still
+    # lead with whatever was stale and loud. Over-fetching by some factor only
+    # moves where that cliff sits.
+    #
+    # So: rank EVERY candidate on ids and dates alone -- three small columns,
+    # no bodies -- and only then fetch the full rows for the handful that won.
     with db.connect() as conn:
+        keys = conn.execute(
+            f"SELECT e.id, c.deadline, c.score {join}{where}").fetchall()
+
+        # Materialised, not looked up inside the sort key: a `next(... for k in
+        # keys ...)` there is a linear scan per comparison, which on a
+        # thousand-row mailbox is a million string compares to choose seven
+        # lines of a briefing.
+        scored = [(r["id"],
+                   None if priority.is_forgotten(r["deadline"], today) else r["deadline"],
+                   r["score"] or 0.0)
+                  for r in keys]
+        ranked = [(eid, deadline) for eid, deadline, _ in sorted(
+            scored, key=lambda row: _digest_rank(row[1], row[2], today))[:limit]]
+        if not ranked:
+            return []
+
+        order = {eid: i for i, (eid, _) in enumerate(ranked)}
+        forgotten = {eid for eid, deadline in ranked if deadline is None}
+        placeholders = ",".join("?" for _ in order)
         rows = conn.execute(
             "SELECT e.id, e.subject, e.from_name, e.from_address, e.received_at, "
-            "       e.body_text, e.body_preview, "
-            "       c.bucket, c.deadline, c.score "
-            "FROM emails e JOIN classifications c ON c.email_id = e.id "
-            "LEFT JOIN feedback f ON f.email_id = e.id "
-            "WHERE c.bucket != 'noise' "
-            "  AND (f.verdict IS NULL OR f.verdict = 'pinned') "
-            "  AND e.from_address NOT IN (SELECT address FROM muted_senders) "
-            "ORDER BY c.score DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+            f"       e.body_text, e.body_preview, c.bucket, c.deadline, c.score {join}"
+            f"WHERE e.id IN ({placeholders})", tuple(order)).fetchall()
 
-    today = today or date.today()
     out = []
     for row in rows:
         email = dict(row)
         # A deadline a month past is not a deadline any more. Blanked here
         # rather than filtered, because the mail may still be worth raising for
         # other reasons -- it just must not be introduced as something due.
-        if priority.is_forgotten(email.get("deadline"), today):
+        if email["id"] in forgotten:
             email["deadline"] = None
         out.append(email)
+    out.sort(key=lambda e: order[e["id"]])
     return out
 
 
@@ -522,6 +635,19 @@ def cached_digest(day: str | None = None) -> dict[str, Any] | None:
     cached = _unpack(dict(row))
     if cached.get("logic_version") != DIGEST_LOGIC_VERSION:
         return None            # built by older rules; rebuild rather than serve
+
+    # A briefing is stamped with what produced it, and the briefing is cached for
+    # the whole day. Switch provider at lunchtime and the morning's stamp keeps
+    # naming the old one -- the footer then reports a fact that stopped being
+    # true, which is worse than reporting nothing. Rebuild instead.
+    stamped = (cached.get("model") or "").split(":", 1)[0]
+    configured = (db.get_setting("llm_provider", "none") or "none").lower()
+    if stamped and stamped not in ("none", "structural") and stamped != configured:
+        return None
+    if stamped == "structural" and configured not in ("", "none"):
+        # It fell back because AI was unavailable. If a provider has since been
+        # configured, the fallback is not the answer any more.
+        return None
     return _with_current_verdicts(cached)
 
 
@@ -630,7 +756,15 @@ def _fallback_agenda(
     # Ascending, so the most pressing comes first -- but only among dates that
     # still mean something. Without the filter in _digest_candidates the single
     # oldest deadline in the mailbox led the briefing every single morning.
-    dated = sorted((e for e in emails if e.get("deadline")), key=lambda e: e["deadline"])
+    #
+    # Ascending by date was still the wrong order once the filter existed: the
+    # oldest *surviving* deadline led instead, which on a mailbox with a backlog
+    # means the briefing opens with something that was due last week. Same rank
+    # as the model path uses, so the no-AI briefing and the AI one agree about
+    # what "today" means rather than differing by which of them is running.
+    day = date.fromisoformat(today)
+    dated = sorted((e for e in emails if e.get("deadline")),
+                   key=lambda e: _digest_rank(e["deadline"], e.get("score") or 0.0, day))
     for e in dated[:5]:
         rows.append(row_for(e))
         used.add(e["id"])

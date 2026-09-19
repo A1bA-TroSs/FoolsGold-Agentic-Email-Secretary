@@ -3,7 +3,7 @@ import { api } from '../lib/api.js';
 import { LANGUAGES, useT } from '../lib/i18n.js';
 
 const SOURCE_KEYS = ['user_address', 'applemail_root', 'applemail_inbox_only'];
-const AI_KEYS = ['llm_provider', 'copilot_model', 'anthropic_api_key',
+const AI_KEYS = ['llm_provider', 'ollama_model', 'ollama_host', 'copilot_model', 'anthropic_api_key',
                  'anthropic_model', 'openai_api_key', 'openai_model', 'openai_base_url'];
 const SYNC_KEYS = ['sync_days', 'sync_max_messages', 'classify_batch_size'];
 const NOTIFY_KEYS = ['notify_enabled', 'notify_morning', 'notify_evening'];
@@ -14,6 +14,52 @@ const THEMES = [
   { id: 'green', key: 'themeGreen', colors: ['#F1F6EE', '#DCE8D3', '#4C7A3D', '#2B3D24'] },
   { id: 'purple', key: 'themePurple', colors: ['#F5F0F8', '#E4D6EC', '#7E4F9E', '#3C2C4A'] },
 ];
+
+/* Settings, in drawers rather than one scroll.
+
+   Eleven sections had accumulated, and the shape of the screen said they were
+   all equally likely to be wanted -- so finding the sync window meant scrolling
+   past the AI provider, the priority list and the whole learning panel. The
+   groups below are not a taxonomy of the code; they are a guess at what a
+   person is holding in mind when they open this screen: "where does my mail
+   come from", "how does it look", "how is it ranked", "what is doing the
+   thinking".
+
+   The search box is the escape hatch from a wrong guess, and it deliberately
+   IGNORES the tabs: someone typing "ollama" wants the provider section
+   wherever it lives, not "no results in View". A grouping you cannot search
+   past is worse than no grouping, because it hides things confidently. */
+const GROUPS = [
+  { id: 'all',  key: 'grpAll' },
+  { id: 'mail', key: 'grpMail' },
+  { id: 'view', key: 'grpView' },
+  { id: 'rank', key: 'grpRank' },
+  { id: 'ai',   key: 'grpAi' },
+];
+
+const SEARCHABLE = [
+  'mailSource', 'mailSourceHelp', 'applemail', 'mailbox', 'folder',
+  'msRegistration', 'language', 'theme', 'aiProvider', 'providerLocal',
+  'ollamaModel', 'ollamaHost', 'activePriorities', 'rankTitle', 'rankHelp',
+  'deadlineWindow', 'deadlineUrgent', 'rankVolume', 'catTitle',
+  'rescoreTitle', 'rescoreHelp', 'rescanTitle', 'notifyTitle', 'sync',
+  'daysToKeep', 'maxMessages', 'batchSize',
+];
+
+function Section({ group, titleKey, hintKey, terms = [], tab, q, t, children }) {
+  const needle = (q || '').trim().toLowerCase();
+  if (needle) {
+    /* Searched against what is on SCREEN -- the translated strings -- not
+       against the key names. A Korean user typing 동기화 has no reason to know
+       the section is called `sync` in the source. */
+    const hay = [titleKey, hintKey, ...terms]
+      .filter(Boolean).map((k) => t(k)).join(' ').toLowerCase();
+    if (!hay.includes(needle)) return null;
+  } else if (tab !== 'all' && tab !== group) {
+    return null;
+  }
+  return <section data-group={group} data-section={titleKey}>{children}</section>;
+}
 
 export default function Settings({
   settings, onSettings, theme, onTheme, source, onSourceChange, onSignOut, lang, onLanguage,
@@ -32,12 +78,16 @@ export default function Settings({
   const [ranking, setRanking] = useState(null);
   const [volume, setVolume] = useState('');
   const [rankMsg, setRankMsg] = useState(null);
+  const [cats, setCats] = useState(null);
+  const [tab, setTab] = useState('all');
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
     api.ranking().then((r) => {
       setRanking(r);
       setVolume(String(r.target_action_volume ?? 8));
     }).catch(() => {});
+    api.rankCategories().then((r) => setCats(r.categories || [])).catch(() => {});
   }, []);
 
   /* One helper for all three buttons. Each reports its own outcome rather than
@@ -92,11 +142,31 @@ export default function Settings({
 
   const provider = value('llm_provider');
 
+  const needle = query.trim().toLowerCase();
+
   return (
     <div className="scroll">
       <div className="settings">
 
-        <section>
+        <div className="settings-bar">
+          <input className="input settings-search" type="search"
+                 placeholder={t('settingsSearch')} value={query}
+                 onChange={(e) => setQuery(e.target.value)} />
+          <div className="filters settings-tabs">
+            {GROUPS.map((g) => (
+              <button key={g.id}
+                      className={`chip ${!needle && tab === g.id ? 'active' : ''}`}
+                      /* Dimmed rather than hidden while searching: the tabs
+                         going blank would read as the app breaking, and the
+                         user needs them back the moment they clear the box. */
+                      disabled={!!needle}
+                      onClick={() => setTab(g.id)}>{t(g.key)}</button>
+            ))}
+          </div>
+        </div>
+
+        <Section group="mail" titleKey="mailSource" hintKey="mailSourceHelp" terms={["applemail", "mailbox", "folder"]}
+                 tab={tab} q={query} t={t}>
           <h3>{t('mailSource')}</h3>
           <p className="hint">{t('mailSourceHelp')}</p>
 
@@ -113,7 +183,12 @@ export default function Settings({
 
           {sourceInfo && (
             <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 12, lineHeight: 1.6 }}>
-              {Object.entries(sourceInfo.statuses).map(([name, st]) => (
+              {/* `?? {}`, because `Object.entries(undefined)` throws and React
+                  unmounts the tree -- the whole settings screen goes white
+                  over one absent field. Same lesson as the `matched` string
+                  that cost the entire window. The guard above checked the
+                  object and not the field it then indexed. */}
+              {Object.entries(sourceInfo.statuses ?? {}).map(([name, st]) => (
                 <div key={name}>
                   <strong style={{ color: st.ready ? 'var(--accent-strong)' : 'var(--muted)' }}>
                     {name === 'applemail' ? 'Apple Mail' : 'Outlook'}:
@@ -158,10 +233,11 @@ export default function Settings({
               <button className="btn" onClick={onSignOut}>{t('signOutOutlook')}</button>
             )}
           </div>
-        </section>
+        </Section>
 
         {value('mail_source') === 'graph' && (
-        <section>
+        <Section group="mail" titleKey="msRegistration"
+                 tab={tab} q={query} t={t}>
           <h3>{t('msRegistration')}</h3>
           <p className="hint">{t('msRegistrationHelp')}</p>
           <div className="field">
@@ -170,10 +246,11 @@ export default function Settings({
           </div>
           <button className="btn primary" onClick={() => save(['entra_client_id'])}
                   disabled={draft.entra_client_id === undefined}>{t('saveClientId')}</button>
-        </section>
+        </Section>
         )}
 
-        <section>
+        <Section group="view" titleKey="language"
+                 tab={tab} q={query} t={t}>
           <h3>{t('language')}</h3>
           <p className="hint">{t('languageHelp')}</p>
           <div className="lang-grid">
@@ -184,9 +261,10 @@ export default function Settings({
               </button>
             ))}
           </div>
-        </section>
+        </Section>
 
-        <section>
+        <Section group="view" titleKey="theme"
+                 tab={tab} q={query} t={t}>
           <h3>{t('theme')}</h3>
           <p className="hint">{t('themeHelp')}</p>
           <div className="theme-grid">
@@ -202,15 +280,21 @@ export default function Settings({
               </button>
             ))}
           </div>
-        </section>
+        </Section>
 
-        <section>
+        <Section group="ai" titleKey="aiProvider" terms={["providerLocal", "ollamaModel", "ollamaHost"]}
+                 tab={tab} q={query} t={t}>
           <h3>{t('aiProvider')}</h3>
           <p className="hint">{t('aiProviderHelp')}</p>
           <div className="field">
             <label>{t('provider')}</label>
             <select className="input" value={provider} onChange={(e) => edit('llm_provider', e.target.value)}>
               <option value="none">{t('providerNone')}</option>
+              {/* Local first, and named for where it runs rather than for whose
+                  API it is. For an app that reads the whole mailbox, "never
+                  leaves this Mac" is the property worth putting at the top of
+                  the list. */}
+              <option value="ollama">{t('providerLocal')}</option>
               <option value="anthropic">Anthropic (Claude)</option>
               <option value="openai">{t('providerOpenAI')}</option>
               <option value="copilot">GitHub Copilot</option>
@@ -226,6 +310,27 @@ export default function Settings({
               <p className="hint" style={{ marginTop: 6 }}>{t('providerNoneHelp')}</p>
             )}
           </div>
+
+          {provider === 'ollama' && (
+            <>
+              <p className="hint">{t('localHelp')}</p>
+              <div className="field">
+                <label>{t('ollamaModel')}</label>
+                <input className="input" value={value('ollama_model')}
+                       onChange={(e) => edit('ollama_model', e.target.value)}
+                       placeholder="qwen3.5:9b" />
+                <p className="hint" style={{ marginTop: 6 }}>
+                  {t('localPull', { model: value('ollama_model') || 'qwen3.5:9b' })}
+                </p>
+              </div>
+              <div className="field">
+                <label>{t('ollamaHost')}</label>
+                <input className="input" value={value('ollama_host')}
+                       onChange={(e) => edit('ollama_host', e.target.value)}
+                       placeholder="http://127.0.0.1:11434" />
+              </div>
+            </>
+          )}
 
           {provider === 'copilot' && (
             <div className="field">
@@ -298,9 +403,10 @@ export default function Settings({
               </span>
             )}
           </div>
-        </section>
+        </Section>
 
-        <section>
+        <Section group="rank" titleKey="activePriorities"
+                 tab={tab} q={query} t={t}>
           <h3>{t('activePriorities')}</h3>
           <p className="hint">{t('activePrioritiesHelp')}</p>
 
@@ -344,9 +450,10 @@ export default function Settings({
               </div>
             )}
           </div>
-        </section>
+        </Section>
 
-        <section>
+        <Section group="rank" titleKey="rankTitle" hintKey="rankHelp" terms={["deadlineWindow", "deadlineUrgent", "rankVolume", "catTitle"]}
+                 tab={tab} q={query} t={t}>
           <h3>{t('rankTitle')}</h3>
           <p className="hint">{t('rankHelp')}</p>
 
@@ -364,6 +471,27 @@ export default function Settings({
                   {t('rankStart')}
                 </button>
               )}
+
+              {/* The look-ahead window. Two knobs, both phrased as questions a
+                  person can answer about their own week rather than as model
+                  parameters -- "how far ahead do I want to see" and "how many
+                  days count as right now". */}
+              <div className="field row" style={{ marginTop: 14, alignItems: 'flex-end' }}>
+                <label style={{ flex: 1 }}>
+                  {t('deadlineWindow')}
+                  <input className="input" type="number" min="1" max="120"
+                         value={value('deadline_horizon_days')}
+                         onChange={(e) => edit('deadline_horizon_days', e.target.value)} />
+                </label>
+                <label style={{ flex: 1 }}>
+                  {t('deadlineUrgent')}
+                  <input className="input" type="number" min="0" max="30"
+                         value={value('deadline_urgent_days')}
+                         onChange={(e) => edit('deadline_urgent_days', e.target.value)} />
+                </label>
+              </div>
+              <p className="hint">{t('deadlineWindowHelp')}</p>
+              <p className="hint">{t('deadlineUrgentHelp')}</p>
 
               <div className="field row" style={{ marginTop: 14, alignItems: 'flex-end' }}>
                 <label style={{ flex: 1 }}>
@@ -386,6 +514,40 @@ export default function Settings({
                   act: ranking.thresholds.action.toFixed(2),
                 })}
               </p>
+
+              {/* What the app has concluded about each KIND of mail, in a form
+                  that can be disagreed with.
+
+                  This is the lever, not a bigger step size. In a 77-person
+                  email-classification study, showing people what the model
+                  believed and letting them correct it directly cut the labels
+                  needed from 182 to 47 and produced a classifier ~10% more
+                  accurate. "Six of your eight competition emails, set aside" is
+                  a claim; a weight of -1.4023 is not.
+
+                  `signals` is shown because it is the honest measure of how
+                  much to believe the bar beside it. A category corrected twice
+                  moves fast and deserves to be read as provisional. */}
+              {cats && cats.some((c) => c.dismissed || c.signals) && (
+                <div style={{ marginTop: 16 }}>
+                  <p style={{ fontSize: 12.5, fontWeight: 600 }}>{t('catTitle')}</p>
+                  <div className="cat-rows">
+                    {cats.filter((c) => c.dismissed || c.signals).map((c) => (
+                      <div className="cat-row" key={c.category}>
+                        <span className="cat-name">{t(`cat_${c.category}`)}</span>
+                        <span className="cat-count">
+                          {c.dismissed}/{c.total} · {c.signals}
+                        </span>
+                        <span className="cat-bar" title={String(c.weight)}>
+                          <i className={c.weight >= 0 ? 'up' : 'down'}
+                             style={{ width: `${Math.min(42, Math.abs(c.weight) * 30)}px` }} />
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="hint">{t('catHelp')}</p>
+                </div>
+              )}
 
               {/* Refusals are the diagnosis for "it is not adapting", so they
                   are shown next to the count of what did land, not hidden. */}
@@ -434,9 +596,20 @@ export default function Settings({
               )}
             </>
           )}
-        </section>
+        </Section>
 
-        <section>
+        <Section group="rank" titleKey="rescoreTitle" hintKey="rescoreHelp"
+                 tab={tab} q={query} t={t}>
+          <h3>{t('rescoreTitle')}</h3>
+          <p className="hint">{t('rescoreHelp')}</p>
+          <button className="btn"
+                  onClick={() => rankAction(api.rescore, (r) => t('rescoreDone', { n: r.rescored }))}>
+            {t('rescoreAction')}
+          </button>
+        </Section>
+
+        <Section group="rank" titleKey="rescanTitle"
+                 tab={tab} q={query} t={t}>
           <h3>{t('rescanTitle')}</h3>
           <p className="hint">{t('rescanHelp')}</p>
           <button className="btn" disabled={rescanning}
@@ -459,9 +632,10 @@ export default function Settings({
               {rescan.detail}
             </p>
           )}
-        </section>
+        </Section>
 
-        <section>
+        <Section group="view" titleKey="notifyTitle"
+                 tab={tab} q={query} t={t}>
           <h3>{t('notifyTitle')}</h3>
           <p className="hint">{t('notifyHelp')}</p>
           <div className="field row">
@@ -485,9 +659,10 @@ export default function Settings({
           </div>
           <button className="btn primary" disabled={!dirty(NOTIFY_KEYS)}
                   onClick={() => save(NOTIFY_KEYS)}>{t('save')}</button>
-        </section>
+        </Section>
 
-        <section>
+        <Section group="mail" titleKey="sync" terms={["daysToKeep", "maxMessages", "batchSize"]}
+                 tab={tab} q={query} t={t}>
           <h3>{t('sync')}</h3>
           <div className="field">
             <label>{t('daysToKeep')}</label>
@@ -506,7 +681,13 @@ export default function Settings({
           </div>
           <button className="btn primary" disabled={!dirty(SYNC_KEYS)}
                   onClick={() => save(SYNC_KEYS)}>{t('save')}</button>
-        </section>
+        </Section>
+
+        {needle && !SEARCHABLE.some((k) => t(k).toLowerCase().includes(needle)) && (
+          <p className="hint" style={{ padding: '10px 2px' }}>
+            {t('settingsNoMatch', { arg: query.trim() })}
+          </p>
+        )}
 
       </div>
     </div>

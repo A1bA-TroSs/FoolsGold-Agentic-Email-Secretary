@@ -41,17 +41,35 @@ async def lifespan(app: FastAPI):
 
 
 async def _poller() -> None:
-    """Periodic sync. Failures are swallowed on purpose: a flaky network should
-    never take down the app the user is reading mail in."""
+    """Periodic sync. Failures must not take down the app someone is reading
+    mail in -- but they must not be invisible either.
+
+    They were. `except Exception: pass` meant a mailbox frozen for five days
+    looked exactly like a quiet week, and there was nowhere to look it up. Every
+    attempt now lands in `sync_events` with its outcome, so "nothing arrived"
+    and "this has been failing since Monday" are different answers to the same
+    question."""
     while True:
         await asyncio.sleep(POLL_SECONDS)
+        started = db.now_iso()
         try:
             source = get_source()
-            if source.status().ready:
-                await source.sync()
-                await pipeline.classify_pending(limit=50)
-        except Exception:  # noqa: BLE001
-            pass
+            status = source.status()
+            if not status.ready:
+                db.record_sync("poller", started, ok=False,
+                               error=status.detail or "the mail source is not ready")
+                continue
+            result = await source.sync()
+            db.record_sync("poller", started, ok=True,
+                           scanned=result.get("scanned", 0),
+                           fetched=result.get("fetched", 0),
+                           written=result.get("written", 0))
+            await pipeline.classify_pending(limit=50)
+        except Exception as exc:  # noqa: BLE001
+            try:
+                db.record_sync("poller", started, ok=False, error=f"{type(exc).__name__}: {exc}")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)

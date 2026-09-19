@@ -347,16 +347,20 @@ def test_an_llm_pass_with_no_tasks_does_clear_them(store, monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_muting_a_sender_takes_its_extracted_tasks_too(store, monkeypatch):
-    _add_email(sender="noreply@promo.io")
+    # Deliberately NOT a no-reply promotional address any more. Such an email
+    # now lands in `noise` and produces no to-dos at all, so using one here
+    # tested the new rule by accident instead of testing muting. The claim is
+    # about muting; the sender has to be one that gets as far as having tasks.
+    _add_email(sender="events@uni.edu")
     _classify_with(monkeypatch, _reply([
         {"title": "Register for the webinar", "due": "2026-08-30"},
     ]))
     assert len(planner.entries(date(2026, 8, 30), date(2026, 8, 30))) == 1
 
-    db.mute_sender("noreply@promo.io")
+    db.mute_sender("events@uni.edu")
     assert planner.entries(date(2026, 8, 30), date(2026, 8, 30)) == []
 
-    db.unmute_sender("noreply@promo.io")
+    db.unmute_sender("events@uni.edu")
     assert len(planner.entries(date(2026, 8, 30), date(2026, 8, 30))) == 1
 
 
@@ -409,3 +413,59 @@ def test_rescan_does_not_lose_what_the_user_already_decided(store, monkeypatch):
 
     assert planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]["done"] is True
     assert db.all_feedback()["coop"]["verdict"] == "pinned"
+
+
+# --------------------------------------------------------------------------
+# the calendar is not a dumping ground
+# --------------------------------------------------------------------------
+
+def test_a_noise_email_contributes_no_to_dos(store, monkeypatch):
+    """One departmental newsletter listing four programmes became four personal
+    commitments, and days on the calendar arrived reading "+16 more".
+
+    Extracting obligations from mail the app has just decided is not about your
+    life is incoherent. The bucket is derived before the sync so it can say so.
+    """
+    _add_email(sender="noreply@promo.io", subject="Weekly round-up: unsubscribe any time")
+    _classify_with(monkeypatch, _reply([
+        {"title": "Apply for Connect ACE", "due": "2026-08-30"},
+        {"title": "Apply for Reel Good", "due": "2026-08-30"},
+    ]))
+    assert planner.entries(date(2026, 8, 30), date(2026, 8, 30)) == []
+
+
+def test_a_noise_email_keeps_its_date_off_the_calendar(store, monkeypatch):
+    """The chip, not just the to-dos. A sale ending is a date; it is not an
+    obligation, and the priority list has always known that."""
+    _add_email(sender="noreply@promo.io", subject="40% off, sale ends soon")
+    _classify_with(monkeypatch, _reply([], deadline="2026-08-30"))
+    assert planner.entries(date(2026, 8, 30), date(2026, 8, 30)) == []
+
+
+def test_a_real_email_still_reaches_the_calendar(store, monkeypatch):
+    """The other half. Without this, the two tests above would pass on an app
+    whose calendar was simply broken."""
+    _add_email(sender="grad@uni.edu", subject="Thesis defence: confirm the date")
+    _classify_with(monkeypatch, _reply([
+        {"title": "Confirm the defence date", "due": "2026-08-30"},
+    ]))
+    assert len(planner.entries(date(2026, 8, 30), date(2026, 8, 30))) == 1
+
+
+def test_a_to_do_the_user_ticked_survives_a_reclassification_to_noise(store, monkeypatch):
+    """Clearing machine-extracted to-dos must not reach anything the user
+    touched. `sync_email_tasks` deletes only rows no other message names and
+    nobody acted on."""
+    _add_email(sender="events@uni.edu", subject="Register for the workshop")
+    _classify_with(monkeypatch, _reply([
+        {"title": "Register for the workshop", "due": "2026-08-30"},
+    ]))
+    rows = planner.entries(date(2026, 8, 30), date(2026, 8, 30))
+    assert len(rows) == 1
+    task_id = rows[0]["id"]
+    db.update_task(task_id, status="done")
+
+    db.mute_sender("events@uni.edu")
+    db.unmute_sender("events@uni.edu")
+    assert db.get_task(task_id, include_deleted=True) is not None, (
+        "a ticked to-do must not be collected by a later reconcile")
