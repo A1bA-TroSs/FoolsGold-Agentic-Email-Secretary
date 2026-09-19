@@ -19,7 +19,7 @@ def email(**overrides):
         "subject": "Hello",
         "from_name": "Alice Chen",
         "from_address": "alice@uni.edu",
-        "to_recipients": json.dumps([{"name": "Alex", "address": ME}]),
+        "to_recipients": json.dumps([{"name": "Sam", "address": ME}]),
         "cc_recipients": json.dumps([]),
         "received_at": datetime.now(timezone.utc).isoformat(),
         "is_read": 1,
@@ -70,10 +70,47 @@ def test_invalid_date_does_not_raise():
 
 def test_deadline_points_decay_with_distance():
     d = lambda n: (TODAY + timedelta(days=n)).isoformat()  # noqa: E731
-    assert priority.deadline_points(d(0), TODAY) > priority.deadline_points(d(1), TODAY)
+    # Day 0 and day 1 are now deliberately EQUAL. They sit inside the "urgent"
+    # plateau, and ranking today's deadline above tomorrow's was a distinction
+    # the user never asked for -- both are simply urgent, and the tie is broken
+    # by relevance, which is the axis that should break it.
+    assert priority.deadline_points(d(0), TODAY) == priority.deadline_points(d(1), TODAY)
     assert priority.deadline_points(d(1), TODAY) > priority.deadline_points(d(5), TODAY)
     assert priority.deadline_points(d(5), TODAY) > priority.deadline_points(d(30), TODAY)
     assert priority.deadline_points(None, TODAY) == 0.0
+
+
+def test_the_look_ahead_window_is_a_slope_not_a_wall():
+    """A linear decay hits exactly zero at the edge of the window, so with a
+    7-day horizon something due on day 8 would score the same as something due
+    next year. The user typed "7" to say how far they want to see, not to
+    declare day 8 worthless."""
+    edge = priority.horizon_weight(7, horizon=7, urgent=2)
+    past = priority.horizon_weight(9, horizon=7, urgent=2)
+    assert 0.3 < edge < 0.45, edge          # clearly demoted, still visible
+    assert 0.0 < past < edge                 # a tail, not a cliff
+
+
+def test_the_window_is_the_users_to_set():
+    """Both knobs mean something a person can answer: how far ahead do I want
+    to see, and how many days count as right now."""
+    near = priority.horizon_weight(7, horizon=3, urgent=1)
+    far = priority.horizon_weight(7, horizon=14, urgent=1)
+    assert far > near, (far, near)
+    for h, u in ((3, 1), (7, 2), (14, 3), (30, 7)):
+        assert priority.horizon_weight(0, h, u) == 1.0
+        assert priority.horizon_weight(u, h, u) == 1.0
+        assert priority.horizon_weight(u + 1, h, u) < 1.0
+
+
+def test_urgency_is_capped_so_it_cannot_overrule_relevance():
+    """A field experiment (Cox et al., 45 participants, 16,200 emails) found
+    time-sensitive mail crowding out everything else -- people answered
+    low-value urgent mail ahead of high-value non-urgent mail. An unbounded
+    urgency term reproduces that in the ranker."""
+    hottest = max(priority.deadline_points((TODAY + timedelta(days=n)).isoformat(), TODAY)
+                  for n in range(0, 60))
+    assert hottest <= priority.DEADLINE_MAX
 
 
 def test_today_outranks_overdue():
@@ -141,7 +178,7 @@ def test_direct_recipient_outranks_cc_only():
     direct = email()
     cc = email(
         to_recipients=json.dumps([{"name": "List", "address": "all@uni.edu"}]),
-        cc_recipients=json.dumps([{"name": "Alex", "address": ME}]),
+        cc_recipients=json.dumps([{"name": "Sam", "address": ME}]),
     )
     direct_score, _ = priority.score_email(direct, "fyi", None, [], user_address=ME, today=TODAY)
     cc_score, _ = priority.score_email(cc, "fyi", None, [], user_address=ME, today=TODAY)
@@ -172,7 +209,7 @@ def test_score_never_goes_negative():
 # ------------------------------------------------ engagement & staleness
 
 def test_overdue_deadlines_decay_instead_of_pinning_forever():
-    """The bug Danny saw: a print notice whose collection window closed in May
+    """The bug the user saw: a print notice whose collection window closed in May
     outranked this morning's mail, because any overdue date scored a flat +26
     while the best recency bonus was +8."""
     d = lambda n: (TODAY + timedelta(days=n)).isoformat()  # noqa: E731
@@ -188,8 +225,8 @@ def test_overdue_deadlines_decay_instead_of_pinning_forever():
 def test_a_stale_overdue_notice_loses_to_todays_mail():
     """End-to-end version of the same thing, at the score level."""
     old_notice = email(
-        subject="ITSO NetPrint Service Notification",
-        from_address="no-reply@netprint.ust.hk",
+        subject="Print quota notice",
+        from_address="no-reply@printing.example.edu",
         is_read=1,
         received_at=(datetime.now(timezone.utc) - timedelta(days=100)).isoformat(),
     )
@@ -337,8 +374,8 @@ def test_muting_beats_even_an_explicit_pin():
 # --------------------------------------------------------------------------
 
 def test_recipient_addresses_reads_the_normal_shape():
-    value = '[{"name": "Alex", "address": "you@example.com"}, {"address": "other@ust.hk"}]'
-    assert priority._recipient_addresses(value) == ["you@example.com", "other@ust.hk"]
+    value = '[{"name": "Sam", "address": "you@example.com"}, {"address": "other@example.com"}]'
+    assert priority._recipient_addresses(value) == ["you@example.com", "other@example.com"]
 
 
 def test_recipient_addresses_survives_shapes_we_did_not_expect():
@@ -346,8 +383,11 @@ def test_recipient_addresses_survives_shapes_we_did_not_expect():
     one email -- it aborts the whole batch."""
     for value in ('["you@example.com"]', '[null, 3, "you@example.com"]', "[]", "", None, "not json"):
         assert isinstance(priority._recipient_addresses(value), list)
-    assert priority._recipient_addresses('["You@EXAMPLE.com"]') == ["you@example.com"]
     assert priority._recipient_addresses('[{"address": null}]') == []
+
+
+def test_recipient_addresses_normalise_case():
+    assert priority._recipient_addresses('["You@Example.COM"]') == ["you@example.com"]
 
 
 def test_addressed_directly_accepts_a_bare_string_list():

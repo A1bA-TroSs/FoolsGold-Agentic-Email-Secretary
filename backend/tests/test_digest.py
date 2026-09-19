@@ -74,3 +74,30 @@ def test_a_legacy_markdown_digest_still_renders_as_a_headline():
     out = pipeline._unpack({"body": "- Due today - something"})
     assert out["items"] == []
     assert out["headline"].startswith("- Due today")
+
+
+def test_a_cached_briefing_is_rebuilt_when_the_provider_changes(tmp_path, monkeypatch):
+    """The footer names what produced the briefing, and the briefing is cached
+    for a day. Switching provider at lunchtime left the morning's stamp naming
+    a provider that was no longer in use -- a footer reporting a fact that had
+    stopped being true."""
+    from app import db, pipeline
+
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    db.init_db()
+    day = __import__("datetime").date.today().isoformat()
+    import json
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO digests (day, body, model, created_at) VALUES (?, ?, ?, ?)",
+            (day, json.dumps({"headline": "hi", "items": [],
+                              "logic_version": pipeline.DIGEST_LOGIC_VERSION}),
+             "copilot:auto", db.now_iso()))
+        conn.commit()
+
+    db.set_setting("llm_provider", "copilot")
+    assert pipeline.cached_digest(day) is not None, "same provider -- the cache is fine"
+
+    db.set_setting("llm_provider", "anthropic")
+    assert pipeline.cached_digest(day) is None, "provider changed -- do not serve a stale stamp"

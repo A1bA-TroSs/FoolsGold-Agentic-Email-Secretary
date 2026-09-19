@@ -129,3 +129,63 @@ def test_digest_prompt_carries_the_ids_the_model_must_choose_from():
     emails = [{"id": i, "subject": f"s{i}", "body_text": "x"} for i in AGENDA_IDS]
     prompt = base.build_digest_prompt(emails, ["Thesis"])
     assert all(f"id: {i}" in prompt for i in AGENDA_IDS)
+
+
+# ------------------------------------------------- how much body the model sees
+
+# The email that exposed this, reduced to its shape. An HTML table arrives here
+# flattened: every column heading in a run, then the row of values underneath.
+# So a deadline schedule reads as a list of labels followed, several hundred
+# characters later, by the list of dates that answers them.
+TABLE_MAIL = (
+    "Dear Sam,\n\nPlease refer to the timeline below. If you fail to meet the "
+    "deadlines you will receive grade penalties.\n\n"
+    + "Filler paragraph about submission portals and room bookings. " * 34
+    + "\nProposal Report\n(Deadline: end of 1st month)\n"
+      "Progress Report\n(Deadline: end of 3rd month)\n"
+      "Final Report\n(Deadline: end of final month)\n"
+      "\nSam Rivera\n30 June 2026\n30 August 2026\n18 December 2026\n"
+      "\nKind regards\nPlacements Office\n"
+)
+
+
+def _body_sent(body):
+    return base._fmt_email({"id": "x", "subject": "s", "body_text": body}, 1)
+
+
+def test_a_deadline_table_reaches_the_model_whole():
+    """The bug this is here for looked like a model failure and was a cut.
+
+    A flat character limit delivered "Progress Report (Deadline: end of 3rd
+    month)" and withheld the "30 August 2026" that answered it, so the model
+    did exactly as instructed -- no date you can point at, no task -- and the
+    submission never reached the calendar."""
+    sent = _body_sent(TABLE_MAIL)
+    assert "Progress Report" in sent
+    assert "30 August 2026" in sent
+
+
+def test_the_opening_is_always_sent_whole():
+    """Intent lives in the first paragraph. Sampling that for dates too would
+    buy nothing and lose the thing every classification depends on."""
+    sent = _body_sent(TABLE_MAIL)
+    assert "If you fail to meet the deadlines" in sent
+
+
+def test_a_long_body_with_no_later_dates_stays_cheap():
+    """The reach is for dates, not for length. A newsletter must not become
+    four times the prompt it was."""
+    body = "Marketing copy that never names a date. " * 200
+    assert len(_body_sent(body)) < len(body) / 2
+
+
+def test_the_trim_is_marked_so_the_model_does_not_read_across_the_gap():
+    """Two excerpts butted together silently would invite the model to read a
+    date from one paragraph as belonging to a sentence in another."""
+    sent = _body_sent(TABLE_MAIL)
+    assert "trimmed" in sent
+
+
+def test_a_short_body_is_untouched():
+    body = "Please send the form by 3 September 2026."
+    assert base._body_for_prompt(body) == body

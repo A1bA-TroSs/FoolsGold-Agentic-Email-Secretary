@@ -1,7 +1,7 @@
 """Highlighting a sender — the opposite instruction to muting.
 
-Danny: "뮤트와는 반대 개념으로 특정 송신자가 보낸 메일들은 하이라이트... 뮤트/
-하이라이트는 메일함과 켈린더 싱크 계속 되야해."
+Highlighting is the opposite instruction to muting, and the two have to stay
+in step between the mailbox and the calendar.
 
 Both are statements about a *correspondent*, not a message, so both live in
 their own table and every surface consults the same one. That is what makes
@@ -49,36 +49,36 @@ def _email(email_id: str, sender: str, subject: str, deadline: str | None = None
 def test_highlighting_one_email_colours_every_email_from_that_sender(store):
     """The whole point: you colour a sender once, from whichever message
     happened to be in front of you."""
-    _email("a", "prof@ust.hk", "Chapter 3")
-    _email("b", "prof@ust.hk", "Chapter 4")
-    _email("c", "other@ust.hk", "Unrelated")
+    _email("a", "supervisor@example.edu", "Chapter 3")
+    _email("b", "supervisor@example.edu", "Chapter 4")
+    _email("c", "other@example.edu", "Unrelated")
 
-    db.highlight_sender("prof@ust.hk", "green")
+    db.highlight_sender("supervisor@example.edu", "green")
     highlights = db.sender_highlights()
-    assert highlights == {"prof@ust.hk": "green"}
+    assert highlights == {"supervisor@example.edu": "green"}
 
 
 def test_addresses_normalise_to_lowercase(store):
-    db.highlight_sender("Prof@UST.hk", "blue")
-    assert db.sender_highlights() == {"prof@ust.hk": "blue"}
-    db.unhighlight_sender("PROF@ust.HK")
+    db.highlight_sender("Supervisor@Example.EDU", "blue")
+    assert db.sender_highlights() == {"supervisor@example.edu": "blue"}
+    db.unhighlight_sender("SUPERVISOR@example.edu")
     assert db.sender_highlights() == {}
 
 
 def test_choosing_a_second_colour_replaces_the_first(store):
-    db.highlight_sender("prof@ust.hk", "red")
-    db.highlight_sender("prof@ust.hk", "yellow")
-    assert db.sender_highlights() == {"prof@ust.hk": "yellow"}
+    db.highlight_sender("supervisor@example.edu", "red")
+    db.highlight_sender("supervisor@example.edu", "yellow")
+    assert db.sender_highlights() == {"supervisor@example.edu": "yellow"}
 
 
 def test_only_the_offered_colours_are_accepted(store):
     """A free hex value chosen against the ivory theme would be unreadable in
     the dark one, so the palette is closed."""
     for colour in db.HIGHLIGHT_COLORS:
-        db.highlight_sender("prof@ust.hk", colour)
+        db.highlight_sender("supervisor@example.edu", colour)
     for bad in ("#ff0000", "chartreuse", "", None, "RED"):
         with pytest.raises(ValueError):
-            db.highlight_sender("prof@ust.hk", bad)
+            db.highlight_sender("supervisor@example.edu", bad)
 
 
 def test_an_empty_address_is_ignored_not_stored(store):
@@ -93,24 +93,24 @@ def test_an_empty_address_is_ignored_not_stored(store):
 def test_highlighting_a_muted_sender_unmutes_them(store):
     """You cannot both want an address out of the way and want it to catch your
     eye. The later instruction wins."""
-    _email("a", "prof@ust.hk", "Chapter 3")
-    db.mute_sender("prof@ust.hk")
-    assert db.muted_senders() == {"prof@ust.hk"}
+    _email("a", "supervisor@example.edu", "Chapter 3")
+    db.mute_sender("supervisor@example.edu")
+    assert db.muted_senders() == {"supervisor@example.edu"}
 
-    db.highlight_sender("prof@ust.hk", "green")
+    db.highlight_sender("supervisor@example.edu", "green")
     assert db.muted_senders() == set()
-    assert db.sender_highlights() == {"prof@ust.hk": "green"}
+    assert db.sender_highlights() == {"supervisor@example.edu": "green"}
 
 
 def test_muting_a_highlighted_sender_keeps_the_colour_for_later(store):
     """Muting says "not now", not "forget my colour" -- so unmuting restores
     the choice instead of silently losing it."""
-    db.highlight_sender("prof@ust.hk", "green")
-    db.mute_sender("prof@ust.hk")
-    assert db.sender_highlights() == {"prof@ust.hk": "green"}
+    db.highlight_sender("supervisor@example.edu", "green")
+    db.mute_sender("supervisor@example.edu")
+    assert db.sender_highlights() == {"supervisor@example.edu": "green"}
 
-    db.unmute_sender("prof@ust.hk")
-    assert db.sender_highlights() == {"prof@ust.hk": "green"}
+    db.unmute_sender("supervisor@example.edu")
+    assert db.sender_highlights() == {"supervisor@example.edu": "green"}
 
 
 # --------------------------------------------------------------------------
@@ -118,23 +118,23 @@ def test_muting_a_highlighted_sender_keeps_the_colour_for_later(store):
 # --------------------------------------------------------------------------
 
 def test_a_calendar_entry_wears_its_senders_colour(store):
-    _email("a", "prof@ust.hk", "Chapter 3", deadline="2026-08-30")
-    db.highlight_sender("prof@ust.hk", "green")
+    _email("a", "supervisor@example.edu", "Chapter 3", deadline="2026-08-30")
+    db.highlight_sender("supervisor@example.edu", "green")
     entry = planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]
     assert entry["highlight"] == "green"
 
 
 def test_an_unhighlighted_sender_carries_no_colour(store):
-    _email("a", "prof@ust.hk", "Chapter 3", deadline="2026-08-30")
+    _email("a", "supervisor@example.edu", "Chapter 3", deadline="2026-08-30")
     assert planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]["highlight"] is None
 
 
 def test_a_todo_read_out_of_highlighted_mail_wears_the_colour_too(store):
     """Otherwise the calendar would colour the message but not the work the
     message created -- and after extraction it is the work that is shown."""
-    _email("a", "prof@ust.hk", "Chapter 3")
+    _email("a", "supervisor@example.edu", "Chapter 3")
     db.add_task("Submit chapter 3", "2026-08-30", email_id="a", origin="email")
-    db.highlight_sender("prof@ust.hk", "purple")
+    db.highlight_sender("supervisor@example.edu", "purple")
     entry = planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]
     assert entry["kind"] == "task"
     assert entry["highlight"] == "purple"
@@ -149,9 +149,9 @@ def test_a_hand_written_task_can_never_be_highlighted(store):
 
 
 def test_unhighlighting_clears_the_calendar_too(store):
-    _email("a", "prof@ust.hk", "Chapter 3", deadline="2026-08-30")
-    db.highlight_sender("prof@ust.hk", "green")
-    db.unhighlight_sender("prof@ust.hk")
+    _email("a", "supervisor@example.edu", "Chapter 3", deadline="2026-08-30")
+    db.highlight_sender("supervisor@example.edu", "green")
+    db.unhighlight_sender("supervisor@example.edu")
     assert planner.entries(date(2026, 8, 30), date(2026, 8, 30))[0]["highlight"] is None
 
 
@@ -172,18 +172,18 @@ def test_highlighting_from_the_calendar_reaches_a_muted_senders_mail(store):
 # --------------------------------------------------------------------------
 
 def test_the_highlight_box_counts_what_it_covers(store):
-    _email("a", "prof@ust.hk", "Chapter 3")
-    _email("b", "prof@ust.hk", "Chapter 4")
-    db.highlight_sender("prof@ust.hk", "green")
+    _email("a", "supervisor@example.edu", "Chapter 3")
+    _email("b", "supervisor@example.edu", "Chapter 4")
+    db.highlight_sender("supervisor@example.edu", "green")
     rows = db.highlighted_sender_rows()
     assert len(rows) == 1
-    assert rows[0]["address"] == "prof@ust.hk"
+    assert rows[0]["address"] == "supervisor@example.edu"
     assert rows[0]["color"] == "green"
     assert rows[0]["message_count"] == 2
-    assert rows[0]["display_name"] == "Prof"
+    assert rows[0]["display_name"] == "Supervisor"
 
 
 def test_a_highlighted_sender_with_no_mail_yet_still_lists(store):
-    db.highlight_sender("future@ust.hk", "blue")
+    db.highlight_sender("future@example.edu", "blue")
     rows = db.highlighted_sender_rows()
     assert rows[0]["message_count"] == 0

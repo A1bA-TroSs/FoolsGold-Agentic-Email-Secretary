@@ -94,6 +94,13 @@ def _email_entries(start: str, end: str) -> list[dict[str, Any]]:
             "FROM emails e JOIN classifications c ON c.email_id = e.id "
             "LEFT JOIN feedback f ON f.email_id = e.id "
             "WHERE c.deadline IS NOT NULL AND c.deadline != '' "
+            # A promotional email's date is a sale ending, not an obligation.
+            # The priority list has always hidden `noise`; the calendar did not,
+            # so every newsletter with a date earned a chip and days arrived
+            # reading "+16 more". The same rule, applied in the same place --
+            # this is the third surface to need it after the priority view and
+            # the exploration badge.
+            "  AND c.bucket != 'noise' "
             "  AND e.from_address NOT IN (SELECT address FROM muted_senders) "
             "  AND e.id NOT IN (SELECT email_id FROM calendar_hidden) "
             "ORDER BY c.deadline, e.received_at DESC"

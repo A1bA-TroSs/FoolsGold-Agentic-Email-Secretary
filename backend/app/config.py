@@ -40,14 +40,50 @@ DEFAULT_SETTINGS = {
     # Your own address. Graph fills this in at sign-in; with Apple Mail you type
     # it, and it drives the strongest structural signal there is (To: you vs Cc:).
     "user_address": "",
-    "llm_provider": "copilot",
+    # No provider is preselected. The app must never reach for a credential the
+    # user did not choose, and until they choose one it ranks mail on
+    # structural signals -- which works, and says so.
+    "llm_provider": "none",
     "copilot_model": "auto",
+    # The local model. Empty host means Ollama's default on this machine; the
+    # point of this provider is that the mail never leaves it.
+    "ollama_model": "qwen3.5:9b",
+    "ollama_host": "",
     "anthropic_model": "claude-sonnet-4-5",
     "openai_model": "gpt-4o-mini",
+    # Anything speaking the OpenAI API: Azure, OpenRouter, a local server.
+    "openai_base_url": "",
     "entra_client_id": "",
+    # How far ahead a deadline still counts as pressing, and how long the flat
+    # "maximally urgent" zone lasts. Both in days, both user-editable.
+    #
+    # 7 is a default, not a finding. The closest empirical number I could find
+    # is a p90 of 11 days to task completion from one small task-manager's
+    # published data -- suggestive, not evidence. The shape matters more than
+    # the number: a Gaussian decay has no cliff at the window edge, where a
+    # linear one drops to zero the moment you step outside it.
+    "deadline_horizon_days": "7",
+    "deadline_urgent_days": "2",
     "sync_days": "30",
     "sync_max_messages": "300",
     "classify_batch_size": "10",
+    # --- adaptive ranking -----------------------------------------------
+    # The fyi/action boundary, as two numbers that can actually be moved. A
+    # category has no knob; these do.
+    "theta_relevance": "0.35",
+    "theta_action": "0.55",
+    # How many things the user wants on today's action list. Nobody knows what
+    # 0.63 means; everybody knows this number, so it is the control we expose
+    # and theta_action is solved from it.
+    "target_action_volume": "8",
+    # Learning is OFF until this is set, and it is set by hand. The app spent
+    # weeks being clicked through for QA; a default of "learn from whatever is
+    # already in the tables" would have baked that in permanently on first run.
+    "learning_epoch_start": "",
+    # A fraction of suppressed mail is surfaced anyway, labelled as a guess. A
+    # perfectly accurate ranker maximises feedback-loop degeneracy, and `noise`
+    # is otherwise a one-way door. 0 disables it.
+    "explore_one_in": "20",
     "auto_digest": "true",
     # Daily checklist reminders. Times are local wall-clock, HH:MM, and the
     # Electron shell -- not this process -- is what actually posts them.

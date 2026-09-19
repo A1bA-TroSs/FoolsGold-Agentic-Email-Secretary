@@ -144,3 +144,22 @@ class CopilotProvider(LLMProvider):
             except Exception:  # noqa: BLE001
                 pass
             self._client = None
+
+    def close_sync(self) -> None:
+        """Shut the runtime down from non-async code.
+
+        `reset_cache()` runs on every settings save, and simply dropping the
+        reference leaked a started Copilot runtime each time. If a loop is
+        already running we schedule the close on it; otherwise we run one."""
+        import asyncio as _asyncio
+        try:
+            loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        try:
+            if loop is not None:
+                loop.create_task(self.aclose())
+            else:
+                _asyncio.run(self.aclose())
+        except Exception:  # noqa: BLE001 - shutting down must never raise
+            pass
