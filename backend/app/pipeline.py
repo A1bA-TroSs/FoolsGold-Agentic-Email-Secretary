@@ -13,13 +13,14 @@ import json
 from datetime import date
 from typing import Any
 
-from . import db, learning, priority
+from . import db, dedup, learning, priority
 from .llm.base import Classification, ProviderUnavailable
 from .llm.registry import get_provider
 
 # Set whenever an LLM call fails so the UI can show the "AI unavailable" badge
 # with a real reason instead of a shrug.
-_ai_status: dict[str, Any] = {"available": True, "off": False, "detail": ""}
+_ai_status: dict[str, Any] = {"available": True, "off": False, "detail": "",
+                              "detail_key": None, "detail_vars": {}}
 _classify_lock = asyncio.Lock()
 
 
@@ -27,12 +28,19 @@ def ai_status() -> dict[str, Any]:
     return dict(_ai_status)
 
 
-def _mark_ai(available: bool, detail: str = "", off: bool = False) -> None:
+def _mark_ai(available: bool, detail: str = "", off: bool = False,
+             key: str | None = None, vars: dict[str, Any] | None = None) -> None:
     """`off` means the user chose "None" in Settings -- that is a preference,
-    not an outage, and the UI should not nag about it."""
+    not an outage, and the UI should not nag about it.
+
+    `key`/`vars` carry a recognised failure to the screen in the reader's
+    language; `detail` stays as the English fallback for anything unexpected.
+    See ProviderUnavailable."""
     _ai_status["available"] = available
     _ai_status["off"] = off
     _ai_status["detail"] = detail
+    _ai_status["detail_key"] = key
+    _ai_status["detail_vars"] = vars or {}
 
 
 def _ranking_context() -> tuple[dict[str, int], dict[str, dict[str, Any]], set[str]]:
@@ -61,25 +69,50 @@ def user_address() -> str:
 # classification
 # --------------------------------------------------------------------------
 
-def _structural_reason(email: dict[str, Any], bucket: str, deadline: str | None, me: str) -> str:
-    """Name the signals that actually fired, so the reason line teaches the user
-    how the ranking works instead of just saying 'no AI'."""
-    reasons: list[str] = []
+def structural_reason_codes(
+    email: dict[str, Any], bucket: str, deadline: str | None, me: str
+) -> list[dict[str, Any]]:
+    """The signals that actually fired, as translation keys.
+
+    Keys, not a sentence. This used to return English prose -- "Deadline
+    2026-09-18 found in the text; flagged high importance; has an attachment."
+    -- which is display text, and display text built in the backend is display
+    text in one language. It sat in the middle of a Korean reading pane for as
+    long as the feature has existed.
+
+    **Exactly the mistake already fixed once, in the briefing**, where the
+    structural path now emits `note_key` for the same reason (see
+    `_as_agenda_row`). The rule the second occurrence earns: the backend names
+    *what it found*; the frontend decides what that is called.
+    """
+    out: list[dict[str, Any]] = []
     if deadline:
-        reasons.append(f"deadline {deadline} found in the text")
+        out.append({"key": "sigDeadline", "vars": {"date": deadline}})
     if priority._addressed_directly(email, me):
-        reasons.append("addressed directly to you")
+        out.append({"key": "sigDirect"})
     elif priority._cc_only(email, me):
-        reasons.append("you are only on Cc")
+        out.append({"key": "sigCcOnly"})
     if (email.get("importance") or "").lower() == "high":
-        reasons.append("flagged high importance")
+        out.append({"key": "sigHighImportance"})
     if bucket == "action":
-        reasons.append("wording asks you to act")
+        out.append({"key": "sigAsksAction"})
     elif bucket == "noise":
-        reasons.append("looks like a bulk or automated sender")
+        out.append({"key": "sigBulk"})
     if email.get("has_attachments"):
-        reasons.append("has an attachment")
-    return "; ".join(reasons).capitalize() + "." if reasons else "No strong signals either way."
+        out.append({"key": "sigAttachment"})
+    return out or [{"key": "sigNone"}]
+
+
+def _structural_reason(email: dict[str, Any], bucket: str, deadline: str | None, me: str) -> str:
+    """The same codes, as the JSON string the `rationale` column holds.
+
+    One column carries two shapes, and that is deliberate rather than sloppy:
+    the model path writes prose *in the user's language* (it was asked to), and
+    only the structural path has anything to translate. The frontend tells them
+    apart by trying to parse -- an array of `{key}` objects is codes, anything
+    else is a finished sentence.
+    """
+    return json.dumps(structural_reason_codes(email, bucket, deadline, me))
 
 
 def _structural_classifications(emails: list[dict[str, Any]], me: str) -> list[Classification]:
@@ -264,7 +297,9 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
             provider = get_provider()
         except ProviderUnavailable as exc:
             turned_off = (db.get_setting("llm_provider", "copilot") or "").lower() == "none"
-            _mark_ai(False, "" if turned_off else str(exc), off=turned_off)
+            _mark_ai(False, "" if turned_off else str(exc), off=turned_off,
+                     key=None if turned_off else getattr(exc, "key", None),
+                     vars=getattr(exc, "vars", None))
             _persist(_structural_classifications(emails, me), emails_by_id, "structural", "none")
             return {"classified": len(emails), "source": "structural", "ai_available": False,
                     "off": turned_off, "detail": "" if turned_off else str(exc)}
@@ -288,7 +323,8 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
             except Exception as exc:  # noqa: BLE001 - degrade, never crash the sync
                 used_fallback = True
                 detail = str(exc)
-                _mark_ai(False, detail)
+                _mark_ai(False, detail, key=getattr(exc, "key", None),
+                         vars=getattr(exc, "vars", None))
                 _persist(_structural_classifications(batch, me), emails_by_id, "structural", "none")
                 done += len(batch)
 
@@ -327,7 +363,8 @@ async def _upgrade_structural(provider, me: str, topics: list[str],
     try:
         results = await provider.classify_batch(emails, topics)
     except Exception as exc:  # noqa: BLE001 - the upgrade is best-effort
-        _mark_ai(False, str(exc))
+        _mark_ai(False, str(exc), key=getattr(exc, "key", None),
+                 vars=getattr(exc, "vars", None))
         return 0
     _persist(results, by_id, "llm", f"{provider.name}:{provider.model}")
     return len(results)
@@ -521,8 +558,11 @@ def _digest_candidates(limit: int = 25, today: date | None = None) -> list[dict[
     briefing.
     """
     today = today or date.today()
+    # No verdict filter in the SQL any more. The collapser has to see the
+    # decided copies too, or ticking the row it shows promotes a sibling the
+    # user never saw and the announcement comes straight back wearing a
+    # different id. Eligibility is applied below instead.
     where = ("WHERE c.bucket != 'noise' "
-             "  AND (f.verdict IS NULL OR f.verdict = 'pinned') "
              "  AND e.from_address NOT IN (SELECT address FROM muted_senders) ")
     join = ("FROM emails e JOIN classifications c ON c.email_id = e.id "
             "LEFT JOIN feedback f ON f.email_id = e.id ")
@@ -539,7 +579,24 @@ def _digest_candidates(limit: int = 25, today: date | None = None) -> list[dict[
     # no bodies -- and only then fetch the full rows for the handful that won.
     with db.connect() as conn:
         keys = conn.execute(
-            f"SELECT e.id, c.deadline, c.score {join}{where}").fetchall()
+            "SELECT e.id, e.conversation_id, e.subject, e.from_address, e.received_at, "
+            f"       c.deadline, c.score, f.verdict {join}{where}").fetchall()
+
+    # One announcement, one candidate, before anything is ranked.
+    #
+    # Here rather than after the cut, because a department that sends the same
+    # notice three times would otherwise spend three of seven briefing slots on
+    # it -- and the top-up would keep the count at seven by pulling in yet more
+    # of the same. Measured on the real mailbox: 1,143 candidates, 837
+    # announcements.
+    keys = dedup.collapse(
+        [dict(r) for r in keys],
+        eligible=lambda r: (r["verdict"] or "") in ("", "pinned"),
+        drop_groups=lambda r: (r["verdict"] or "") in _SETTLED_VERDICTS,
+    )
+    copies = {r["id"]: r.get("copies", 1) for r in keys}
+
+    with db.connect() as conn:
 
         # Materialised, not looked up inside the sort key: a `next(... for k in
         # keys ...)` there is a linear scan per comparison, which on a
@@ -570,6 +627,7 @@ def _digest_candidates(limit: int = 25, today: date | None = None) -> list[dict[
         # other reasons -- it just must not be introduced as something due.
         if email["id"] in forgotten:
             email["deadline"] = None
+        email["copies"] = copies.get(email["id"], 1)
         out.append(email)
     out.sort(key=lambda e: order[e["id"]])
     return out
@@ -598,32 +656,120 @@ def _as_agenda_row(
         "note": note,
         "note_key": note_key,
         "note_vars": note_vars or {},
+        # How many messages this row stands for. 1 unless the announcement was
+        # sent more than once -- shown as a count so a collapsed group reads as
+        # "several copies" rather than as mail that went missing.
+        "copies": email.get("copies", 1),
     }
+
+
+# How many OPEN items the briefing aims to show.
+#
+# It was a literal 7 inside `_fallback_agenda`, which made it the size of a
+# list built once a day rather than a target maintained through the day -- so
+# clearing three things left four, and the queue behind them was not consulted
+# again until tomorrow. With a backlog that also means the briefing only ever
+# reaches a day or two out, because the seven nearest deadlines are all it can
+# ever contain.
+DIGEST_TARGET_ITEMS = 7
 
 
 # Bump whenever the rules behind a briefing change. The digest is cached for a
 # calendar day, so without this a fix to what belongs in it is invisible until
 # tomorrow -- which is exactly how a briefing kept announcing a deadline from
 # 2022 hours after the code that produced it had been replaced.
-DIGEST_LOGIC_VERSION = 2
+DIGEST_LOGIC_VERSION = 3
 
 
-def _with_current_verdicts(digest: dict[str, Any]) -> dict[str, Any]:
-    """Stamp each briefing row with what the user has since done about it.
+# A verdict that takes the row out of the briefing. `pinned` does not: pinning
+# says "this matters", which is the opposite of "I am finished with it".
+_SETTLED_VERDICTS = ("done", "not_relevant", "snoozed")
 
-    The tick used to be derived in the frontend by looking the row's id up in
-    the mail list -- two different queries, so any row the list did not happen
-    to contain could never show as ticked. Clicking it posted the feedback and
-    nothing visibly happened, which reads as a dead checkbox. The briefing is
-    cached; the verdicts are not, so they are joined on at serve time and the
-    row carries its own state."""
+
+def _with_current_verdicts(digest: dict[str, Any], today: date | None = None) -> dict[str, Any]:
+    """Join on what the user has since done, drop what they have finished, and
+    refill from the queue behind it.
+
+    Three things happen here rather than at build time, and all three for the
+    same reason: **the briefing is cached for a calendar day, and the mailbox
+    is not.** A list frozen at 08:00 and served unchanged until midnight can
+    only ever shrink.
+
+    1. *Verdicts are joined on.* The tick used to be derived in the frontend by
+       looking the row's id up in the mail list -- two different queries, so a
+       row the list did not happen to contain could never show as ticked.
+       Clicking it posted the feedback and nothing visibly happened, which
+       reads as a dead checkbox.
+
+    2. *Settled rows leave.* Ticked, dismissed and snoozed mail is finished
+       with; keeping it on the checklist is how a checklist stops being one.
+       The undo toast, not the row, is what makes a mis-click recoverable, and
+       it is already there for six seconds after every gesture.
+
+    3. *The gap is refilled* from the same ranked queue the briefing was built
+       from. Without this, clearing four of seven items left three, until
+       tomorrow -- and since the seven nearest deadlines are all seven slots
+       can hold, the briefing never showed anything more than a day or two out
+       no matter how much of it you cleared.
+
+    Refills are structural rows even when the briefing itself came from a
+    model: a model call per tick is not worth it, and `_structural_row` is what
+    the no-AI path already uses, so a replacement is described exactly like
+    what it replaced.
+    """
     items = digest.get("items") or []
-    if not items:
-        return digest
     feedback = db.all_feedback()
     for item in items:
         item["verdict"] = (feedback.get(item.get("email_id")) or {}).get("verdict")
+
+    kept = [i for i in items if (i.get("verdict") or "") not in _SETTLED_VERDICTS]
+    missing = DIGEST_TARGET_ITEMS - len(kept)
+    if missing > 0:
+        today = today or date.today()
+        seen = {i.get("email_id") for i in items}
+        # Deeper than the gap: the candidate query cannot know which ids are
+        # already on the list, so the shortlist has to survive skipping them.
+        for email in _digest_candidates(limit=DIGEST_TARGET_ITEMS * 4, today=today):
+            if missing <= 0:
+                break
+            if email["id"] in seen:
+                continue
+            row = _structural_row(email, today.isoformat())
+            row["verdict"] = None
+            kept.append(row)
+            missing -= 1
+
+    if len(kept) != len(items):
+        digest["items"] = kept
+        digest["headline"] = _restate_headline(digest.get("headline"), kept)
+    else:
+        digest["items"] = kept
     return digest
+
+
+def _restate_headline(headline: Any, rows: list[dict[str, Any]]) -> Any:
+    """Keep the count in the headline honest when the rows underneath change.
+
+    Only the structural headline can be recomputed -- it is a key and two
+    numbers. A model wrote its own sentence about the day and there is nothing
+    here that can edit it truthfully, so it is left exactly as it was rather
+    than being half-corrected.
+    """
+    if not isinstance(headline, dict) or "key" not in headline:
+        return headline
+    # The empty-state headlines are included on purpose. A briefing built when
+    # the mailbox had nothing waiting, then topped up after a sync, would
+    # otherwise announce "nothing waiting" above seven rows.
+    if headline["key"] not in ("agendaHeadline", "agendaHeadlineNoDeadline",
+                               "nothingWaiting", "nothingUrgent"):
+        return headline
+    if not rows:
+        return headline
+    urgent = sum(1 for r in rows if r.get("deadline"))
+    return {
+        "key": "agendaHeadline" if urgent else "agendaHeadlineNoDeadline",
+        "vars": {"n": len(rows), "d": urgent},
+    }
 
 
 def cached_digest(day: str | None = None) -> dict[str, Any] | None:
@@ -704,7 +850,9 @@ async def build_digest(force: bool = False) -> dict[str, Any]:
                 model = "structural"
         except Exception as exc:  # noqa: BLE001
             turned_off = (db.get_setting("llm_provider", "copilot") or "").lower() == "none"
-            _mark_ai(False, "" if turned_off else str(exc), off=turned_off)
+            _mark_ai(False, "" if turned_off else str(exc), off=turned_off,
+                     key=None if turned_off else getattr(exc, "key", None),
+                     vars=getattr(exc, "vars", None))
             headline, items = _fallback_agenda(emails)
             model = "structural"
 
@@ -726,6 +874,23 @@ async def build_digest(force: bool = False) -> dict[str, Any]:
     })
 
 
+def _structural_row(email: dict[str, Any], today: str) -> dict[str, Any]:
+    """Say the truest thing about this row.
+
+    Shared by the no-AI briefing and by the top-up, so a replacement row is
+    described exactly like the row it replaced. A top-up row is always
+    structural even when the briefing came from a model: filling a gap is not
+    worth a model call per tick, and a row whose note is missing would look
+    like a different kind of row.
+    """
+    deadline = email.get("deadline")
+    if not deadline:
+        return _as_agenda_row(email, note_key="needsReply")
+    if deadline == today:
+        return _as_agenda_row(email, note_key="dueToday")
+    return _as_agenda_row(email, note_key="dueOn", note_vars={"date": deadline})
+
+
 def _fallback_agenda(
     emails: list[dict[str, Any]], today: date | None = None
 ) -> tuple[str, list[dict[str, Any]]]:
@@ -735,20 +900,12 @@ def _fallback_agenda(
     tickable whether or not AI is available."""
     today = (today or date.today()).isoformat()
 
+    # Previously only the first five dated emails got a date note and the rest
+    # fell through to "needs a reply" -- so a message with a real deadline was
+    # described as if it had none, while its chip still showed one. What a row
+    # says follows from the row, not from where it landed in the list.
     def row_for(email: dict[str, Any]) -> dict[str, Any]:
-        """Say the truest thing about this row.
-
-        Previously only the first five dated emails got a date note and the
-        rest fell through to "needs a reply" -- so a message with a real
-        deadline was described as if it had none, while its chip still showed
-        one. What a row says now follows from the row, not from where it
-        happened to land in the list."""
-        deadline = email.get("deadline")
-        if not deadline:
-            return _as_agenda_row(email, note_key="needsReply")
-        if deadline == today:
-            return _as_agenda_row(email, note_key="dueToday")
-        return _as_agenda_row(email, note_key="dueOn", note_vars={"date": deadline})
+        return _structural_row(email, today)
 
     rows: list[dict[str, Any]] = []
     used: set[str] = set()
@@ -770,7 +927,7 @@ def _fallback_agenda(
         used.add(e["id"])
 
     for e in emails:
-        if len(rows) >= 7:
+        if len(rows) >= DIGEST_TARGET_ITEMS:
             break
         if e["id"] in used or e.get("bucket") != "action":
             continue
