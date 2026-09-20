@@ -24,6 +24,8 @@ const PROVIDER_NAMES = {
   ollama: 'Ollama',
 };
 
+const DUE_NOTE_KEYS = new Set(['dueToday', 'dueOn']);
+
 /* One briefing row, memoised -- the same reasoning as the mail row.
 
    On a full mailbox this list is as long as the priority list, and it reloads
@@ -33,6 +35,17 @@ const PROVIDER_NAMES = {
    actually changed and nothing else. */
 const AgendaItem = memo(function AgendaItem({ it, t, delay, checked, active, onOpen, onDone }) {
   const due = dueChip(it.deadline, t);
+  /* A note that only restates the due chip is not a note.
+
+     `dueToday` and `dueOn` are the structural path's way of saying "this row
+     has a deadline", which the chip two elements away already says, in the
+     same words, from the same field. Printing both is how the briefing came to
+     read as the same four characters repeated down the column. `needsReply`
+     survives, because it says something the chip cannot, and a model-written
+     note survives because it is prose about this particular email. */
+  const note = it.note_key
+    ? (DUE_NOTE_KEYS.has(it.note_key) ? '' : t(it.note_key, it.note_vars))
+    : (it.note || '');
   return (
     <li
       className={['agenda-item', checked ? 'checked' : '', active ? 'active' : '']
@@ -52,12 +65,27 @@ const AgendaItem = memo(function AgendaItem({ it, t, delay, checked, active, onO
       </label>
 
       <button className="agenda-open" onClick={() => onOpen(it.email_id)}>
-        <span className="agenda-note">
-          {it.note_key ? t(it.note_key, it.note_vars) : (it.note || it.subject)}
-        </span>
+        {/* The headline is the email's subject, always.
+
+            It used to be the note, with the subject demoted to the meta line.
+            With a model writing the note that reads as a sentence about the
+            mail; with no model -- structurally, or whenever the local Ollama
+            run falls back -- the note is a translation key for the deadline,
+            so seven rows in a row were titled "Due today" and "Due 2026-09-20"
+            and the *chip beside them said the same words again*. A list whose
+            every row is titled by its own deadline cannot be read: the one
+            field that distinguishes two rows was the one field not in the
+            title. The subject is what identifies an email, so it is the title,
+            and everything the app inferred sits under it. */}
+        <span className="agenda-subject">{it.subject}</span>
         <span className="agenda-meta">
           {due && (<span className={`tag ${due.urgent ? 'due' : 'fyi'}`}>{due.label}</span>)}
-          <span className="agenda-subject">{it.subject}</span>
+          {note && <span className="agenda-note">{note}</span>}
+          {it.copies > 1 ? (
+            <span className="copies" title={t('copiesTitle', { n: String(it.copies) })}>
+              ×{it.copies}
+            </span>
+          ) : null}
           {it.sender && <span className="agenda-sender">· {it.sender}</span>}
         </span>
       </button>

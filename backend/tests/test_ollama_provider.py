@@ -187,10 +187,73 @@ async def test_check_confirms_the_chosen_model_is_present(server):
 
 @pytest.mark.asyncio
 async def test_check_names_what_is_available_when_the_choice_is_missing(server):
+    """It names what IS here, and no longer says "ollama pull".
+
+    The old message ended with `Try: ollama pull qwen3.5:9b`. On the machine
+    this was reported from that sentence asked for a six-gigabyte download
+    from someone who had deliberately pulled the 4b because it is the one that
+    fits a laptop. The useful sentence is "you have these" -- the assertion
+    changed because the decision changed, not because the code drifted.
+    """
     STATE["models"] = [{"name": "gemma3:4b"}]
-    ok, detail = await OllamaProvider("qwen3.5:9b", server).check()
+    result = await OllamaProvider("qwen3.5:9b", server).check()
+    ok, detail = result
     assert not ok
-    assert "gemma3:4b" in detail and "ollama pull" in detail
+    assert "gemma3:4b" in detail
+    assert "ollama pull" not in detail
+    # And it says so in a form the UI can translate.
+    assert result.key == "aiModelMissingHave"
+    assert result.vars["have"] == "gemma3:4b"
+    assert result.models == ["gemma3:4b"]
+
+
+@pytest.mark.asyncio
+async def test_check_fails_when_only_a_different_SIZE_is_installed(server):
+    """The bug that made Settings say "ready" while every call 404'd.
+
+    The old test was `installed.startswith(configured.split(":")[0])` --
+    "same family, close enough". `qwen3.5:4b` starts with `qwen3.5`, so a
+    configured `qwen3.5:9b` matched it and the check passed, on a machine
+    where `/api/chat` refused the model on every single request. **A check
+    that cannot fail for the actual reason is not a check.**
+    """
+    STATE["models"] = [{"name": "qwen3.5:4b"}]
+    ok, _ = await OllamaProvider("qwen3.5:9b", server).check()
+    assert not ok
+
+
+@pytest.mark.asyncio
+async def test_check_accepts_a_quantisation_of_the_same_model(server):
+    STATE["models"] = [{"name": "qwen3.5:9b-q4_K_M"}]
+    ok, _ = await OllamaProvider("qwen3.5:9b", server).check()
+    assert ok
+
+
+def test_model_matching_rules():
+    from app.llm.ollama_provider import model_matches
+    assert model_matches("qwen3.5:9b", "qwen3.5:9b")
+    assert model_matches("qwen3.5:9b", "qwen3.5:9b-q4_K_M")
+    # A bare family name means "the one I have".
+    assert model_matches("qwen3.5", "qwen3.5:4b")
+    # A different size is a different model, whatever it shares as a prefix.
+    assert not model_matches("qwen3.5:9b", "qwen3.5:4b")
+    assert not model_matches("qwen3.5:9b", "qwen3.5:90b")
+    assert not model_matches("qwen3.5:9b", "llama3:8b")
+    assert not model_matches("", "qwen3.5:4b")
+    assert not model_matches("qwen3.5:9b", "")
+
+
+@pytest.mark.asyncio
+async def test_a_missing_model_names_itself_for_translation(server):
+    """The banner used to read as a Korean sentence with an English one bolted
+    into the middle. The exception carries a key so the UI can word it."""
+    from app.llm.base import ProviderUnavailable
+    STATE["chat_code"] = 404
+    with pytest.raises(ProviderUnavailable) as caught:
+        await OllamaProvider("qwen3.5:9b", server).classify_batch(
+            [{"id": "e1", "subject": "s", "body_text": "b", "from_address": "a@b.c"}], [])
+    assert caught.value.key == "aiModelMissing"
+    assert caught.value.vars == {"model": "qwen3.5:9b"}
 
 
 @pytest.mark.asyncio

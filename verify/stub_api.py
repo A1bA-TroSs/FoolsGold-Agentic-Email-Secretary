@@ -14,6 +14,7 @@ each kind -- rather than whatever a live inbox happens to contain.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,7 +31,7 @@ def mail(i, **over):
         "is_read": 0, "is_answered": 0, "is_flagged": 0, "has_attachments": 0,
         "importance": "normal", "body_preview": "Preview text.",
         "bucket": "fyi", "deadline": None, "score": 50, "matched": [],
-        "rationale": "", "source": "llm", "explored": 0,
+        "rationale": "", "source": "llm", "explored": 0, "copies": 1,
         "reason_code": "none", "reason_arg": "", "verdict": None,
         "snooze_until": None, "highlight": None, "decided_at": None, "category": "",
     }
@@ -45,7 +46,12 @@ MAIL = [
          from_name="Career Development Programs", bucket="action", score=130,
          deadline="2026-09-17", reason_code="deadline", reason_arg="1"),
     mail(3, subject="Final Reminder: submit the progress report",
-         bucket="action", score=120, reason_code="direct"),
+         bucket="action", score=120, reason_code="direct",
+         # A collapsed announcement. The backend hides the other copies from
+         # the ranked list, so the harness has to render the thing that says
+         # so -- a list that quietly drops mail looks identical to one that
+         # lost it, and only this count tells them apart.
+         copies=3),
     mail(4, subject="A very long subject line that should truncate rather than "
                     "push the row wider than the pane it lives in, forever",
          bucket="fyi", score=60, reason_code="affinity"),
@@ -76,7 +82,14 @@ if _BULK:
 FIXTURES = {
     "/api/health": {"ok": True, "app": "Fools Gold", "version": "1.0.0",
                     "source": {"ready": True, "kind": "applemail", "detail": ""},
-                    "ai": {"available": True, "off": False, "detail": ""}},
+                    # The state the report came from: a local model configured,
+                    # and a model name this Mac does not have. Keyed, because
+                    # the banner used to bolt an English sentence into the
+                    # middle of a Korean one.
+                    "ai": {"available": False, "off": False,
+                           "detail": "Ollama has no model called 'qwen3.5:9b'.",
+                           "detail_key": "aiModelMissingHave",
+                           "detail_vars": {"model": "qwen3.5:9b", "have": "qwen3.5:4b"}}},
     # Shaped like the real endpoint (`current` + `statuses`), not like a
     # plausible guess. A fixture that disagrees with the API tests a different
     # app -- this one said `active`/`sources` and the settings screen, which
@@ -87,6 +100,16 @@ FIXTURES = {
     "/api/auth/status": {"signed_in": True, "email": "me@x.com"},
     "/api/mail": {"items": MAIL, "counts": {"action": 3, "fyi": 3, "noise": 1},
                   "last_sync": "2026-09-16T09:00:00+00:00",
+                  # `aiStatus` is read from HERE, not from /api/health -- see
+                  # App.jsx `setAiStatus(data.ai || ...)` on the list response.
+                  # The fixture carried an `ai` block on /api/health only, so
+                  # the AI banner had never rendered in this harness. Sixth
+                  # fixture-fidelity bug, same shape as the other five: green
+                  # about a thing it was not showing.
+                  "ai": {"available": False, "off": False,
+                         "detail": "Ollama has no model called 'qwen3.5:9b'.",
+                         "detail_key": "aiModelMissingHave",
+                         "detail_vars": {"model": "qwen3.5:9b", "have": "qwen3.5:4b"}},
                   # The frozen case, because it is the one that used to render
                   # as an ordinary quiet inbox and is therefore the one worth
                   # having a screenshot of in every theme and language.
@@ -112,20 +135,36 @@ FIXTURES = {
         # that contradicts the behaviour is a screenshot of a program nobody
         # runs -- which is exactly what the /api/sources fixture turned out to
         # be a moment ago.
-        "day": "2026-09-16", "headline": "오늘 마감 1건, 이번 주 2건.",
+        #
+        # Fourth fixture-fidelity bug, and the one that hid a reported defect:
+        # every row here was keyed `id`, and the real endpoint emits
+        # `email_id` (pipeline._as_agenda_row). Digest.jsx reads `email_id`,
+        # so every row rendered with an undefined React key and an Open that
+        # opened nothing -- and the briefing that shipped in every screenshot
+        # this harness ever took was one no backend produces.
+        #
+        # The rows below are the STRUCTURAL shape: `note_key` + `note_vars`,
+        # which is what the app emits with no model, and what it falls back to
+        # whenever a local Ollama run fails. That is the state the duplicated
+        # title was reported in, so it is the state the harness has to render.
+        "day": "2026-09-16", "headline": {"key": "agendaHeadline", "vars": {"n": 3, "d": 2}},
         "items": [
-            {"id": "m2", "note": "17일 워크숍, Career Center 등록 여부 바로 확인하세요.",
+            {"email_id": "m2", "note": "", "note_key": "dueToday", "note_vars": {},
              "subject": "Professional Grooming for All", "sender": "Career Development Programs",
-             "deadline": "2026-09-16", "done": False},
-            {"id": "m1", "note": "18일 밤 로봇팀 설명회, 참석 가능하면 신청하세요.",
+             "bucket": "action", "deadline": "2026-09-16", "done": False},
+            {"email_id": "m1", "note": "", "note_key": "dueOn",
+             "note_vars": {"date": "2026-09-18"},
              "subject": "[Tonight - Info Session] Recruitment of the HKUST Robotics Team",
              "sender": "Center for Global & Community Engagement",
-             "deadline": "2026-09-18", "done": False},
-            {"id": "m3", "note": "진행 보고서 제출, 어제까지였습니다.",
-             "subject": "Final Reminder: submit the progress report",
-             "sender": "Course Office", "deadline": "2026-09-15", "done": False},
+             "bucket": "action", "deadline": "2026-09-18", "done": False},
+            {"email_id": "m3", "note": "", "note_key": "needsReply", "note_vars": {},
+             "subject": "Final Reminder: submit the progress report", "copies": 3,
+             "bucket": "action", "sender": "Course Office", "deadline": None, "done": False},
         ],
-        "model": "ollama:qwen3.5:4b", "created_at": "2026-09-16T08:00:00+00:00"},
+        "model": "ollama:qwen3.5:9b", "created_at": "2026-09-16T08:00:00+00:00"},
+    "/api/ollama/models": {"configured": "qwen3.5:9b",
+                           "installed": ["qwen3.5:4b", "gemma3:4b"],
+                           "matches": False},
     "/api/priorities": {"items": [
         {"id": 1, "topic": "CO-OP", "status": "active", "weight": 20},
         {"id": 2, "topic": "논문 심사", "status": "active", "weight": 15}]},
@@ -227,6 +266,36 @@ class Handler(SimpleHTTPRequestHandler):
             if q.get("lang"):
                 SETTINGS["ui_language"] = q["lang"][0]
             return self._json({"theme": SETTINGS["theme"], "lang": SETTINGS["ui_language"]})
+        # One email, opened.
+        #
+        # `/api/mail/<id>` fell through the prefix rule and was answered with
+        # the LIST, so the reading pane -- the reason line, the body frame, and
+        # now the divider between them -- had never been rendered by this
+        # harness at all. Fifth fixture-fidelity bug, and the same shape as the
+        # other four: green about a screen it was not showing.
+        detail = re.match(r"^/api/mail/(m\d+)$", urlparse(self.path).path)
+        if detail:
+            found = next((m for m in MAIL if m["id"] == detail.group(1)), None)
+            if found is not None:
+                return self._json(dict(
+                    found,
+                    to_recipients=[{"name": "Danny", "address": "me@x.com"}],
+                    cc_recipients=[],
+                    # Codes, exactly as the backend now sends them for a
+                    # structurally ranked message -- so a raw key or an
+                    # untranslated sentence on this line fails a check instead
+                    # of reaching a screenshot.
+                    rationale=json.dumps([
+                        {"key": "sigDeadline", "vars": {"date": "2026-09-18"}},
+                        {"key": "sigDirect"},
+                        {"key": "sigHighImportance"},
+                        {"key": "sigAttachment"},
+                    ]),
+                    source="structural",
+                    body_html=("<p>Please disregard this email if you have already "
+                               "registered.</p>" + "<p>Body line.</p>" * 40),
+                ))
+
         if self.path.startswith("/api/mail?") or self.path == "/api/mail":
             special = self._mail_query()
             if special is not None:

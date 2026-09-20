@@ -414,3 +414,101 @@ def test_correspondent_affinity_counts_who_you_write_to(tmp_path):
     counts = am.build_correspondent_affinity(tmp_path / "V10", force=True)
     assert counts.get("lee@uni.edu") == 3
     assert "you@example.com" not in counts, "your own address is a From, not a To"
+
+
+# ------------------------------------------- not re-reading an unchanged store
+
+def _store(tmp_path, count=3):
+    root = tmp_path / "Mail" / "V10"
+    box = root / "INBOX.mbox" / "Messages"
+    box.mkdir(parents=True)
+    for i in range(count):
+        raw = (b"From: a@b.c\r\nTo: me@x.com\r\nSubject: s%d\r\n"
+               b"Date: Sat, 19 Sep 2026 10:00:00 +0000\r\n\r\nbody" % i)
+        (box / f"{i}.emlx").write_bytes(str(len(raw)).encode() + b"\n" + raw)
+    return root
+
+
+@pytest.mark.asyncio
+async def test_an_untouched_store_is_not_read_twice(tmp_path, monkeypatch):
+    """The poller runs every five minutes, forever.
+
+    On a Mac with Mail.app closed it had scanned 14,135 files two hundred
+    times in twenty-four hours, nine seconds a go, to find nothing each time --
+    which is the number the "no new mail" banner was counting. The walk is
+    cheap; the header read on every candidate is not.
+    """
+    from app import db
+    from app.sources import applemail
+
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(db, "_SCHEMA_READY", set())
+    db.init_db()
+    root = _store(tmp_path)
+    db.set_setting("applemail_root", str(root))
+
+    source = applemail.AppleMailSource()
+    first = await source.sync(days=3650, max_messages=50)
+    assert first["fetched"] == 3 and not first.get("unchanged")
+
+    reads: list = []
+    real = applemail.read_header_date
+    monkeypatch.setattr(applemail, "read_header_date",
+                        lambda p, m: (reads.append(p), real(p, m))[1])
+
+    second = await source.sync(days=3650, max_messages=50)
+    assert second["unchanged"] is True
+    assert second["fetched"] == 0
+    assert reads == [], "an unchanged store must not be header-read again"
+
+
+@pytest.mark.asyncio
+async def test_a_new_message_ends_the_skip(tmp_path, monkeypatch):
+    """The guard must not be a way to stop noticing mail."""
+    from app import db
+    from app.sources import applemail
+
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(db, "_SCHEMA_READY", set())
+    db.init_db()
+    root = _store(tmp_path)
+    db.set_setting("applemail_root", str(root))
+
+    source = applemail.AppleMailSource()
+    await source.sync(days=3650, max_messages=50)
+    assert (await source.sync(days=3650, max_messages=50))["unchanged"] is True
+
+    raw = (b"From: a@b.c\r\nTo: me@x.com\r\nSubject: brand new\r\n"
+           b"Date: Sat, 19 Sep 2026 11:00:00 +0000\r\n\r\nbody")
+    (root / "INBOX.mbox" / "Messages" / "99.emlx").write_bytes(
+        str(len(raw)).encode() + b"\n" + raw)
+
+    after = await source.sync(days=3650, max_messages=50)
+    assert not after.get("unchanged")
+    assert after["fetched"] == 4
+
+
+@pytest.mark.asyncio
+async def test_an_empty_database_is_never_skipped(tmp_path, monkeypatch):
+    """A fingerprint left by a run that never wrote anything must not convince
+    the next one there is nothing to do."""
+    from app import db
+    from app.sources import applemail
+
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(db, "_SCHEMA_READY", set())
+    db.init_db()
+    root = _store(tmp_path)
+    db.set_setting("applemail_root", str(root))
+    source = applemail.AppleMailSource()
+    await source.sync(days=3650, max_messages=50)
+
+    with db.connect() as conn:
+        conn.execute("DELETE FROM emails")
+        conn.commit()
+    again = await source.sync(days=3650, max_messages=50)
+    assert not again.get("unchanged")
+    assert again["fetched"] == 3

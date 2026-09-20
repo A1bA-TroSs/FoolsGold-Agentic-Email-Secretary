@@ -26,7 +26,7 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 GRAPH_SCOPES = ["User.Read", "Mail.Read"]
 
 # Settings keys that are encrypted at rest.
-SECRET_SETTINGS = {"anthropic_api_key", "openai_api_key"}
+SECRET_SETTINGS = {"anthropic_api_key", "openai_api_key", "smtp_password"}
 
 DEFAULT_SETTINGS = {
     "theme": "gold",
@@ -64,6 +64,30 @@ DEFAULT_SETTINGS = {
     # linear one drops to zero the moment you step outside it.
     "deadline_horizon_days": "7",
     "deadline_urgent_days": "2",
+    # --- sending ---------------------------------------------------------
+    # Off until the user turns it on. An unrecognised value means "none", not a
+    # guess: reading the wrong mailbox shows you something you can ignore,
+    # sending through the wrong server is not recoverable.
+    "mail_transport": "none",
+    "smtp_host": "",
+    "smtp_port": "587",
+    # starttls | ssl | plain. There is no automatic downgrade from starttls:
+    # the password goes over that socket.
+    "smtp_security": "starttls",
+    "smtp_username": "",
+    # IMAP is only used to file a copy in Sent, and reuses the SMTP credentials
+    # because every provider that offers both expects the same ones.
+    "imap_host": "",
+    "imap_port": "993",
+    # auto | skip. "auto" looks for the server's own copy first and uploads one
+    # only if there is none -- Gmail and Exchange file it themselves, and
+    # appending on top is how a Sent folder ends up with two of everything.
+    "sent_copy": "auto",
+    # Set these only when discovery gets it wrong; empty means RFC 6154 first,
+    # then folder names.
+    "sent_folder": "",
+    "drafts_folder": "",
+    "imap_username": "",
     "sync_days": "30",
     "sync_max_messages": "300",
     "classify_batch_size": "10",

@@ -26,10 +26,15 @@ February.
 from __future__ import annotations
 
 import calendar as _stdlib_calendar
+import re
 from datetime import date, timedelta
 from typing import Any, Iterable
 
 from . import db, priority
+# The same normaliser the reply builder uses to stop `Re:` stacking. A
+# department's reminder often arrives as a reply to its own announcement, so
+# the two are one event and must key the same way.
+from . import dedup
 
 # The grid is always six rows. A month can span four, five or six weeks, and a
 # grid that changes height as you page through the year makes everything below
@@ -86,6 +91,51 @@ def shift_month(year: int, month: int, delta: int) -> tuple[int, int]:
 # entries
 # --------------------------------------------------------------------------
 
+def _announcement_key(subject: str, due: str) -> tuple[str, str]:
+    """What makes two calendar chips the same event: one announcement, one day.
+
+    Departments send a thing and then remind you about it. The seminar this was
+    written for went out three times from one sender -- 8th, 11th, 17th -- and
+    each copy earned its own chip, so the 20th showed the same title twice in a
+    row with nothing to tell them apart.
+
+    Same rule as `db.dedup_key` uses for to-dos, and the same reasoning: one
+    job, one day. Deliberately *not* subject alone -- a weekly seminar is a
+    real recurrence, and collapsing those would hide events rather than
+    duplicates. Reply and forward markers come off first, so `X` and `Re: X`
+    are one announcement.
+    """
+    # The normaliser lives in `dedup` because the ranked lists need the same
+    # one. The KEY is still local and still carries the day: that difference
+    # between the two surfaces is the design, not an oversight.
+    return (due, dedup.normalise_subject(subject))
+
+
+def _collapse_announcements(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One chip per announcement, carrying how many messages it stands for.
+
+    The **most recent** copy wins, because a reminder supersedes the thing it
+    reminds you of: its wording is current, and so is the app's own reading of
+    it. Ordering is preserved so the caller's sort still decides the day.
+    """
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = _announcement_key(row["title"], row["due"])
+        seen = best.get(key)
+        if seen is None:
+            row["copies"] = 1
+            best[key] = row
+            continue
+        seen["copies"] += 1
+        if row["received_at"] > seen["received_at"]:
+            row["copies"] = seen["copies"]
+            best[key] = row
+    out = list(best.values())
+    for row in out:
+        row.pop("received_at", None)
+    return out
+
+
 def _email_entries(start: str, end: str) -> list[dict[str, Any]]:
     with db.connect() as conn:
         rows = conn.execute(
@@ -139,8 +189,11 @@ def _email_entries(start: str, end: str) -> list[dict[str, Any]]:
             "done": done,
             "completed_at": row["acted_at"] if done else None,
             "note": None,
+            # Kept off the payload contract deliberately: only the collapser
+            # reads it, and it is removed before the entry leaves this module.
+            "received_at": row["received_at"] or "",
         })
-    return out
+    return _collapse_announcements(out)
 
 
 def _as_task_entry(row: dict[str, Any], highlights: dict[str, str] | None = None) -> dict[str, Any]:

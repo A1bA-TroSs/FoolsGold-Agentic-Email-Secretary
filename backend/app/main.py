@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from pathlib import Path
 
 import uvicorn
@@ -120,6 +121,11 @@ def health() -> dict:
         "status": "ok",
         "app": APP_NAME,
         "version": VERSION,
+        # So the desktop shell can tell an orphaned backend of ours from some
+        # other program on the port, and end it rather than adopting whatever
+        # code it happens to be running. Local-only endpoint on a loopback
+        # socket; the pid is not a secret from the machine it is running on.
+        "pid": os.getpid(),
         "source": source_block,
         "auth": auth_block,
         "ai": pipeline.ai_status(),

@@ -11,7 +11,7 @@
     "dev": "FOOLSGOLD_DEV=1 electron .",
     "start": "npm run build:ui && electron .",
     "dist": "npm run build:ui && electron-builder",
-    "test:electron": "node --test electron/reminders.test.js"
+    "test:electron": "node --test electron/reminders.test.js electron/backend_guard.test.js"
   },
   "devDependencies": {
     "electron": "^32.0.0",

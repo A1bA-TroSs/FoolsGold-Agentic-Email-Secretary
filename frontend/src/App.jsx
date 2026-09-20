@@ -91,6 +91,39 @@ function saveListWidth(width) {
   try { localStorage.setItem(LIST_KEY, String(width)); } catch { /* not fatal */ }
 }
 
+/* A notice that can be sent away.
+
+   Every one of these is true and worth saying once. Said on every render of
+   every session, with no way to acknowledge it, they become a permanent strip
+   of yellow the eye stops reading -- and then the one that matters is the one
+   nobody sees either.
+
+   So each announces itself when the app opens and carries a way to close it.
+   Dismissals are held in memory, not on disk, which is the whole design in one
+   line: a fresh launch says it again, because the condition is still true and
+   this is the moment the user is deciding what to look at. And a notice whose
+   condition goes away is forgotten, so if it comes back it is new news and
+   says so.
+
+   `onDismiss` is not optional-by-omission: a notice with no way out is the
+   thing this exists to stop, so passing none is a mistake, not a mode. */
+function Notice({ id, onDismiss, dismissLabel, children }) {
+  return (
+    <div className="banner">
+      <span className="dot" />
+      <div className="banner-text">{children}</div>
+      <button type="button" className="banner-x"
+              onClick={() => onDismiss(id)}
+              title={dismissLabel} aria-label={dismissLabel}>
+        <svg viewBox="0 0 16 16" aria-hidden="true" width="11" height="11">
+          <path d="M3.5 3.5 12.5 12.5M12.5 3.5 3.5 12.5" stroke="currentColor"
+                strokeWidth="1.7" strokeLinecap="round" fill="none" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [source, setSource] = useState({ name: 'applemail', label: '', ready: false });
@@ -154,6 +187,12 @@ export default function App() {
   const [firstPaint, setFirstPaint] = useState(false);
   const [addingTask, setAddingTask] = useState(false);
   const [listWidth, setListWidth] = useState(readListWidth);
+  /* Ids the user has closed during this run of the app. A Set in state,
+     deliberately not persisted -- see the Notice comment. */
+  const [dismissed, setDismissed] = useState(() => new Set());
+  const dismissNotice = useCallback((id) => {
+    setDismissed((prev) => new Set(prev).add(id));
+  }, []);
 
   const inSettings = view === 'settings';
 
@@ -665,6 +704,83 @@ export default function App() {
     saveListWidth(LIST_DEFAULT);
   }, []);
 
+  /* Every notice whose condition holds right now, dismissed or not.
+
+     Dismissed ones stay in this list on purpose: it is what the pruning below
+     is measured against, and dropping them here would make a closed notice
+     look like a condition that had gone away -- so it would come straight
+     back on the next render. */
+  const liveNotices = useMemo(() => {
+    const out = [];
+    if (banner) out.push({ id: 'banner', body: banner });
+    if (source.ready && source.needs_setup) {
+      out.push({
+        id: 'needs-address',
+        body: (<>
+          {t('addAddressHint')}
+          <button className="btn ghost" style={{ marginLeft: 'auto', padding: '1px 8px' }}
+                  onClick={() => setView('settings')}>{t('openSettings')}</button>
+        </>),
+      });
+    }
+    if (!aiStatus.available && !aiStatus.off) {
+      /* The reason in the reader's language when the app recognises it, and
+         the raw message only when it does not.
+
+         This banner read "AI를 쓸 수 없어 구조적 신호만으로 순위를 매기고
+         있습니다. (Ollama has no model called 'qwen3.5:9b'. Pull it first:
+         ollama pull qwen3.5:9b)" — a Korean sentence with an English one
+         bolted into the middle of it. Third occurrence of the same rule after
+         the briefing note and the ranking reason: the backend names what went
+         wrong, this file decides how it reads. A failure with no key is one
+         nobody anticipated, and showing its message verbatim is the right
+         answer for that. */
+      const why = aiStatus.detail_key
+        ? t(aiStatus.detail_key, aiStatus.detail_vars || {})
+        : (aiStatus.detail || '').slice(0, 110);
+      out.push({
+        id: 'ai-unavailable',
+        body: `${t('aiUnavailable')}${why ? ` (${why})` : ''}`,
+      });
+    }
+    if (syncState?.state === 'failing') {
+      out.push({
+        id: 'sync-failing',
+        body: `${t('syncFailing', { arg: String(syncState.consecutive_failures || 1) })}`
+          + (syncState.error ? ` — ${syncState.error.slice(0, 120)}` : ''),
+      });
+    }
+    if (syncState?.state === 'frozen') {
+      out.push({
+        id: 'sync-frozen',
+        body: t('syncFrozen', {
+          date: shortDate(syncState.newest_received),
+          hours: String(Math.round(syncState.frozen_hours || 0)),
+          checks: String(syncState.frozen_checks || 0),
+        }),
+      });
+    }
+    return out;
+  }, [banner, source.ready, source.needs_setup, aiStatus.available, aiStatus.off,
+      aiStatus.detail, aiStatus.detail_key, aiStatus.detail_vars, syncState, t]);
+
+  /* Forget a dismissal once its notice stops applying.
+
+     Keyed on the id and nothing else, so the numbers inside `syncFrozen` --
+     which tick up on every poll -- do not resurrect a notice the user closed
+     two minutes ago. The condition changing back is news; the same condition
+     counting higher is not. */
+  useEffect(() => {
+    setDismissed((prev) => {
+      if (prev.size === 0) return prev;
+      const live = new Set(liveNotices.map((n) => n.id));
+      const next = new Set([...prev].filter((id) => live.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [liveNotices]);
+
+  const notices = liveNotices.filter((n) => !dismissed.has(n.id));
+
   // ---- render -------------------------------------------------------------
   const starting = booting || (source.ready && !firstPaint);
 
@@ -827,49 +943,24 @@ export default function App() {
             ><span /></div>
 
             <div className="pane-detail">
-              {banner && <div className="banner"><span className="dot" />{banner}</div>}
-              {source.ready && source.needs_setup && (
-                <div className="banner">
-                  <span className="dot" />
-                  {t('addAddressHint')}
-                  <button className="btn ghost" style={{ marginLeft: 'auto', padding: '1px 8px' }}
-                          onClick={() => setView('settings')}>{t('openSettings')}</button>
-                </div>
-              )}
-              {!aiStatus.available && !aiStatus.off && (
-                <div className="banner">
-                  <span className="dot" />
-                  {t('aiUnavailable')}
-                  {aiStatus.detail ? ` (${aiStatus.detail.slice(0, 110)})` : ''}
-                </div>
-              )}
+              {/* Each of these used to be an unconditional strip. The content
+                  is unchanged; what is new is that they are a list, so they
+                  can be dismissed one at a time and pruned when they stop
+                  being true.
 
-              {/* The mailbox stopped, and the app used to have no way to say so.
-
-                  Two different sentences on purpose. `failing` means this app
-                  is erroring and names the error. `frozen` means this app is
-                  working perfectly and the thing it reads has stopped -- which
-                  is not the user's fault, not a bug they can report, and
-                  needs the one instruction that actually fixes it. Showing
-                  "something went wrong" for both would be worse than silence,
-                  because it would send them looking in the wrong place. */}
-              {syncState?.state === 'failing' && (
-                <div className="banner">
-                  <span className="dot" />
-                  {t('syncFailing', { arg: String(syncState.consecutive_failures || 1) })}
-                  {syncState.error ? ` — ${syncState.error.slice(0, 120)}` : ''}
-                </div>
-              )}
-              {syncState?.state === 'frozen' && (
-                <div className="banner">
-                  <span className="dot" />
-                  {t('syncFrozen', {
-                    date: shortDate(syncState.newest_received),
-                    hours: String(Math.round(syncState.frozen_hours || 0)),
-                    checks: String(syncState.frozen_checks || 0),
-                  })}
-                </div>
-              )}
+                  Two different sentences for the mailbox on purpose.
+                  `failing` means this app is erroring and names the error.
+                  `frozen` means this app is working perfectly and the thing it
+                  reads has stopped -- not the user's fault, not a bug they can
+                  report, and it needs the one instruction that actually fixes
+                  it. "Something went wrong" for both would be worse than
+                  silence, because it would send them looking in the wrong
+                  place. */}
+              {notices.map(({ id, body }) => (
+                <Notice key={id} id={id} onDismiss={dismissNotice} dismissLabel={t('dismiss')}>
+                  {body}
+                </Notice>
+              ))}
 
               {selectedId ? (
                 <>

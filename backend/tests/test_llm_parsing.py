@@ -189,3 +189,46 @@ def test_the_trim_is_marked_so_the_model_does_not_read_across_the_gap():
 def test_a_short_body_is_untouched():
     body = "Please send the form by 3 September 2026."
     assert base._body_for_prompt(body) == body
+
+
+# --------------------------------------------- the reason line is not a sentence
+
+def test_the_structural_reason_is_codes_not_english():
+    """It used to be prose: "Deadline 2026-09-18 found in the text; flagged
+    high importance; has an attachment." -- built in the backend, so it sat in
+    English in the middle of a Korean reading pane for as long as the feature
+    existed. Exactly the bug already fixed once in the briefing.
+    """
+    import json
+    from app import pipeline
+
+    email = {"id": "e1", "subject": "s", "importance": "high", "has_attachments": 1,
+             "to_recipients": '[{"address": "me@x.com"}]', "cc_recipients": "[]"}
+    codes = pipeline.structural_reason_codes(email, "action", "2026-09-18", "me@x.com")
+    keys = [c["key"] for c in codes]
+
+    assert keys == ["sigDeadline", "sigDirect", "sigHighImportance",
+                    "sigAsksAction", "sigAttachment"]
+    assert codes[0]["vars"] == {"date": "2026-09-18"}
+    # Nothing in here may be a phrase: a key is looked up, a sentence is not.
+    assert not any(" " in c["key"] for c in codes)
+
+    stored = pipeline._structural_reason(email, "action", "2026-09-18", "me@x.com")
+    assert json.loads(stored) == codes
+
+
+def test_a_message_with_no_signals_says_so_rather_than_nothing():
+    from app import pipeline
+    email = {"id": "e2", "subject": "s", "importance": "normal", "has_attachments": 0,
+             "to_recipients": "[]", "cc_recipients": "[]"}
+    codes = pipeline.structural_reason_codes(email, "fyi", None, "me@x.com")
+    assert codes == [{"key": "sigNone"}]
+
+
+def test_cc_only_and_addressed_directly_are_exclusive():
+    from app import pipeline
+    cc_only = {"id": "e3", "subject": "s", "importance": "normal", "has_attachments": 0,
+               "to_recipients": '[{"address": "someone@x.com"}]',
+               "cc_recipients": '[{"address": "me@x.com"}]'}
+    keys = [c["key"] for c in pipeline.structural_reason_codes(cc_only, "fyi", None, "me@x.com")]
+    assert "sigCcOnly" in keys and "sigDirect" not in keys

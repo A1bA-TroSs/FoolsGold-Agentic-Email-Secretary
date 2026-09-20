@@ -10,6 +10,7 @@ from ..llm.copilot_provider import CopilotProvider
 from ..llm import registry
 from ..llm.registry import get_provider, reset_cache
 from ..sources.registry import all_status, get_source
+from ..transports.registry import all_status as all_transport_status
 from ..llm.base import ProviderUnavailable
 
 router = APIRouter(prefix="/api", tags=["config"])
@@ -39,6 +40,18 @@ def patch_settings(body: SettingsPatch) -> dict:
     return db.all_settings()
 
 
+@router.get("/transports")
+def transports() -> dict:
+    """Every way out and whether it is usable, so Settings can say "SMTP: needs
+    a password" next to "Outlook: not connected".
+
+    Note what is *not* in this file: there is no endpoint that sends anything.
+    A message leaves this machine only through a call the user made after
+    seeing the message, and that route does not exist yet.
+    """
+    return {"current": db.get_setting("mail_transport", "none"), "statuses": all_transport_status()}
+
+
 @router.get("/sources")
 def sources() -> dict:
     """Every source and whether it is usable right now, so Settings can show
@@ -53,8 +66,41 @@ async def test_provider() -> dict:
         provider = get_provider()
     except ProviderUnavailable as exc:
         return {"ok": False, "detail": str(exc)}
-    ok, detail = await provider.check()
-    return {"ok": ok, "detail": detail, "provider": provider.name, "model": provider.model}
+    result = await provider.check()
+    ok, detail = result
+    # A provider that has something structured to say says it; one that returns
+    # a plain tuple still works. The English `detail` stays as the fallback for
+    # failures nobody anticipated.
+    return {"ok": ok, "detail": detail,
+            "detail_key": getattr(result, "key", None),
+            "detail_vars": getattr(result, "vars", {}) or {},
+            "models": getattr(result, "models", []) or [],
+            "provider": provider.name, "model": provider.model}
+
+
+@router.get("/ollama/models")
+async def ollama_models() -> dict:
+    """What this Mac actually has.
+
+    The app shipped a default of `qwen3.5:9b` and offered a free-text box.
+    Someone who pulled `qwen3.5:4b` -- deliberately, because it is the one that
+    fits a laptop -- got "Ollama has no model called 'qwen3.5:9b'" and an
+    instruction to download six gigabytes they did not need.
+
+    The app should not guess a model name and it must not pick one either: the
+    same rule that stops it reaching for a credential stops it choosing what
+    runs on someone's machine. So it asks, shows, and lets the user click.
+    """
+    from ..llm.ollama_provider import OllamaProvider, model_matches
+
+    configured = db.get_setting("ollama_model", "") or ""
+    provider = OllamaProvider(configured, db.get_setting("ollama_host", "") or "")
+    installed = await provider.available_models()
+    return {
+        "configured": configured,
+        "installed": installed,
+        "matches": any(model_matches(configured, m) for m in installed),
+    }
 
 
 @router.get("/settings/copilot-status")

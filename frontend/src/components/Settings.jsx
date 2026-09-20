@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { LANGUAGES, useT } from '../lib/i18n.js';
 
@@ -69,6 +69,9 @@ export default function Settings({
   const [suggestions, setSuggestions] = useState(null);
   const [newTopic, setNewTopic] = useState('');
   const [test, setTest] = useState(null);
+  // `null` means "not asked yet", which is different from "asked and there
+  // are none" -- the second deserves a sentence, the first a button.
+  const [models, setModels] = useState(null);
   const [testing, setTesting] = useState(false);
   const [copilot, setCopilot] = useState(null);
   const [rescan, setRescan] = useState(null);
@@ -140,7 +143,17 @@ export default function Settings({
     try { setTest(await api.testProvider()); } finally { setTesting(false); }
   }
 
+
   const provider = value('llm_provider');
+  /* Asked for once, when the local provider is the one on screen. Not on every
+     render: it talks to Ollama, and a settings screen must not poll a model
+     server in the background. */
+  const loadModels = useCallback(async () => {
+    try { setModels(await api.ollamaModels()); } catch { setModels({ installed: [], matches: false }); }
+  }, []);
+  useEffect(() => {
+    if (provider === 'ollama' && models === null) loadModels();
+  }, [provider, models, loadModels]);
 
   const needle = query.trim().toLowerCase();
 
@@ -323,6 +336,43 @@ export default function Settings({
                   {t('localPull', { model: value('ollama_model') || 'qwen3.5:9b' })}
                 </p>
               </div>
+
+              {/* What this Mac actually has.
+
+                  The box above shipped with a default of `qwen3.5:9b`, and
+                  someone who had pulled `qwen3.5:4b` -- deliberately, because
+                  that is the one that fits a laptop -- was told the app had no
+                  model and instructed to download six gigabytes they did not
+                  need. A free-text field for a name only the machine knows is
+                  a guessing game with the machine.
+
+                  Shown, never chosen: the app does not silently switch the
+                  model any more than it silently reaches for a credential.
+                  One click is the whole interaction. */}
+              <div className="field">
+                <label>{t('installedModels')}</label>
+                {models === null ? (
+                  <button className="btn ghost" style={{ padding: '2px 8px' }}
+                          onClick={loadModels}>{t('refreshModels')}</button>
+                ) : models.installed.length === 0 ? (
+                  <p className="hint">{t('noModelsInstalled')}</p>
+                ) : (
+                  <>
+                    <div className="lang-grid">
+                      {models.installed.map((name) => (
+                        <button key={name} type="button"
+                                className={`chip lang-chip ${name === value('ollama_model') ? 'active' : ''}`}
+                                onClick={() => edit('ollama_model', name)}>
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="hint" style={{ marginTop: 6 }}>
+                      {models.matches ? t('installedModelsHelp') : t('modelNotInstalled')}
+                    </p>
+                  </>
+                )}
+              </div>
               <div className="field">
                 <label>{t('ollamaHost')}</label>
                 <input className="input" value={value('ollama_host')}
@@ -399,7 +449,9 @@ export default function Settings({
             </button>
             {test && (
               <span style={{ fontSize: 12, color: test.ok ? 'var(--accent-strong)' : '#B4483C' }}>
-                {test.ok ? `${t('working')} (${test.provider})` : test.detail}
+                {test.ok
+                  ? `${t('working')} (${test.provider})`
+                  : (test.detail_key ? t(test.detail_key, test.detail_vars || {}) : test.detail)}
               </span>
             )}
           </div>

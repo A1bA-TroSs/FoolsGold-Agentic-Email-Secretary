@@ -327,6 +327,12 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     # per-category preference can be learned and, more importantly, inspected:
     # "you have marked six of eight hackathon invitations irrelevant" is a
     # sentence the user can agree or disagree with. A hidden weight is not.
+    # Where this message came from on disk, so an inline image can be read out
+    # of the original file on demand instead of being copied into the database.
+    # 543 of 1,274 messages in one real mailbox carry `cid:` images, 1,405
+    # references in all -- storing those bytes here would have roughly doubled
+    # the database to serve pictures nobody has asked to see yet.
+    ("emails", "source_path", "TEXT"),
     ("classifications", "category", "TEXT"),
     ("classifications", "model_bucket", "TEXT"),
     # Why this email ranks where it does, as a code the UI translates. Stored
@@ -524,6 +530,47 @@ def all_settings(redact_secrets: bool = True) -> dict[str, Any]:
 # emails
 # --------------------------------------------------------------------------
 
+def email_count() -> int:
+    """How many messages are stored. Used as a sanity guard before skipping a
+    scan: an empty database means the last sync never finished, whatever the
+    fingerprint says."""
+    with connect() as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0])
+
+
+def emails_missing_source_path() -> set[str]:
+    """Ids of stored messages with no path to the file they came from.
+
+    A set, and the backfill discards from it as it goes, so the walk can stop
+    the moment every blank is filled instead of reading the whole store.
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id FROM emails WHERE source_path IS NULL OR source_path = ''"
+        ).fetchall()
+    return {row["id"] for row in rows}
+
+
+def set_source_paths(paths: dict[str, str]) -> int:
+    """Fill in blank `source_path`s. Never overwrites one already there.
+
+    The WHERE clause carries that rule rather than the caller, because a path
+    already stored is the one the sync itself wrote -- and a backfill matching
+    the same message in two mailboxes (an inbox copy and an All Mail copy, say)
+    must not be able to flip it back and forth on alternating runs.
+    """
+    if not paths:
+        return 0
+    with connect() as conn:
+        cursor = conn.executemany(
+            "UPDATE emails SET source_path = ? "
+            "WHERE id = ? AND (source_path IS NULL OR source_path = '')",
+            [(path, email_id) for email_id, path in paths.items()],
+        )
+        conn.commit()
+        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(paths)
+
+
 def upsert_emails(rows: Iterable[dict[str, Any]]) -> int:
     """Insert or refresh cached messages. Body columns are only overwritten when
     the incoming payload actually carries a body, so a metadata-only delta sync
@@ -533,12 +580,13 @@ def upsert_emails(rows: Iterable[dict[str, Any]]) -> int:
         id, conversation_id, subject, from_name, from_address, to_recipients,
         cc_recipients, received_at, is_read, is_answered, is_flagged,
         has_attachments, importance,
-        web_link, folder, body_preview, body_text, body_html, synced_at
+        web_link, folder, body_preview, body_text, body_html, source_path, synced_at
     ) VALUES (
         :id, :conversation_id, :subject, :from_name, :from_address, :to_recipients,
         :cc_recipients, :received_at, :is_read, :is_answered, :is_flagged,
         :has_attachments, :importance,
-        :web_link, :folder, :body_preview, :body_text, :body_html, :synced_at
+        :web_link, :folder, :body_preview, :body_text, :body_html, :source_path,
+        :synced_at
     )
     ON CONFLICT(id) DO UPDATE SET
         subject=excluded.subject,
@@ -551,12 +599,21 @@ def upsert_emails(rows: Iterable[dict[str, Any]]) -> int:
         body_preview=excluded.body_preview,
         body_text=COALESCE(NULLIF(excluded.body_text, ''), emails.body_text),
         body_html=COALESCE(NULLIF(excluded.body_html, ''), emails.body_html),
+        -- Same COALESCE rule as the bodies: the Graph source has no file on
+        -- disk and sends nothing here, and a metadata-only pass must not blank
+        -- out the path the Apple Mail sync recorded.
+        source_path=COALESCE(NULLIF(excluded.source_path, ''), emails.source_path),
         synced_at=excluded.synced_at
     """
     count = 0
     with connect() as conn:
         for row in rows:
-            conn.execute(sql, row)
+            # Defaulted here rather than required of every caller: the Graph
+            # source has no file on disk, and every test fixture in this repo
+            # predates the column. A named-parameter INSERT raises on a missing
+            # key, so without this the day's first sync from any other source
+            # would fail outright.
+            conn.execute(sql, {**row, "source_path": row.get("source_path") or ""})
             count += 1
         conn.commit()
     return count

@@ -207,6 +207,13 @@ def main() -> int:
             off_scale, stagger_bad, done_bad, irr_bad, set_bad = [], [], [], [], []
             grounds: dict[str, set] = {}
             badge_seen, why_seen, contrast_bad = 0, 0, []
+            badge_covers: list[str] = []
+            title_bad: list[str] = []
+            notice_bad: list[str] = []
+            copies_bad: list[str] = []
+            ai_bad: list[str] = []
+            split_bad: list[str] = []
+            reason_bad: list[str] = []
 
             for theme in THEMES:
                 for lang in LANGS:
@@ -302,6 +309,195 @@ def main() -> int:
                     elif brief["same"]:
                         reached.append(f"{tag}: the briefing has exactly as many rows as the "
                                        "mail list -- it is probably showing the mail list")
+
+                    # A rail badge that sits ON its icon.
+                    #
+                    # `.rail button .badge { top: 5px; right: 5px }` was written
+                    # when the badge's containing block was the 42px button. It
+                    # is now `.rail-glyph`, which is exactly the 18px icon, so
+                    # those offsets put the dot in the MIDDLE of the glyph and
+                    # painted a disc over the checklist -- reported, reasonably,
+                    # as "the priority icon is broken". The correcting rule
+                    # `.rail-item .badge` lost on specificity and never applied,
+                    # which is indistinguishable from never having been written.
+                    # Geometry, not appearance: the dot must not cover the
+                    # centre of the glyph it belongs to.
+                    cover = page.evaluate("""() => {
+                      const out = [];
+                      for (const b of document.querySelectorAll('.rail button .badge')) {
+                        const g = b.parentElement.getBoundingClientRect();
+                        const r = b.getBoundingClientRect();
+                        const cx = g.left + g.width / 2, cy = g.top + g.height / 2;
+                        if (r.left <= cx && r.right >= cx && r.top <= cy && r.bottom >= cy) {
+                          out.push(b.parentElement.parentElement.dataset.view || '?');
+                        }
+                      }
+                      return out;
+                    }""")
+                    if cover:
+                        badge_covers.append(f"{tag}: badge covers the icon on {cover}")
+
+                    # A briefing row titled by its own deadline.
+                    #
+                    # The headline used to be the note, and with no model the
+                    # note is a translation key for the due date -- so every row
+                    # was titled "Due today" / "Due 2026-09-20" while the chip
+                    # beside it said the same words. Seven rows, one repeated
+                    # title, and the subject demoted to small grey text. The
+                    # title must be the subject, and must not equal the chip.
+                    titles = page.evaluate("""() => {
+                      const bad = [];
+                      for (const li of document.querySelectorAll('.agenda-item')) {
+                        const title = (li.querySelector('.agenda-subject')?.innerText || '').trim();
+                        const chip = (li.querySelector('.agenda-meta .tag')?.innerText || '').trim();
+                        if (!title) { bad.push('(no title)'); continue; }
+                        if (chip && title.toUpperCase() === chip.toUpperCase()) bad.push(title);
+                      }
+                      const all = [...document.querySelectorAll('.agenda-item .agenda-subject')]
+                        .map(e => e.innerText.trim());
+                      // Two rows sharing a title is the same defect from the
+                      // other side: whatever is in the title is then not what
+                      // tells the rows apart.
+                      if (all.length > 1 && new Set(all).size === 1) bad.push('every row titled ' + all[0]);
+                      return bad.slice(0, 3);
+                    }""")
+                    if titles:
+                        title_bad.append(f"{tag}: {titles}")
+
+                    # The AI banner is one sentence, not two languages.
+                    #
+                    # Read BEFORE the dismissal check below, which closes the
+                    # first notice -- and the first notice is this one. Asserted
+                    # on a strip that had just been shut, it reported "did not
+                    # render" and looked like a bug in the app.
+                    if lang == "ko":
+                        ai = page.evaluate("""() => {
+                          for (const b of document.querySelectorAll('.pane-detail .banner')) {
+                            const txt = b.innerText || '';
+                            if (txt.includes('AI')) return txt;
+                          }
+                          return null;
+                        }""")
+                        if ai is None:
+                            ai_bad.append(f"{tag}: the AI banner did not render")
+                        elif re.search(r"has no model|Pull it first|ollama pull|is not pulled", ai):
+                            ai_bad.append(f"{tag}: English left in the AI banner -- {ai[:80]!r}")
+
+                    # Every notice can be sent away, and sending one away
+                    # leaves the others alone.
+                    #
+                    # These strips are all true and all worth saying once. Said
+                    # on every render with no way to acknowledge them, they
+                    # become a band of yellow the eye stops reading -- and then
+                    # the one that matters is the one nobody sees either.
+                    before = page.eval_on_selector_all(".pane-detail .banner", "els => els.length")
+                    closers = page.eval_on_selector_all(
+                        ".pane-detail .banner", "els => els.filter(e => e.querySelector('.banner-x')).length")
+                    if before == 0:
+                        notice_bad.append(f"{tag}: no notice rendered -- the fixture should force one")
+                    elif closers != before:
+                        notice_bad.append(f"{tag}: {before - closers} of {before} notices cannot be closed")
+                    else:
+                        page.click(".pane-detail .banner .banner-x")
+                        page.wait_for_timeout(120)
+                        after = page.eval_on_selector_all(".pane-detail .banner", "els => els.length")
+                        if after != before - 1:
+                            notice_bad.append(f"{tag}: closing one notice took {before - after} away")
+
+                    # The reading pane: open an email, then the two things that
+                    # live in it.
+                    page.click(".mail-item")
+                    page.wait_for_selector(".detail-wrap", timeout=4000)
+                    page.wait_for_timeout(250)
+
+                    # 1. the reason line is in the reader's language. The
+                    #    backend used to build it as an English sentence, so it
+                    #    sat in English in the middle of a Korean pane.
+                    why = (page.eval_on_selector(".why", "e => e.innerText") or "") if \
+                        page.query_selector(".why") else ""
+                    if not why.strip():
+                        reason_bad.append(f"{tag}: the reason line is empty")
+                    elif re.search(r"found in the text|has an attachment|flagged high|sig[A-Z]", why):
+                        reason_bad.append(f"{tag}: untranslated reason -- {why[:70]!r}")
+                    if lang == "ko" and re.search(r"[A-Za-z]{4,}\s+[A-Za-z]{4,}", why):
+                        reason_bad.append(f"{tag}: English prose in a Korean reason -- {why[:70]!r}")
+
+                    # 2. the header/body divider actually moves the boundary.
+                    #    Geometry, because a separator that renders and does
+                    #    nothing is the failure this is written for.
+                    # Measured AFTER a tick, not in the same block as the
+                    # drag: React flushes a state update from an event handler
+                    # asynchronously, so reading the box straight afterwards
+                    # reports the old height and the check fails on a feature
+                    # that works. (It did, first run.)
+                    started = page.evaluate("""() => {
+                      const head = document.querySelector('.detail-head');
+                      const bar = document.querySelector('.detail-resizer');
+                      if (!head || !bar) return { missing: true };
+                      const before = head.getBoundingClientRect().height;
+                      const b = bar.getBoundingClientRect();
+                      const x = b.left + b.width / 2, y = b.top + b.height / 2;
+                      bar.dispatchEvent(new PointerEvent('pointerdown', {
+                        clientX: x, clientY: y, bubbles: true, button: 0 }));
+                      window.dispatchEvent(new PointerEvent('pointermove', {
+                        clientX: x, clientY: y + 70, bubbles: true }));
+                      window.dispatchEvent(new PointerEvent('pointerup', {
+                        clientX: x, clientY: y + 70, bubbles: true }));
+                      return { before };
+                    }""")
+                    page.wait_for_timeout(200)
+                    moved = page.evaluate("""(before) => {
+                      const head = document.querySelector('.detail-head');
+                      const body = document.querySelector('.detail-body');
+                      return { before, after: head.getBoundingClientRect().height,
+                               body: body.getBoundingClientRect().height };
+                    }""", started.get("before"))
+                    if started.get("missing"):
+                        moved = {"missing": True}
+                    if moved.get("missing"):
+                        split_bad.append(f"{tag}: no divider in the reading pane")
+                    elif moved["after"] - moved["before"] < 30:
+                        split_bad.append(
+                            f"{tag}: dragging 70px moved the header "
+                            f"{moved['after'] - moved['before']:.0f}px")
+                    elif moved["body"] < 40:
+                        split_bad.append(f"{tag}: the mail was squeezed to {moved['body']:.0f}px")
+
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(200)
+
+                    # A collapsed row says how many messages it stands for.
+                    #
+                    # The ranked list hides the other copies of a repeated
+                    # announcement. A list that quietly drops mail is
+                    # indistinguishable from one that lost it, so the count is
+                    # not decoration -- it is the difference between the two.
+                    # Asserted as painted pixels, because a number rendered in
+                    # the background colour is the same as no number.
+                    counted = page.evaluate("""() => {
+                      const list = document.querySelector('.mail-item .copies');
+                      const brief = document.querySelector('.agenda-item .copies');
+                      const look = (el) => {
+                        if (!el) return null;
+                        const r = el.getBoundingClientRect();
+                        const cs = getComputedStyle(el);
+                        return { text: el.innerText.trim(), w: r.width, h: r.height,
+                                 color: cs.color, bg: cs.backgroundColor };
+                      };
+                      return { list: look(list), brief: look(brief) };
+                    }""")
+                    for where in ("list", "brief"):
+                      seen = counted[where]
+                      if not seen:
+                          copies_bad.append(f"{tag}: the {where} shows no count on a collapsed row")
+                      elif not re.search(r"\d", seen["text"] or ""):
+                          copies_bad.append(f"{tag}: {where} count has no number: {seen['text']!r}")
+                      elif seen["w"] < 8 or seen["h"] < 8:
+                          copies_bad.append(f"{tag}: {where} count is {seen['w']:.0f}x{seen['h']:.0f}")
+                      else:
+                          c = contrast(seen["color"], seen["bg"]) if "rgba(0, 0, 0, 0)" not in seen["bg"] else None
+                          if c is not None and c < 3.0:
+                              copies_bad.append(f"{tag}: {where} count contrast {c:.2f}")
 
                     badge = page.evaluate(BADGE_JS, ".tag.explored")
                     why = page.evaluate(BADGE_JS, ".tag.why")
@@ -453,6 +649,20 @@ def main() -> int:
                          "\n".join(set_bad[:4]) or
                          f"{total} combinations: tabs narrow the screen, and a term from "
                          "another group still finds its section")
+            result.check(not ai_bad, "19. the AI failure is in the reader's language",
+                         "\n".join(ai_bad))
+            result.check(not copies_bad, "18. a collapsed row says how many it stands for",
+                         "\n".join(copies_bad))
+            result.check(not notice_bad, "15. every notice can be closed, one at a time",
+                         "\n".join(notice_bad))
+            result.check(not split_bad, "16. the reading pane divider moves the boundary",
+                         "\n".join(split_bad))
+            result.check(not reason_bad, "17. the ranking reason is in the reader's language",
+                         "\n".join(reason_bad))
+            result.check(not badge_covers, "13. no rail badge is painted over its own icon",
+                         "\n".join(badge_covers))
+            result.check(not title_bad, "14. every briefing row is titled by its subject",
+                         "\n".join(title_bad))
             result.check(not contrast_bad, "7. the reason chip is legible in every theme",
                          "\n".join(contrast_bad) or "contrast >= 3.0 against its own ground")
     finally:

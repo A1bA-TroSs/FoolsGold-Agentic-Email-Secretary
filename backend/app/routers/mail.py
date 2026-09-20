@@ -1,12 +1,16 @@
 """Inbox, detail, sync and digest endpoints."""
 from __future__ import annotations
 
+import json
+
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Query
+from pathlib import Path
+
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from .. import db, pipeline
+from .. import db, dedup, pipeline
 from ..sources.base import SourceError
 from ..sources.registry import get_source
 
@@ -14,6 +18,9 @@ router = APIRouter(prefix="/api/mail", tags=["mail"])
 
 _LIST_COLUMNS = (
     "e.id, e.subject, e.from_name, e.from_address, e.received_at, e.is_read, "
+    # Needed by the collapser: a thread is one announcement however its
+    # subject line was rewritten on the way round.
+    "e.conversation_id, "
     "e.is_answered, e.is_flagged, e.has_attachments, e.importance, e.body_preview, "
     "c.bucket, c.deadline, c.score, c.matched, c.rationale, c.source, c.explored, "
     "c.reason_code, c.reason_arg, c.category, "
@@ -104,8 +111,71 @@ def list_mail(
             except ValueError:
                 item["verdict"] = None
         items.append(item)
+
+    # One announcement, one row -- but only in the ranked view.
+    #
+    # Not in `all`, which is the mailbox and must never hide a message; not
+    # under a search, where the user is looking for a particular copy; not in
+    # the muted, completed or dismissed boxes, which are records of decisions
+    # and would quietly lose rows. The ranked list is the one surface whose job
+    # is "what should I look at", and there a second copy of an announcement
+    # answers nothing the first did not.
+    if sort == "priority" and not search and not muted and verdict is None:
+        items = dedup.collapse(
+            items,
+            eligible=lambda r: (r.get("verdict") or "") in ("", "pinned"),
+            drop_groups=lambda r: (r.get("verdict") or "") in ("done", "not_relevant"),
+        )
+
     return {"items": items, "counts": counts, "ai": pipeline.ai_status(),
             "sync": sync_state()}
+
+
+@router.get("/{email_id}/part/{cid}")
+def inline_part(email_id: str, cid: str) -> Response:
+    """One inline image out of one message, for the reading pane.
+
+    Served from the source rather than from the database: 548 of 1,274
+    messages in a real mailbox carry `cid:` images, and copying those bytes in
+    would roughly double the database to hold pictures nobody has asked to see.
+
+    **Dispatched through `MailSource`, not read off disk here.** That interface
+    exists so "where mail came from is invisible to the UI", and a router that
+    opens an Apple Mail file makes the promise false: a Graph message's inline
+    bytes come from `/attachments`, a Gmail message's from the API, and neither
+    has a path. A source with no way back returns None and the picture is
+    simply missing, which is the honest answer.
+
+    Two guards stay here because they are about what the *renderer* may be
+    handed, not about where the bytes came from:
+
+      1. only `image/*` is served, so a message cannot use this to hand the
+         reading pane a script or an HTML document;
+      2. the reply carries `Content-Security-Policy: default-src 'none'` and
+         `X-Content-Type-Options: nosniff`, so even a mislabelled payload
+         cannot be re-interpreted as something executable.
+
+    The path-containment check moved *into* `AppleMailSource`, beside the only
+    code that knows what a legitimate path looks like.
+    """
+    part = get_source().inline_part(email_id, cid)
+    if part is None:
+        # 404 and not a placeholder image: a broken picture is honest, and a
+        # grey square that says nothing is how ".partial.emlx has no bytes on
+        # this machine" gets mistaken for a lookup bug for weeks.
+        raise HTTPException(status_code=404, detail="no such inline image")
+
+    content_type, payload = part
+    if not content_type.lower().startswith("image/"):
+        raise HTTPException(status_code=404, detail="not an image")
+    return Response(
+        content=payload, media_type=content_type,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 class FeedbackIn(BaseModel):
@@ -214,6 +284,25 @@ def get_mail(email_id: str) -> dict:
     item["to_recipients"] = db.json_list(item.get("to_recipients"))
     item["cc_recipients"] = db.json_list(item.get("cc_recipients"))
     item["matched"] = [m for m in (item.get("matched") or "").split(",") if m]
+
+    # The structural reason is DERIVED from columns on this row, so it is
+    # computed here rather than trusted from storage. Two things follow, and
+    # both are the point:
+    #
+    #   * every message classified before the reason became translatable --
+    #     which on a real mailbox is all of them -- renders correctly at once,
+    #     with no migration and no re-classification pass;
+    #   * there is no way for the stored copy to disagree with the rule, which
+    #     is the failure the deadline arithmetic hit when two surfaces each
+    #     kept their own copy of it.
+    #
+    # The model path is left alone: its rationale is prose the model wrote in
+    # the user's language, and nothing here can re-derive that.
+    if (item.get("source") or "") == "structural":
+        item["rationale"] = json.dumps(pipeline.structural_reason_codes(
+            item, item.get("bucket") or "fyi", item.get("deadline"),
+            db.get_setting("user_address", "") or "",
+        ))
     return item
 
 
