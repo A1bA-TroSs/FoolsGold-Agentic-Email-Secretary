@@ -1,5 +1,10 @@
 // Every call goes to the local FastAPI process. In dev, Vite proxies /api to it.
 const BASE = import.meta.env.DEV ? '' : 'http://127.0.0.1:8765';
+/* The same origin the app is served from, for subresources the reading pane
+   asks for directly (inline images) rather than through `request`. In dev the
+   page is on Vite's port and the backend is not, so a bare relative URL would
+   404 inside the mail frame. */
+export const API_BASE = BASE || 'http://127.0.0.1:8765';
 
 async function request(path, options = {}) {
   const res = await fetch(BASE + path, {
@@ -63,6 +68,8 @@ export const api = {
   patchSettings: (values) => request('/api/settings', { method: 'PATCH', body: JSON.stringify({ values }) }),
   testProvider: () => request('/api/settings/test-provider', { method: 'POST' }),
   copilotStatus: () => request('/api/settings/copilot-status'),
+  // What Ollama reports it has. Asked for by the Settings screen only.
+  ollamaModels: () => request('/api/ollama/models'),
 
   calendarMonth: (year, month, weekStartsOn = 0) =>
     request(`/api/calendar/month?year=${year}&month=${month}&week_starts_on=${weekStartsOn}`),

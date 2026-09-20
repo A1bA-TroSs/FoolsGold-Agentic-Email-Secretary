@@ -108,7 +108,45 @@ class Classification:
 class ProviderUnavailable(RuntimeError):
     """Raised when a provider cannot run at all (no key, not signed in, offline).
     The caller falls back to structural scoring and shows the 'AI unavailable'
-    badge rather than blocking the UI."""
+    badge rather than blocking the UI.
+
+    `key` and `vars` are how the failure reaches the screen in the reader's
+    language. The message stays English and stays useful -- it goes to logs and
+    to anyone reading a traceback -- but a failure the app *recognises* also
+    names itself with a translation key, and the UI words it.
+
+    This is the third time the rule has had to be applied: the briefing's
+    `note_key`, the ranking reason's codes, and now this. **Text built in the
+    backend is text in one language**, and it ends up sitting in the middle of
+    a Korean sentence. A failure with no key -- something genuinely unexpected
+    -- still renders its message, which is the right answer for a string
+    nobody anticipated.
+    """
+
+    def __init__(self, message: str, *, key: str | None = None,
+                 vars: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.key = key
+        self.vars = vars or {}
+
+
+@dataclass
+class CheckResult:
+    """What Settings' "test connection" learned.
+
+    Iterable, so every existing `ok, detail = await provider.check()` and every
+    test that unpacks two values keeps working. A provider that has nothing
+    structured to add can still return a plain tuple.
+    """
+
+    ok: bool
+    detail: str
+    key: str | None = None
+    vars: dict[str, Any] = field(default_factory=dict)
+    models: list[str] = field(default_factory=list)
+
+    def __iter__(self):
+        return iter((self.ok, self.detail))
 
 
 class LLMProvider(ABC):

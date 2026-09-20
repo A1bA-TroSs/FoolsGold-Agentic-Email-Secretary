@@ -33,6 +33,7 @@ import email.utils
 from email.parser import BytesHeaderParser
 import hashlib
 import json
+from urllib.parse import unquote
 import os
 import plistlib
 import re
@@ -387,8 +388,189 @@ def to_row(path: Path, mtime: float, chain: list[str]) -> dict[str, Any]:
         "body_preview": (text or _HTML_TAG.sub(" ", html))[:200].replace("\n", " ").strip(),
         "body_text": text,
         "body_html": html,
+        # Kept so inline images can be served from the original file later.
+        "source_path": str(path),
         "synced_at": db.now_iso(),
     }
+
+
+# Inline images cap out here. A mail body is allowed to reference a picture;
+# it is not allowed to make the app read an arbitrary 200MB file into memory
+# because a header said it was a logo.
+MAX_INLINE_BYTES = 8 * 1024 * 1024
+INLINE_TYPES = ("image/",)
+
+
+def _normalise_cid(raw: str) -> str:
+    """RFC 2392: a `cid:` URL is the Content-ID with the angle brackets
+    removed and the value percent-encoded.
+
+    Both halves of that sentence are places to get this wrong, and both were
+    wrong here. `msg.get('Content-ID')` returns `<logo@example.com>` WITH the
+    brackets, while the HTML says `src="cid:logo@example.com"` without them --
+    so a naive equality check never matches and every inline image in the
+    mailbox renders as a broken icon. And characters illegal in a URL arrive
+    percent-encoded, so `cid:a%25b@h` is the header value `<a%b@h>`.
+    """
+    value = unquote((raw or "").strip())
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1]
+    return value.strip().lower()
+
+
+# Magic numbers, so a sidecar file is only served when it really is an image.
+# The declared Content-Type comes from the message; the bytes come from a
+# directory looked up by index. If the two disagree, the index was wrong.
+_IMAGE_MAGIC = (
+    b"\x89PNG\r\n\x1a\n",            # png
+    b"\xff\xd8\xff",                   # jpeg
+    b"GIF87a", b"GIF89a",               # gif
+    b"BM",                              # bmp
+    b"II*\x00", b"MM\x00*",             # tiff
+    b"<svg", b"<?xml",                  # svg
+)
+
+
+def _looks_like_image(blob: bytes) -> bool:
+    if not blob:
+        return False
+    if blob.startswith(b"RIFF") and blob[8:12] == b"WEBP":
+        return True
+    if blob[4:12] in (b"ftypavif", b"ftypheic", b"ftypheix", b"ftypmif1"):
+        return True
+    return blob.startswith(_IMAGE_MAGIC)
+
+
+def _numbered_parts(
+    message: email.message.Message, prefix: tuple[int, ...] = ()
+) -> Iterator[tuple[email.message.Message, tuple[int, ...]]]:
+    """Every leaf part, tagged with the number Apple Mail files it under.
+
+    Apple names each attachment directory after a dotted path of 1-based
+    child indices from the top-level message -- `2`, `1.3`, and so on. Two
+    details are easy to get wrong and both change the answer:
+
+    * *every* child consumes an index, including the text/plain and text/html
+      bodies, so an image is rarely part 1;
+    * a `message/rfc822` wrapper consumes an index but the message inside it
+      does not, so parts of a forwarded mail continue the wrapper's number
+      rather than nesting one level deeper.
+
+    Verified against mailsplit's `partNr`, which is what
+    qqilihq/partial-emlx-converter builds these paths from.
+    """
+    if message.get_content_type() == "message/rfc822":
+        payload = message.get_payload()
+        if isinstance(payload, list) and payload:
+            yield from _numbered_parts(payload[0], prefix)
+        return
+    if message.get_content_maintype() == "multipart":
+        payload = message.get_payload()
+        if isinstance(payload, list):
+            for index, child in enumerate(payload, start=1):
+                yield from _numbered_parts(child, prefix + (index,))
+        return
+    yield message, prefix
+
+
+def _attachment_dir(path: Path, part_nr: tuple[int, ...]) -> Path | None:
+    """`.../Messages/123.partial.emlx` -> `.../Attachments/123/1.3`."""
+    if not part_nr:
+        return None
+    stem = path.name.split(".", 1)[0]     # 123.partial.emlx -> 123, not 123.partial
+    if not stem:
+        return None
+    return path.parent.parent / "Attachments" / stem / ".".join(str(n) for n in part_nr)
+
+
+def _sidecar_bytes(
+    path: Path, part_nr: tuple[int, ...], part: email.message.Message
+) -> bytes | None:
+    """The real bytes for a part Apple left out of the .emlx file.
+
+    The filename inside the directory is not fixed: Mail uses a
+    *locale-specific* default ("Mail-Anhang.jpeg" on a German system) when the
+    part declares no filename. So try the declared name first and fall back to
+    reading the directory, which normally holds exactly one file.
+    """
+    directory = _attachment_dir(path, part_nr)
+    if directory is None:
+        return None
+    names: list[str] = []
+    declared = part.get_filename()
+    if declared:
+        names.append(declared)
+    try:
+        names.extend(
+            entry.name for entry in directory.iterdir()
+            if entry.is_file() and not entry.name.startswith(".")
+        )
+    except OSError:
+        pass
+    try:
+        root = directory.resolve()
+    except OSError:
+        return None
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            candidate = (directory / name).resolve()
+            if root not in candidate.parents:
+                continue              # a declared filename is attacker-controlled
+            if not candidate.is_file() or candidate.stat().st_size > MAX_INLINE_BYTES:
+                continue
+            blob = candidate.read_bytes()
+        except OSError:
+            continue
+        if _looks_like_image(blob):
+            return blob
+    return None
+
+
+def inline_parts(path: Path) -> dict[str, tuple[str, bytes]]:
+    """Every inline image in this message, keyed by normalised Content-ID.
+
+    Read on demand from the original file rather than stored: see the
+    `source_path` migration for why.
+
+    **The bytes are often not in the .emlx file.** A message whose attachments
+    Apple Mail left on the server is written as `.partial.emlx`: part headers
+    intact, payload replaced by a placeholder plus `X-Apple-Content-Length`.
+    Content-ID matches, payload is empty, image is broken -- and it looks
+    exactly like a lookup bug, which is how it has been reported more than
+    once. The bytes do exist, in a sibling `Attachments/<id>/<part-nr>/`
+    directory, so they are reassembled here rather than given up on.
+    """
+    out: dict[str, tuple[str, bytes]] = {}
+    try:
+        message = parse_emlx(path).message
+    except (OSError, SourceError):
+        return out
+    for part, part_nr in _numbered_parts(message):
+        cid = part.get("Content-ID") or part.get("Content-Id")
+        if not cid:
+            continue
+        ctype = (part.get_content_type() or "").lower()
+        if not ctype.startswith(INLINE_TYPES):
+            continue
+        detached = bool(part.get("X-Apple-Content-Length"))
+        payload = _sidecar_bytes(path, part_nr, part) if detached else None
+        if payload is None:
+            try:
+                blob = part.get_payload(decode=True)
+            except Exception:             # noqa: BLE001 - one bad part is not fatal
+                blob = None
+            # A detached part's inline payload is a placeholder, not an image,
+            # so it has to pass the magic check before it is trusted.
+            if blob and (not detached or _looks_like_image(blob)):
+                payload = blob
+        if not payload or len(payload) > MAX_INLINE_BYTES:
+            continue
+        out[_normalise_cid(cid)] = (ctype, payload)
+    return out
 
 
 def _importance(message: email.message.Message) -> str:
@@ -497,6 +679,60 @@ class AppleMailSource(MailSource):
     def _root(self) -> Path | None:
         return find_mail_root(db.get_setting("applemail_root", "").strip() or None)
 
+    # ------------------------------------------------------- back to the file
+
+    def _source_file(self, email_id: str) -> Path | None:
+        """The `.emlx` a row came from, or None.
+
+        **The containment check lives here and not in the router.** A stored
+        path is data. The first time anything other than this reader writes to
+        that column, an endpoint that takes an id from a URL and opens the file
+        it names becomes a path traversal -- so the check belongs beside the
+        only code that knows what a legitimate path looks like, where it cannot
+        be forgotten by a second caller.
+        """
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT source_path FROM emails WHERE id = ?", (email_id,)).fetchone()
+        if row is None or not row["source_path"]:
+            return None
+        path = Path(row["source_path"])
+        try:
+            root = self._root()
+            if root is None or not path.resolve().is_relative_to(Path(root).resolve()):
+                return None
+            # Regular files only. A named pipe inside the mail root would make
+            # the read below block forever, and this is reachable by id.
+            return path if path.is_file() else None
+        except (OSError, PermissionError):
+            return None
+
+    def inline_part(self, email_id: str, cid: str) -> tuple[str, bytes] | None:
+        path = self._source_file(email_id)
+        if path is None:
+            return None
+        return inline_parts(path).get(_normalise_cid(cid))
+
+    def parent_message(self, email_id: str):
+        """Every threading header, read back off disk.
+
+        No migration needed, and none wanted: `_stable_id` hashes `Message-ID`
+        into the row id on purpose, so it survives a re-sync. The file still has
+        the original, so the answer is to go and read it rather than to store a
+        second copy that can drift.
+        """
+        from ..compose import ParentMessage
+        path = self._source_file(email_id)
+        if path is None:
+            return None
+        try:
+            parsed = parse_emlx(path)
+        except (OSError, SourceError):
+            return None
+        text, html = extract_bodies(parsed.message)
+        return ParentMessage.from_headers(
+            parsed.message, body_text=text, body_html=html, raw=parsed.message.as_bytes())
+
     def status(self) -> SourceStatus:
         """Never raises. The base class promises this and the frontend relies on
         it -- /api/health calls it on every page load, so an exception here takes
@@ -574,6 +810,35 @@ class AppleMailSource(MailSource):
         except PermissionError as exc:
             raise SourceError(FULL_DISK_ACCESS_HINT) from exc
 
+        # Nothing on disk has changed since the last look -- so do not read
+        # fourteen thousand files again to find that out.
+        #
+        # The poller runs every five minutes, forever. On a Mac where Mail.app
+        # is not running it had scanned 14,135 files **two hundred times in
+        # twenty-four hours**, nine seconds a go, to discover nothing each
+        # time. That is the number the "frozen" banner was counting. The walk
+        # above is cheap -- one stat per file -- and the expensive part is the
+        # header read on every candidate below, which is pure waste when the
+        # store is untouched.
+        #
+        # The fingerprint is the file count and the newest mtime. A new message
+        # is a new file, so it moves both; a deletion moves the count. It lives
+        # in settings rather than in memory because a five-minute poller in a
+        # desktop app is restarted often enough for an in-memory guard to miss
+        # most of what it is for.
+        fingerprint = f"{len(candidates)}:{max((m for _, m, _ in candidates), default=0.0):.0f}"
+        if db.get_setting("applemail_scan_fingerprint", "") == fingerprint and db.email_count():
+            # Reported as a real sync, not as nothing: the freshness banner is
+            # driven by what the mailbox contains, and a scan that correctly
+            # found no new mail is exactly as informative as one that parsed
+            # three hundred files to reach the same answer.
+            return {
+                "source": self.name, "root": str(root), "scanned": len(candidates),
+                "in_window": 0, "fetched": 0, "written": 0, "skipped": 0,
+                "unchanged": True,
+                "correspondents": len(build_correspondent_affinity(root)),
+            }
+
         # Two passes. mtime alone cannot be trusted for freshness (a first sync
         # stamps every file with today), but it is a valid lower bound, so use it
         # to cheaply drop what definitely predates the window. Then read each
@@ -595,6 +860,12 @@ class AppleMailSource(MailSource):
                 skipped += 1
 
         written = db.upsert_emails(rows)
+
+        # Stamped only after a full pass has written what it found. Stamping
+        # before the parse would make a sync that died halfway look complete,
+        # and the next two hundred polls would skip the work it missed.
+        db.set_setting("applemail_scan_fingerprint", fingerprint)
+
         return {
             "source": self.name,
             "root": str(root),

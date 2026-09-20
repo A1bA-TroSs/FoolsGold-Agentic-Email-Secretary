@@ -44,6 +44,7 @@ from .base import (
     DIGEST_SYSTEM,
     AgendaItem,
     Classification,
+    CheckResult,
     LLMProvider,
     ProviderUnavailable,
     build_classify_prompt,
@@ -141,6 +142,36 @@ DIGEST_SCHEMA: dict[str, Any] = {
 }
 
 
+def model_matches(configured: str, installed: str) -> bool:
+    """Is `installed` the model the user asked for?
+
+    The rule this replaces was `installed.startswith(configured.split(":")[0])`,
+    which reads as "same family, close enough" and is why Settings reported
+    **ready** on a machine where every classification 404s: `qwen3.5:4b` starts
+    with `qwen3.5`, so a configured `qwen3.5:9b` matched it, and the check
+    passed while `/api/chat` refused the model on every call.
+
+    A check that cannot fail for the actual reason is not a check. Three ways
+    to match, and a different size is not one of them:
+
+      * exactly the same name;
+      * the same name plus a quantisation suffix -- `qwen3.5:9b` is satisfied
+        by `qwen3.5:9b-q4_K_M`, which is the same weights at a smaller size;
+      * a bare family name -- someone who typed `qwen3.5` and pulled
+        `qwen3.5:4b` meant that one, because it is the only thing they have.
+    """
+    configured, installed = configured.strip(), installed.strip()
+    if not configured or not installed:
+        return False
+    if installed == configured:
+        return True
+    if installed.startswith(f"{configured}-"):
+        return True
+    if ":" not in configured and installed.startswith(f"{configured}:"):
+        return True
+    return False
+
+
 class OllamaProvider(LLMProvider):
     name = "ollama"
 
@@ -187,18 +218,26 @@ class OllamaProvider(LLMProvider):
         except httpx.ConnectError as exc:
             raise ProviderUnavailable(
                 f"No local model server at {self.host}. Start Ollama, or change the "
-                f"host in Settings."
+                f"host in Settings.",
+                key="aiNoServer", vars={"host": self.host},
             ) from exc
         except httpx.ReadTimeout as exc:
             raise ProviderUnavailable(
                 f"{self.model} did not answer within {READ_TIMEOUT:.0f}s. A first call "
-                f"also loads the model; try a smaller one, or reduce the batch size."
+                f"also loads the model; try a smaller one, or reduce the batch size.",
+                key="aiTimedOut",
+                vars={"model": self.model, "seconds": f"{READ_TIMEOUT:.0f}"},
             ) from exc
 
         if response.status_code == 404:
+            # Named with what IS installed, not only with what is missing.
+            # "Pull it first" asks for a six-gigabyte download from someone who
+            # already has a working Qwen they chose on purpose; the useful
+            # sentence is "you have these".
             raise ProviderUnavailable(
                 f"Ollama has no model called '{self.model}'. Pull it first: "
-                f"ollama pull {self.model}"
+                f"ollama pull {self.model}",
+                key="aiModelMissing", vars={"model": self.model},
             )
         if response.status_code >= 400:
             raise ProviderUnavailable(
@@ -219,7 +258,8 @@ class OllamaProvider(LLMProvider):
         if body.get("done_reason") == "length":
             raise ProviderUnavailable(
                 f"{self.model} hit its token limit mid-answer. Reduce "
-                f"'Emails per AI request' in Settings."
+                f"'Emails per AI request' in Settings.",
+                key="aiTokenLimit", vars={"model": self.model},
             )
 
         return (body.get("message") or {}).get("content") or ""
@@ -259,7 +299,7 @@ class OllamaProvider(LLMProvider):
     # status
     # ------------------------------------------------------------------
 
-    async def check(self) -> tuple[bool, str]:
+    async def check(self) -> CheckResult:
         """Answer the question the user is actually asking in Settings: is a
         local model there, and is it the one I chose?
 
@@ -273,25 +313,33 @@ class OllamaProvider(LLMProvider):
             ) as client:
                 response = await client.get(f"{self.host}/api/tags")
         except httpx.HTTPError as exc:
-            return False, f"No local model server at {self.host}: {exc}"
+            return CheckResult(False, f"No local model server at {self.host}: {exc}",
+                               key="aiNoServer", vars={"host": self.host})
 
         if response.status_code >= 400:
-            return False, f"Ollama returned {response.status_code}"
+            return CheckResult(False, f"Ollama returned {response.status_code}")
         try:
             models = [m.get("name", "") for m in (response.json().get("models") or [])]
         except ValueError:
-            return False, "Ollama's model list was not JSON"
+            return CheckResult(False, "Ollama's model list was not JSON")
 
+        models = [m for m in models if m]
         if not models:
-            return False, f"Ollama is running but has no models. Try: ollama pull {self.model}"
-        # `qwen3.5:9b` and `qwen3.5:9b-instruct-q4_K_M` are the same choice to a
-        # user who typed the short name.
-        if not any(m == self.model or m.startswith(self.model.split(":")[0]) for m in models):
-            return False, (
-                f"'{self.model}' is not pulled. Available: {', '.join(models[:5])}. "
-                f"Try: ollama pull {self.model}"
+            return CheckResult(
+                False, f"Ollama is running but has no models. Try: ollama pull {self.model}",
+                key="aiNoModelsAtAll", vars={"model": self.model})
+        if not any(model_matches(self.model, m) for m in models):
+            return CheckResult(
+                False,
+                f"'{self.model}' is not pulled. Installed: {', '.join(models[:5])}.",
+                key="aiModelMissingHave",
+                vars={"model": self.model, "have": ", ".join(models[:5])},
+                models=models,
             )
-        return True, f"{self.model} ready on {self.host}"
+        return CheckResult(True, f"{self.model} ready on {self.host}",
+                           key="aiModelReady",
+                           vars={"model": self.model, "host": self.host},
+                           models=models)
 
     async def available_models(self) -> list[str]:
         try:

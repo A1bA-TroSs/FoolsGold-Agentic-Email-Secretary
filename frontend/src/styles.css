@@ -165,9 +165,24 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .rail button:hover { background: var(--surface-hover); color: var(--text); transform: translateY(-1px); }
 .rail button:active { transform: translateY(0) scale(.94); }
 .rail button.active { background: var(--accent); color: var(--on-accent); }
-/* A rail button that carries a count shows it as a dot rather than a number. */
+/* A rail button that carries a count shows it as a dot rather than a number.
+
+   The offsets are measured against `.rail-glyph`, which is `position: relative`
+   and exactly the size of the 18px icon -- NOT against the 42px button, which
+   is what they were written for. `top: 5px; right: 5px` inside an 18px box is
+   the middle of the icon, so the dot was painted over the glyph: a purple disc
+   with a pale ring, sitting on the checklist. That is the whole of "the
+   priority icon is broken" -- the icon is fine and has always been fine, and
+   the one element covering it is drawn by the app itself.
+
+   A later rule, `.rail-item .badge { top: -3px; right: -4px }`, was written to
+   correct exactly this and never applied: (0,2,0) against this rule's (0,2,1).
+   **A correction that loses on specificity is indistinguishable from one that
+   was never written**, and grepping finds both. The offsets now live here, with
+   the rest of the badge's geometry, so there is one place to read and nothing
+   to lose a contest to. */
 .rail button .badge {
-  position: absolute; top: 5px; right: 5px;
+  position: absolute; top: -3px; right: 0;
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent-strong);
   border: 1.5px solid var(--rail);
@@ -435,6 +450,33 @@ button { align-items: stretch; }
   background: color-mix(in srgb, var(--accent) 14%, var(--bg));
   border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text); }
 .banner .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-strong); flex: 0 0 auto; }
+/* `min-width: 0` for the same reason it is everywhere else in this file: a
+   long sync error must ellipsise inside the strip rather than push the close
+   button off the end of it. */
+.banner-text { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.banner-x {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent;
+  color: var(--muted); cursor: pointer;
+  transition: background var(--dur-instant) var(--ease-move), color var(--dur-instant) var(--ease-move);
+}
+.banner-x:hover { background: color-mix(in srgb, var(--text) 10%, transparent); color: var(--text); }
+
+/* "this row stands for N messages" */
+.copies {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px; font-weight: 700; line-height: 16px;
+  letter-spacing: .01em;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  white-space: nowrap;          /* never the one thing that wraps a row */
+}
 
 .empty { padding: 40px 24px; text-align: center; color: var(--muted); font-size: 13px; }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border);
@@ -1007,26 +1049,36 @@ select.input { appearance: none; padding-right: 28px;
   background: none; border: 0; padding: 0;
   text-align: left; cursor: pointer;
 }
-.agenda-note { font-size: 13px; line-height: 1.45; font-weight: 550; }
+/* The headline of a briefing row: the subject, one line, ellipsised.
+
+   `white-space: nowrap` makes an element's min-content width the whole string,
+   and a flex item's default `min-width: auto` then refuses to shrink below it
+   -- so max-width was being ignored and the subject ran out of the card,
+   giving the pane a horizontal scrollbar. `min-width: 0` is what actually
+   lets the ellipsis happen. No `flex` shorthand here: this is now a child of
+   the COLUMN flex container `.agenda-open`, where `flex: 1 1 auto` would grow
+   the line vertically instead of letting it shrink sideways. */
+.agenda-subject {
+  font-size: 13px; line-height: 1.45; font-weight: 550;
+  min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .agenda-meta {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   font-size: 11.5px; color: var(--muted);
 }
-/* `white-space: nowrap` makes an element's min-content width the whole string,
-   and a flex item's default `min-width: auto` then refuses to shrink below it
-   -- so max-width was being ignored and the subject ran out of the card,
-   giving the pane a horizontal scrollbar. `min-width: 0` is what actually
-   lets the ellipsis happen. */
-.agenda-subject { flex: 1 1 auto; min-width: 0; max-width: 100%;
+/* The note is now secondary, and it lives in the meta row beside the chip and
+   the sender -- so it takes the shrinking rules the subject used to need. */
+.agenda-note { flex: 0 1 auto; min-width: 0; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agenda-sender { flex: 0 1 auto; min-width: 0; max-width: 100%;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Ticked rows stay visible until the list is rebuilt, so the user can see what
    they just cleared -- and untick it if they mis-clicked. */
-.agenda-item.checked .agenda-note { text-decoration: line-through; }
+.agenda-item.checked .agenda-subject { text-decoration: line-through; }
 .agenda-item.checked { opacity: .48; }
-.agenda-item.checked .agenda-note,
+.agenda-item.checked .agenda-subject,
 .agenda-item.checked .agenda-meta { transition: opacity .2s; }
 
 /* ==========================================================================
@@ -1174,13 +1226,20 @@ body { font-size: 14px; letter-spacing: .002em; }
   padding: 7px 2px 6px;
   border-radius: var(--r-md);
 }
-.rail-glyph { position: relative; display: grid; place-items: center; }
+/* Wider than the 18px icon it centres, so the count dot has a corner of its
+   own. Two constraints meet here and only this shape satisfies both: the dot
+   must not cover the glyph (it did, and that was reported as a broken icon),
+   and it must not stick out to the RIGHT of it -- an absolutely positioned
+   child past its container's right edge grows scrollWidth, which is a
+   horizontal scrollbar waiting for a narrower window and is what check 1
+   catches. Overflowing upwards is free: top overflow adds to neither. */
+.rail-glyph { position: relative; display: grid; place-items: center;
+              width: 26px; height: 18px; }
 .rail-label {
   font-size: 9.5px; line-height: 1.15; letter-spacing: .01em;
   text-align: center; opacity: .85;
 }
 .rail-item.active .rail-label { opacity: 1; font-weight: 600; }
-.rail-item .badge { top: -3px; right: -4px; }
 
 /* The keyboard cursor was a hard rectangle sitting inside rounded cards. */
 .mail-item.cursor {
@@ -1446,6 +1505,35 @@ body.resizing .pane-resizer span { background: var(--accent); }
    in particular, which otherwise highlights half the inbox on the way past. */
 body.resizing { cursor: col-resize; user-select: none; }
 body.resizing iframe { pointer-events: none; }
+
+/* The horizontal twin, between the header block and the mail itself.
+   `.detail-head` keeps its `max-height: 46%` until the user sets a height, at
+   which point the inline style overrides both -- the cap is a default, not a
+   rule. */
+.detail-resizer {
+  flex: 0 0 9px;
+  margin: -4px 0;              /* overlap, so the panes do not jump on first drag */
+  position: relative;
+  cursor: row-resize;
+  background: none; border: 0; padding: 0;
+  z-index: 3;
+  touch-action: none;
+}
+.detail-resizer span {
+  position: absolute; left: 22px; right: 22px; top: 50%;
+  height: 2px; margin-top: -1px; border-radius: 2px;
+  background: transparent;
+  transition: background var(--dur-instant) var(--ease-move);
+}
+.detail-resizer:hover span,
+.detail-resizer:focus-visible span,
+body.resizing-v .detail-resizer span { background: var(--accent); }
+.detail-resizer:focus-visible { outline: none; }
+
+body.resizing-v { cursor: row-resize; user-select: none; }
+/* Without this the drag ends the instant the cursor enters the mail: the body
+   frame is sandboxed, so its pointer events never reach this document. */
+body.resizing-v iframe { pointer-events: none; }
 
 /* ==========================================================================
    Return from an open email
@@ -2013,3 +2101,15 @@ body.resizing iframe { pointer-events: none; }
           mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'><path d='M2 2l8 8M10 2l-8 8' stroke='black' stroke-width='1.6' stroke-linecap='round' fill='none'/></svg>") center/contain no-repeat;
 }
 .settings-search::-webkit-search-cancel-button:hover { opacity: 1; }
+
+/* -- blocked remote images ------------------------------------------------- */
+
+/* Sits above the frame, not inside it: the frame is sandboxed and cannot be
+   trusted to render its own warning about itself. */
+.remote-bar {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0 0 8px; padding: 7px 10px;
+  font-size: 12px; color: var(--muted);
+  background: var(--surface); border-radius: var(--r-md);
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}

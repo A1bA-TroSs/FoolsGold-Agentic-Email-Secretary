@@ -101,3 +101,126 @@ def test_a_cached_briefing_is_rebuilt_when_the_provider_changes(tmp_path, monkey
 
     db.set_setting("llm_provider", "anthropic")
     assert pipeline.cached_digest(day) is None, "provider changed -- do not serve a stale stamp"
+
+
+# ------------------------------------------------- the briefing refills itself
+
+def _db(tmp_path, monkeypatch):
+    from app import db
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    monkeypatch.setattr(db, "_SCHEMA_READY", set())
+    db.init_db()
+    return db
+
+
+def _seed(db, n, *, start=0, deadline_from=1):
+    """n candidates, each with a deadline further out than the last."""
+    rows, classes = [], []
+    for i in range(start, start + n):
+        eid = f"e{i}"
+        rows.append(dict(
+            id=eid, conversation_id=None, subject=f"Subject {i}", from_name="Dept",
+            from_address=f"a{i}@uni.edu", to_recipients="[]", cc_recipients="[]",
+            received_at="2026-09-20T09:00:00+00:00", is_read=0, is_answered=0,
+            is_flagged=0, has_attachments=0, importance="normal", web_link="",
+            folder="INBOX", body_preview="", body_text="", body_html="",
+            source_path="", synced_at=db.now_iso()))
+        classes.append(dict(
+            email_id=eid, bucket="action",
+            deadline=(TODAY + timedelta(days=deadline_from + i)).isoformat(),
+            rationale="[]", score=100 - i, matched="", model="structural",
+            source="structural", created_at=db.now_iso()))
+    db.upsert_emails(rows)
+    for rec in classes:
+        db.save_classification(rec)
+    return [r["id"] for r in rows]
+
+
+def test_finishing_an_item_pulls_the_next_one_in(tmp_path, monkeypatch):
+    """The defect: a briefing frozen at seven can only ever shrink.
+
+    Clearing four left three until tomorrow, and since the seven nearest
+    deadlines are all seven slots can hold, nothing further out than a day or
+    two could ever appear no matter how much of the list you cleared.
+    """
+    db = _db(tmp_path, monkeypatch)
+    ids = _seed(db, 12)
+
+    _, rows = pipeline._fallback_agenda(pipeline._digest_candidates())
+    assert len(rows) == pipeline.DIGEST_TARGET_ITEMS
+    first_seven = [r["email_id"] for r in rows]
+
+    digest = pipeline._with_current_verdicts({"items": list(rows), "headline": ""})
+    assert [r["email_id"] for r in digest["items"]] == first_seven, "nothing decided yet"
+
+    db.set_feedback(first_seven[0], "done")
+    db.set_feedback(first_seven[1], "not_relevant")
+    served = pipeline._with_current_verdicts({"items": list(rows), "headline": ""})
+
+    got = [r["email_id"] for r in served["items"]]
+    assert len(got) == pipeline.DIGEST_TARGET_ITEMS, "the gap should be refilled"
+    assert first_seven[0] not in got and first_seven[1] not in got
+    # And the replacements come from the queue, in its order -- not at random.
+    assert got[-2:] == ids[7:9]
+
+
+def test_pinning_is_not_finishing(tmp_path, monkeypatch):
+    """`pinned` says "this matters", which is the opposite of "I am done"."""
+    db = _db(tmp_path, monkeypatch)
+    _seed(db, 9)
+    _, rows = pipeline._fallback_agenda(pipeline._digest_candidates())
+    target = rows[0]["email_id"]
+    db.set_feedback(target, "pinned")
+    served = pipeline._with_current_verdicts({"items": list(rows), "headline": ""})
+    assert target in [r["email_id"] for r in served["items"]]
+
+
+def test_a_refill_never_duplicates_a_row_already_on_the_list(tmp_path, monkeypatch):
+    db = _db(tmp_path, monkeypatch)
+    _seed(db, 20)
+    _, rows = pipeline._fallback_agenda(pipeline._digest_candidates())
+    db.set_feedback(rows[0]["email_id"], "done")
+    served = pipeline._with_current_verdicts({"items": list(rows), "headline": ""})
+    got = [r["email_id"] for r in served["items"]]
+    assert len(got) == len(set(got))
+
+
+def test_a_short_queue_shrinks_rather_than_inventing_rows(tmp_path, monkeypatch):
+    """Nothing left to promote is a real answer. Padding would not be."""
+    db = _db(tmp_path, monkeypatch)
+    _seed(db, 3)
+    _, rows = pipeline._fallback_agenda(pipeline._digest_candidates())
+    assert len(rows) == 3
+    db.set_feedback(rows[0]["email_id"], "done")
+    served = pipeline._with_current_verdicts({"items": list(rows), "headline": ""})
+    assert len(served["items"]) == 2
+
+
+def test_the_headline_count_follows_the_rows(tmp_path, monkeypatch):
+    db = _db(tmp_path, monkeypatch)
+    _seed(db, 3)
+    headline, rows = pipeline._fallback_agenda(pipeline._digest_candidates())
+    db.set_feedback(rows[0]["email_id"], "done")
+    served = pipeline._with_current_verdicts({"items": list(rows), "headline": headline})
+    assert served["headline"]["vars"]["n"] == len(served["items"])
+
+
+def test_a_model_written_headline_is_left_alone(tmp_path, monkeypatch):
+    """It is prose about the day. Half-correcting it is worse than leaving it."""
+    db = _db(tmp_path, monkeypatch)
+    _seed(db, 9)
+    _, rows = pipeline._fallback_agenda(pipeline._digest_candidates())
+    db.set_feedback(rows[0]["email_id"], "done")
+    served = pipeline._with_current_verdicts(
+        {"items": list(rows), "headline": "오늘 마감 1건, 이번 주 2건."})
+    assert served["headline"] == "오늘 마감 1건, 이번 주 2건."
+
+
+def test_an_empty_briefing_topped_up_stops_saying_nothing_is_waiting(tmp_path, monkeypatch):
+    db = _db(tmp_path, monkeypatch)
+    _seed(db, 4)
+    served = pipeline._with_current_verdicts(
+        {"items": [], "headline": {"key": "nothingWaiting"}})
+    assert len(served["items"]) == 4
+    assert served["headline"]["key"] == "agendaHeadline"

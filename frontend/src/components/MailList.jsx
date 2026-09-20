@@ -237,6 +237,16 @@ const MailRow = memo(function MailRow({
       <div className="from">
         {m.from_name || m.from_address}
         {m.has_attachments ? <> &nbsp;<PaperclipIcon /></> : null}
+        {/* This row stands for more than one message.
+            Counted, never silent: the ranked list hides the other copies, and
+            a list that quietly drops mail is indistinguishable from one that
+            lost it. The number is what turns "where did the rest go" into
+            "the department sent this three times". */}
+        {m.copies > 1 ? (
+          <span className="copies" title={t('copiesTitle', { n: String(m.copies) })}>
+            ×{m.copies}
+          </span>
+        ) : null}
       </div>
 
       <div className="row" style={{ gap: 5, marginTop: 4, flexWrap: 'wrap' }}>
