@@ -12,9 +12,51 @@ they are localised because mailbox names are.
 """
 from __future__ import annotations
 
+import imaplib
 import re
+import ssl
 import time
 from typing import Any, Protocol
+
+SECURITY_SSL = "ssl"            # implicit TLS, usually 993
+SECURITY_STARTTLS = "starttls"  # plain connect, upgrade, usually 143
+SECURITY_PLAIN = "plain"        # no encryption; local test servers only
+
+
+def open_imap(host: str, port: int, security: str, username: str, password: str,
+              timeout: float = 30.0) -> imaplib.IMAP4:
+    """Connect and log in, honouring the security mode the user chose.
+
+    Three modes rather than one, because providers genuinely differ: most
+    offer implicit TLS on 993, some only STARTTLS on 143, and a local server
+    used for testing speaks neither. Hard-coding `IMAP4_SSL` made the second
+    group unreachable and the third untestable.
+
+    **STARTTLS never falls back.** If the server does not offer it, this
+    raises before `login` -- the password would otherwise cross the network in
+    the clear, and a server that silently lacks STARTTLS is a downgrade attack
+    as often as it is a misconfiguration.
+    """
+    security = (security or SECURITY_SSL).strip().lower()
+    context = ssl.create_default_context()
+    if security == SECURITY_SSL:
+        client = imaplib.IMAP4_SSL(host, port, timeout=timeout, ssl_context=context)
+    else:
+        client = imaplib.IMAP4(host, port, timeout=timeout)
+        if security == SECURITY_STARTTLS:
+            if "STARTTLS" not in client.capabilities:
+                try:
+                    client.shutdown()
+                finally:
+                    raise LookupError(
+                        f"{host} does not offer STARTTLS on port {port}. Nothing was "
+                        "sent, because the password would have gone out in the clear.")
+            client.starttls(ssl_context=context)
+        elif security != SECURITY_PLAIN:
+            client.shutdown()
+            raise LookupError(f"unknown IMAP security mode {security!r}")
+    client.login(username, password)
+    return client
 
 # RFC 6154 special-use attributes. The server advertises these in its LIST
 # responses; they are the only *correct* way to find these mailboxes, and they

@@ -119,3 +119,19 @@ export const ArchiveIcon = () => (
 export const ChevronDownIcon = () => (
   <svg {...base} width="11" height="11" className="rail-chevron"><path d="m6 9 6 6 6-6" /></svg>
 );
+
+export const SendIcon = () => (
+  <svg {...sm}><path d="m22 2-7 20-4-9-9-4z" /><path d="M22 2 11 13" /></svg>
+);
+export const ReplyIcon = () => (
+  <svg {...sm}><path d="M9 17 4 12l5-5" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" /></svg>
+);
+export const ReplyAllIcon = () => (
+  <svg {...sm}><path d="m7 17-5-5 5-5" /><path d="m12 17-5-5 5-5" /><path d="M22 18v-2a4 4 0 0 0-4-4H7" /></svg>
+);
+export const ForwardIcon = () => (
+  <svg {...sm}><path d="m15 17 5-5-5-5" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" /></svg>
+);
+export const CloseIcon = () => (
+  <svg {...sm}><path d="M18 6 6 18M6 6l12 12" /></svg>
+);

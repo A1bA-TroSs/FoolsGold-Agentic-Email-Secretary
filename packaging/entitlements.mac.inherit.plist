@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Developer ID - every nested executable: Electron helpers AND the frozen
+  Python backend (Resources/backend/foolsgold-backend).
+
+  disable-library-validation is here for the backend. A frozen CPython loads
+  its extension modules (.so) from inside its own folder at run time; they are
+  signed with the same identity by electron-builder, but some PyInstaller
+  builds still fail library validation at launch without this key. Remove it
+  if a notarised build launches cleanly without it ; fewer exceptions is
+  better, and the notary log is the place to confirm.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

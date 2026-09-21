@@ -29,7 +29,7 @@ from .base import (
     MailTransport, SendResult, TransportError, TransportStatus,
     check_sendable, envelope_recipients, sender_address, transmissible,
 )
-from .imap_folders import save_copy
+from .imap_folders import open_imap, save_copy
 
 TIMEOUT = 30.0
 
@@ -52,6 +52,7 @@ def _settings() -> dict[str, str]:
         "imap_port": db.get_setting("imap_port", "993").strip(),
         "sent_copy": db.get_setting("sent_copy", COPY_AUTO).strip().lower(),
         "sent_folder": db.get_setting("sent_folder", "").strip(),
+        "imap_security": db.get_setting("imap_security", "ssl").strip().lower(),
     }
 
 
@@ -91,7 +92,8 @@ class SmtpTransport(MailTransport):
 
     # ------------------------------------------------------------ sending
 
-    def send(self, message: email.message.EmailMessage) -> SendResult:
+    def send(self, message: email.message.EmailMessage,
+             raw: bytes | None = None) -> SendResult:
         check_sendable(message)
         cfg = _settings()
         state = self.status()
@@ -100,7 +102,7 @@ class SmtpTransport(MailTransport):
 
         sender = sender_address(message)
         recipients = envelope_recipients(message)
-        raw = transmissible(message)
+        raw = transmissible(message, raw)
 
         refused = self._transmit(cfg, sender, recipients, raw)
 
@@ -176,11 +178,41 @@ class SmtpTransport(MailTransport):
 
     # ------------------------------------------------------------ sent copy
 
-    def _imap(self, cfg: dict[str, str]) -> imaplib.IMAP4_SSL:
+    def _imap(self, cfg: dict[str, str]) -> imaplib.IMAP4:
         host = cfg["imap_host"] or cfg["host"]
-        client = imaplib.IMAP4_SSL(host, _port(cfg["imap_port"], 993), timeout=TIMEOUT)
-        client.login(cfg["username"], cfg["password"])
-        return client
+        default = 143 if cfg["imap_security"] in ("starttls", "plain") else 993
+        return open_imap(host, _port(cfg["imap_port"], default), cfg["imap_security"],
+                         cfg["username"], cfg["password"], timeout=TIMEOUT)
+
+    def check(self) -> dict:
+        """Connect, negotiate, authenticate, and quit before `MAIL FROM`.
+        Nothing is queued and nothing is sent."""
+        state = self.status()
+        if not state.ready:
+            return {"ok": False, "detail": state.detail}
+        cfg = _settings()
+        security = cfg["security"]
+        port = _port(cfg["port"], 465 if security == SECURITY_SSL else 587)
+        context = ssl.create_default_context()
+        try:
+            client = (smtplib.SMTP_SSL(cfg["host"], port, timeout=TIMEOUT, context=context)
+                      if security == SECURITY_SSL
+                      else smtplib.SMTP(cfg["host"], port, timeout=TIMEOUT))
+            with client:
+                client.ehlo()
+                if security == SECURITY_STARTTLS:
+                    client.starttls(context=context)
+                    client.ehlo()
+                client.login(cfg["username"], cfg["password"])
+            return {"ok": True, "detail": f"Signed in to {cfg['host']}:{port}."}
+        except smtplib.SMTPAuthenticationError as exc:
+            return {"ok": False, "detail": "The server rejected that username and password. "
+                    f"Many providers want an app-specific password here. ({exc.smtp_code})"}
+        except smtplib.SMTPNotSupportedError:
+            return {"ok": False, "detail": f"{cfg['host']} does not offer encrypted "
+                    f"submission on port {port}; the password was not sent."}
+        except (smtplib.SMTPException, OSError, ssl.SSLError) as exc:
+            return {"ok": False, "detail": f"Could not reach {cfg['host']}:{port} — {exc}"}
 
     def _save_copy(self, cfg: dict[str, str], raw: bytes, message_id: str) -> tuple[str, str]:
         if cfg["sent_copy"] == COPY_SKIP:

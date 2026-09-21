@@ -36,6 +36,35 @@ function backendDir() {
   return app.isPackaged && fs.existsSync(packaged) ? packaged : path.join(__dirname, '..', 'backend');
 }
 
+/* What to run, and where the UI is, in a packaged app.
+
+   `npm run dist` had never been run, and reading what it would have produced
+   found two things that would each have shipped a broken app on its own:
+
+   1. `backend/.venv` went into the bundle whole, and its python is a symlink to
+      `/opt/homebrew/opt/python@3.13/bin/python3.13`. **The app would have run
+      on the developer's Mac and on no other.** A packaged build now runs a
+      frozen backend (PyInstaller, scripts/build_backend.sh) that carries its
+      own interpreter and is signed with everything else.
+
+   2. The UI lives inside app.asar, which the Python server cannot read, so the
+      window it opens would have been a 404. It is copied out as an extra
+      resource and the backend is told where.
+
+   Development is unchanged: `npm start` still runs `python -m app.main` from
+   the venv. */
+function frozenBackend() {
+  if (!app.isPackaged) return null;
+  const bin = path.join(process.resourcesPath, 'backend', 'foolsgold-backend', 'foolsgold-backend');
+  return fs.existsSync(bin) ? bin : null;
+}
+
+function uiDir() {
+  if (!app.isPackaged) return undefined;          // dev: the backend finds it itself
+  const dir = path.join(process.resourcesPath, 'ui');
+  return fs.existsSync(dir) ? dir : undefined;
+}
+
 function pythonBin() {
   if (process.env.FOOLSGOLD_PYTHON) return process.env.FOOLSGOLD_PYTHON;
   const venv = path.join(backendDir(), '.venv', 'bin', 'python');
@@ -49,8 +78,9 @@ function pythonBin() {
 
 function startBackend() {
   const cwd = backendDir();
-  const python = pythonBin();
-  if (python === null) {
+  const frozen = frozenBackend();
+  const python = frozen ? null : pythonBin();
+  if (frozen === null && python === null) {
     dialog.showErrorBox(
       'Fools Gold is not set up yet',
       'No Python environment found at backend/.venv.\n\n' +
@@ -63,11 +93,12 @@ function startBackend() {
     return;
   }
   backendStderr = '';
-  backend = spawn(python, ['-m', 'app.main'], {
-    cwd,
-    env: { ...process.env, FOOLSGOLD_PORT: PORT, PYTHONUNBUFFERED: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const env = { ...process.env, FOOLSGOLD_PORT: PORT, PYTHONUNBUFFERED: '1' };
+  const ui = uiDir();
+  if (ui) env.FOOLSGOLD_UI_DIR = ui;
+  backend = frozen
+    ? spawn(frozen, [], { cwd: path.dirname(frozen), env, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(python, ['-m', 'app.main'], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   backend.stdout.on('data', (d) => process.stdout.write(`[backend] ${d}`));
   backend.stderr.on('data', (d) => {
     process.stderr.write(`[backend] ${d}`);

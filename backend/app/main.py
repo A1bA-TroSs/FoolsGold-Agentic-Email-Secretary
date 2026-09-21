@@ -20,6 +20,7 @@ from . import db, pipeline
 from .config import APP_NAME, BACKEND_HOST, BACKEND_PORT, VERSION
 from .graph import auth as graph_auth
 from .routers import auth as auth_router
+from .routers import compose as compose_router
 from .routers import calendar as calendar_router
 from .routers import config as config_router
 from .routers import mail as mail_router
@@ -90,6 +91,7 @@ app.include_router(mail_router.router)
 app.include_router(calendar_router.router)
 app.include_router(config_router.router)
 app.include_router(ranking_router.router)
+app.include_router(compose_router.router)
 
 
 @app.get("/api/health")
@@ -134,7 +136,19 @@ def health() -> dict:
 
 # Serve the built React app when it exists, so the packaged Electron window and
 # a plain browser both work from one origin.
-_dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+# Where the built UI lives.
+#
+# In development it sits beside the backend in the repo. In a packaged app it
+# does NOT: electron-builder puts `frontend/dist` inside `app.asar`, an archive
+# Python cannot read, while this file ends up in `Contents/Resources/backend/`
+# -- so `parents[2]` resolves to `Contents/frontend/dist`, which does not exist,
+# the mount is silently skipped, and the window Electron opens on this server
+# is a 404. **A packaged build would have shipped a blank window**, and nothing
+# would have said why, because `npm run dist` had never been run.
+#
+# The shell now copies the UI out as an extra resource and says where it put it.
+_dist = Path(os.environ.get("FOOLSGOLD_UI_DIR") or
+             Path(__file__).resolve().parents[2] / "frontend" / "dist")
 if _dist.is_dir():
     app.mount("/", StaticFiles(directory=str(_dist), html=True), name="ui")
 

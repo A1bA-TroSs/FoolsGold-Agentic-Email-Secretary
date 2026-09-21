@@ -2,7 +2,7 @@
   "name": "foolsgold",
   "productName": "Fools Gold",
   "version": "1.0.0",
-  "description": "Agentic email secretary for Outlook \u2014 local-first, read-only.",
+  "description": "Agentic email secretary for Outlook — local-first, read-only.",
   "main": "electron/main.js",
   "scripts": {
     "postinstall": "cd frontend && npm install",
@@ -10,8 +10,10 @@
     "dev:ui": "cd frontend && npm run dev",
     "dev": "FOOLSGOLD_DEV=1 electron .",
     "start": "npm run build:ui && electron .",
-    "dist": "npm run build:ui && electron-builder",
-    "test:electron": "node --test electron/reminders.test.js electron/backend_guard.test.js"
+    "dist": "npm run build:ui && npm run build:backend && electron-builder --mac dmg --arm64",
+    "test:electron": "node --test electron/reminders.test.js electron/backend_guard.test.js",
+    "build:backend": "./scripts/build_backend.sh",
+    "dist:mas": "npm run build:ui && npm run build:backend && electron-builder --mac mas --arm64"
   },
   "devDependencies": {
     "electron": "^32.0.0",
@@ -22,22 +24,40 @@
     "productName": "Fools Gold",
     "files": [
       "electron/**",
-      "frontend/dist/**",
+      "!electron/**/*.test.js",
       "assets/**"
     ],
     "extraResources": [
       {
-        "from": "backend",
-        "to": "backend",
-        "filter": [
-          "**/*",
-          "!**/__pycache__/**"
-        ]
+        "from": "backend-dist/foolsgold-backend",
+        "to": "backend/foolsgold-backend"
+      },
+      {
+        "from": "frontend/dist",
+        "to": "ui"
       }
     ],
     "mac": {
-      "icon": "assets/logo.png",
-      "category": "public.app-category.productivity"
+      "icon": "packaging/icon.icns",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "packaging/entitlements.mac.plist",
+      "entitlementsInherit": "packaging/entitlements.mac.inherit.plist",
+      "notarize": true,
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "mas": {
+      "entitlements": "packaging/entitlements.mas.plist",
+      "entitlementsInherit": "packaging/entitlements.mas.inherit.plist",
+      "hardenedRuntime": false
     }
   }
 }

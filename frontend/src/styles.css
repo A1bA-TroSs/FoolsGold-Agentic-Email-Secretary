@@ -17,8 +17,15 @@
   --text: #3A2E1F;
   --muted: #6B5B3A;
   --shadow: rgba(58, 46, 31, 0.10);
-  --logo-plate: #FFFDF5;
-  --logo-plate-border: #E8DEBE;
+  /* The logo plate is one flat colour taken from the theme's own palette:
+     --muted, the desaturated mid-tone. It is the least saturated colour each
+     light palette has that still clears 3:1 against the gold mark (gold 3.4,
+     green 2.9, purple 3.2), and it sits only ~5:1 off the rail -- half the
+     jump of the near-black bronze tile it replaces (11.5:1), which read as a
+     hole in the ivory rail. No gradient, glow or highlight: the mark is the
+     only thing on the plate with depth. */
+  --logo-plate: var(--muted);
+  --logo-plate-border: var(--muted);
   --ok: #3E7A48;
   --danger: #B4483C;
   --ember: #E4622F;
@@ -39,8 +46,10 @@
   --shadow: rgba(0, 0, 0, 0.45);
   /* Warm and a shade lighter than the rail, so the plate reads as a plate and
      the gold artwork still has something to sit against. */
-  --logo-plate: #302C22;
-  --logo-plate-border: #45402F;
+  /* Dark keeps a quiet tile one step up from the rail: --border. Its --muted
+     is a light khaki the gold would vanish into. */
+  --logo-plate: var(--border);
+  --logo-plate-border: var(--border);
   --ok: #63B074;
   --danger: #E0705F;
   --ember: #FF8A47;
@@ -59,8 +68,9 @@
   --text: #2B3D24;
   --muted: #5C6E52;
   --shadow: rgba(43, 61, 36, 0.10);
-  --logo-plate: #FBFDF9;
-  --logo-plate-border: #D5E5CB;
+  /* Forest, in this theme's own hue: 1.9:1 -> 7.0:1. */
+  --logo-plate: var(--muted);
+  --logo-plate-border: var(--muted);
   --ok: #2F6E3C;
   --danger: #B4483C;
   --ember: #E4622F;
@@ -79,8 +89,9 @@
   --text: #3C2C4A;
   --muted: #6B5A79;
   --shadow: rgba(60, 44, 74, 0.10);
-  --logo-plate: #FCFAFD;
-  --logo-plate-border: #E7D9EE;
+  /* Aubergine, in this theme's own hue: 1.9:1 -> 7.9:1. */
+  --logo-plate: var(--muted);
+  --logo-plate-border: var(--muted);
   --ok: #3E7A48;
   --danger: #B4483C;
   --ember: #E4622F;
@@ -141,14 +152,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 
 .rail .logo {
-  width: 46px; height: 46px;
+  /* 46 -> 58px. The mark carries fine facets that were lost at 38px of art;
+     at 48px they read. The rail is 82px wide, so this still leaves 12px a side. */
+  width: 58px; height: 58px;
   box-sizing: border-box;
-  padding: 4px;                   /* keeps the artwork off the plate edge */
-  border-radius: 13px;
+  padding: 5px;                   /* keeps the artwork off the plate edge */
+  border-radius: 16px;
   background: var(--logo-plate);
   border: 1px solid var(--logo-plate-border);
   margin-bottom: 12px;
-  box-shadow: 0 1px 4px var(--shadow);
   transition: transform var(--dur-base) var(--ease-spring);
 }
 .rail .logo:hover { transform: scale(1.07) rotate(-3deg); }
@@ -1185,7 +1197,7 @@ body { font-size: 14px; letter-spacing: .002em; }
 .row-check .box { border-radius: 7px; }
 
 .rail button { border-radius: var(--r-md); }
-.rail .logo { border-radius: var(--r-lg); }
+.rail .logo { border-radius: 16px; }
 
 /* cards and popovers */
 .digest {
@@ -2112,4 +2124,219 @@ body.resizing-v iframe { pointer-events: none; }
   font-size: 12px; color: var(--muted);
   background: var(--surface); border-radius: var(--r-md);
   border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+
+/* ---------------------------------------------------------------- compose */
+
+.detail-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.detail-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Every custom property below is one this stylesheet actually defines. The
+   first draft used --panel, --line and --motion-base, none of which exist
+   here: an undefined custom property resolves to nothing, so the dialog had
+   no background at all and the mail list showed straight through its header.
+   Invisible against a pale scrim, obvious the moment the scrim was darkened,
+   and completely invisible to the build. */
+.compose-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  /* A neutral dim rather than a tint of the theme background. Mixing with
+     --bg made the light themes almost transparent, so the dialog and the list
+     behind it read as one plane and the modal stopped looking modal. Black at
+     low alpha darkens every theme by the same amount. */
+  background: rgba(0, 0, 0, .34);
+  backdrop-filter: blur(2px);
+  /* Opacity only: a transform here would promote the scrim to its own layer
+     and drag the whole reading pane along with it. */
+  animation: scrim-in var(--dur-fast) ease-out both;
+}
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+
+.compose {
+  display: flex;
+  flex-direction: column;
+  width: min(680px, 100%);
+  max-height: min(84vh, 760px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, .35);
+  overflow: hidden;
+  animation: compose-in var(--dur-base) var(--ease-enter) both;
+}
+@keyframes compose-in {
+  from { opacity: 0; transform: translateY(8px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .compose, .compose-scrim { animation: none; }
+}
+
+.compose-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.compose-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.compose-head .btn.icon { margin-left: auto; padding: 4px 6px; }
+
+.compose-fields { padding: 12px 16px 0; }
+.compose-field {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.compose-field > span {
+  flex: 0 0 74px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compose-field input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 2px 0;
+}
+.compose-field input:focus { outline: none; }
+.compose-field input::placeholder { color: var(--muted); opacity: .75; }
+.compose-more {
+  margin: 8px 0 0;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.compose-body {
+  flex: 1;
+  min-height: 160px;
+  margin: 12px 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+.compose-body:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+/* The review screen. Read-only on purpose: editing and approving are separate
+   acts, and a screen that does both is one where a half-finished message can
+   go out. */
+.compose-review { overflow: auto; padding: 14px 16px 0; }
+.compose-review dl {
+  display: grid;
+  grid-template-columns: 74px 1fr;
+  gap: 4px 10px;
+  margin: 0 0 12px;
+  font-size: 12.5px;
+}
+.compose-review dt { color: var(--muted); }
+.compose-review dd { margin: 0; word-break: break-word; }
+.compose-review dd em { color: var(--muted); font-size: 11.5px; }
+.compose-preview {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.compose-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+}
+.compose-foot .btn:first-child:not(.primary) { margin-left: auto; }
+.compose-foot .compose-note { margin: 0 auto 0 0; }
+.compose-foot .btn.primary { display: inline-flex; align-items: center; gap: 6px; }
+
+.compose-note {
+  margin: 0 16px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.compose-note.handoff {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+.compose-error {
+  margin: 0 16px 12px;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 38%, transparent);
+}
+
+.compose-done { padding: 20px 0 0; display: flex; flex-direction: column; flex: 1; }
+.compose-done > p { margin-left: 16px; margin-right: 16px; }
+.compose-done .compose-foot { justify-content: flex-end; }
+.compose-done-line { margin: 0 0 10px; font-size: 15px; font-weight: 600; }
+
+/* ---------------------------------------------------------------- sending */
+
+.send-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 132px;
+  gap: 0 10px;
+}
+@media (max-width: 720px) {
+  .send-grid { grid-template-columns: minmax(0, 1fr); }
+}
+.send-from { display: flex; align-items: center; gap: 10px; }
+.send-from .input { flex: 1; min-width: 0; }
+.send-from-address {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.send-result {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12.5px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+.send-result.ok { border-color: var(--ok); color: var(--text); }
+.send-result.bad {
+  color: var(--text);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border-color: color-mix(in srgb, var(--danger) 38%, transparent);
 }

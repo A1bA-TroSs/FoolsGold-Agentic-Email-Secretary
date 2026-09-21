@@ -195,6 +195,43 @@ SETTINGS = {
 }
 
 
+# The transport the compose pane thinks it is talking to. Switchable, because
+# the two modes render different words on the same button and the whole point
+# of the handoff design is that the difference is visible before the click.
+TRANSPORT = {"name": "smtp", "label": "SMTP", "mode": "delivers", "ready": True,
+             "detail": "smtp.example.edu:587 (starttls)", "verb": "send"}
+
+HANDOFF = {"name": "imap_draft", "label": "Save to Drafts", "mode": "hands_off",
+           "ready": True, "detail": "imap.example.edu:993", "verb": "saveDraft"}
+
+
+def compose_summary(body: dict) -> dict:
+    """What the real backend returns: the message it just built, not a replay
+    of the form. The review screen exists to show the headers the app filled
+    in, so a stub that echoed the form back would prove nothing."""
+    action = body.get("action", "new")
+    reply = action in ("reply", "reply_all")
+    typed = ", ".join(body.get("to") or []) or (
+        "Career Development Programs <careers@example.edu>" if reply else "")
+    return {
+        "action": action,
+        "from": "Danny Park <danny@example.edu>",
+        "to": typed,
+        "cc": ", ".join(body.get("cc") or []) or (
+            "TA <ta@example.edu>" if action == "reply_all" else ""),
+        "bcc": ", ".join(body.get("bcc") or []),
+        "subject": ("Re: " if reply else "Fwd: " if action == "forward" else "")
+                   + (body.get("subject") or "\u201cEthics in Practice\u201d ICAC Seminar"),
+        "message_id": "<178987374224.1267.162619993@example.edu>",
+        "in_reply_to": "<original-announcement@example.edu>" if reply else "",
+        "references": "<thread-root@example.edu>" if reply else "",
+        "text": (body.get("text") or "")
+                + ("\n\nOn Thu, 17 Sep 2026 09:00:00 +0800, Career Development "
+                   "Programs wrote:\n> The seminar is on 20 September. Please "
+                   "register in advance.\n" if reply else ""),
+    }
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(DIST), **kw)
@@ -265,7 +302,14 @@ class Handler(SimpleHTTPRequestHandler):
                 SETTINGS["theme"] = q["theme"][0]
             if q.get("lang"):
                 SETTINGS["ui_language"] = q["lang"][0]
-            return self._json({"theme": SETTINGS["theme"], "lang": SETTINGS["ui_language"]})
+            if q.get("transport"):
+                TRANSPORT.clear()
+                TRANSPORT.update(HANDOFF if q["transport"][0] == "hands_off"
+                                 else {"name": "smtp", "label": "SMTP", "mode": "delivers",
+                                       "ready": True, "detail": "smtp.example.edu:587 (starttls)",
+                                       "verb": "send"})
+            return self._json({"theme": SETTINGS["theme"], "lang": SETTINGS["ui_language"],
+                               "transport": TRANSPORT["mode"]})
         # One email, opened.
         #
         # `/api/mail/<id>` fell through the prefix rule and was answered with
@@ -307,8 +351,32 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
-        if length:
-            self.rfile.read(length)
+        raw = self.rfile.read(length) if length else b""
+        path = urlparse(self.path).path
+
+        if path == "/api/compose/draft":
+            try:
+                body = json.loads(raw or b"{}")
+            except ValueError:
+                body = {}
+            return self._json({"token": "stub-token",
+                               "summary": compose_summary(body),
+                               "transport": dict(TRANSPORT)})
+        if path.startswith("/api/compose/") and path.endswith("/send"):
+            handoff = TRANSPORT["mode"] == "hands_off"
+            return self._json({
+                "token": "stub-token", "already": False,
+                "sent_at": "2026-09-20T12:00:00+00:00",
+                "summary": {}, "outcome": {
+                    "delivered": not handoff,
+                    "handoff": "Drafts" if handoff else "",
+                    "sent_copy": "appended" if not handoff else "skipped",
+                    "detail": ("Saved to Drafts. Open it in your mail client and "
+                               "press send.") if handoff else "",
+                    "recipients": ["careers@example.edu"], "refused": [],
+                    "message_id": "<x@example.edu>",
+                }})
+
         return self._json(self._route() or {"ok": True})
 
     do_PATCH = do_POST

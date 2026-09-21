@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Mac App Store - NOT READY, and this file is not the reason.
+
+  A sandboxed app cannot read ~/Library/Mail (App Review Guideline 2.5.2: "may
+  not read or write data outside the designated container area"), and no
+  entitlement below or anywhere else changes that. The Apple Mail source does
+  not work under this profile. A Mac App Store build needs a network mail
+  source (IMAP / Gmail API / Microsoft Graph) first; see
+  claude/app-store-release.md in the project.
+
+  What IS here is what that future build needs: the sandbox, outbound network
+  (IMAP, SMTP, cloud AI), and a loopback server for the backend the UI talks to.
+  TEAMID must be replaced with the real Team ID.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>TEAMID.dev.foolsgold.app</string>
+  </array>
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+</dict>
+</plist>

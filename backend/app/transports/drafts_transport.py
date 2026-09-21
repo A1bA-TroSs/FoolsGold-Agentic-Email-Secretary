@@ -39,7 +39,7 @@ from .base import (
     HANDS_OFF, MailTransport, SendResult, TransportError, TransportStatus,
     check_sendable, envelope_recipients,
 )
-from .imap_folders import discover_drafts
+from .imap_folders import discover_drafts, open_imap
 
 TIMEOUT = 30.0
 
@@ -60,6 +60,7 @@ def _settings() -> dict[str, str]:
         "username": (db.get_setting("imap_username", "")
                      or db.get_setting("smtp_username", "")).strip(),
         "password": db.get_setting("smtp_password", ""),
+        "security": db.get_setting("imap_security", "ssl").strip().lower(),
         "folder": db.get_setting("drafts_folder", "").strip(),
     }
 
@@ -91,12 +92,40 @@ class ImapDraftTransport(MailTransport):
             extra={"mode": HANDS_OFF, "drafts_folder": cfg["folder"] or None},
         )
 
-    def _imap(self, cfg: dict[str, str]) -> imaplib.IMAP4_SSL:
-        client = imaplib.IMAP4_SSL(cfg["host"], _port(cfg["port"], 993), timeout=TIMEOUT)
-        client.login(cfg["username"], cfg["password"])
-        return client
+    def _imap(self, cfg: dict[str, str]) -> imaplib.IMAP4:
+        default = 143 if cfg["security"] in ("starttls", "plain") else 993
+        return open_imap(cfg["host"], _port(cfg["port"], default), cfg["security"],
+                         cfg["username"], cfg["password"], timeout=TIMEOUT)
 
-    def send(self, message: email.message.EmailMessage) -> SendResult:
+    def check(self) -> dict:
+        """Log in and find Drafts. Writes nothing -- a test that left a stray
+        draft behind would be the first thing the user had to clean up."""
+        state = self.status()
+        if not state.ready:
+            return {"ok": False, "detail": state.detail}
+        cfg = _settings()
+        client = None
+        try:
+            client = self._imap(cfg)
+            folder = discover_drafts(client, cfg["folder"])
+            return {"ok": True, "folder": folder,
+                    "detail": f"Signed in to {cfg['host']}. Replies will be saved to {folder}."}
+        except imaplib.IMAP4.error as exc:
+            return {"ok": False, "detail": "The server rejected that username and "
+                    f"password. Many providers want an app-specific password here. ({exc})"}
+        except LookupError as exc:
+            return {"ok": False, "detail": str(exc)}
+        except (OSError, ssl.SSLError) as exc:
+            return {"ok": False, "detail": f"Could not reach {cfg['host']} — {exc}"}
+        finally:
+            if client is not None:
+                try:
+                    client.logout()
+                except Exception:                  # noqa: BLE001
+                    pass
+
+    def send(self, message: email.message.EmailMessage,
+             raw: bytes | None = None) -> SendResult:
         check_sendable(message)
         state = self.status()
         if not state.ready:
@@ -107,7 +136,7 @@ class ImapDraftTransport(MailTransport):
         # the user's client builds one when they press send -- so stripping Bcc
         # would drop those recipients rather than hide them, which is the exact
         # opposite of what it does on the delivery path.
-        raw = message.as_bytes()
+        raw = raw if raw is not None else message.as_bytes()
 
         client = None
         try:
