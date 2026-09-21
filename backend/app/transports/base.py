@@ -118,19 +118,50 @@ def envelope_recipients(message: email.message.Message) -> list[str]:
     return out
 
 
-def transmissible(message: email.message.EmailMessage) -> bytes:
+def strip_headers(raw: bytes, names: tuple[str, ...]) -> bytes:
+    """Remove named header fields from a serialised message, touching nothing else.
+
+    Line-level, deliberately. The alternative -- parse, delete, re-serialise --
+    re-folds every header on the way out, so the bytes that leave are no longer
+    the bytes the user approved: `References:` gains a trailing space, a long
+    subject wraps at a different column. Semantically harmless, and exactly the
+    kind of drift that makes "what you approved is what was sent" a claim nobody
+    can check. This removes the named fields and their continuation lines and
+    leaves every other byte where it was.
+    """
+    for sep in (b"\r\n\r\n", b"\n\n"):
+        cut = raw.find(sep)
+        if cut >= 0:
+            head, body = raw[:cut], raw[cut:]
+            break
+    else:
+        head, body = raw, b""
+    eol = b"\r\n" if b"\r\n" in head else b"\n"
+    wanted = {n.lower().encode() for n in names}
+    kept: list[bytes] = []
+    dropping = False
+    for line in head.split(eol):
+        if line[:1] in (b" ", b"\t"):          # a folded continuation line
+            if not dropping:
+                kept.append(line)
+            continue
+        dropping = line.split(b":", 1)[0].strip().lower() in wanted
+        if not dropping:
+            kept.append(line)
+    return eol.join(kept) + body
+
+
+def transmissible(message: email.message.EmailMessage, raw: bytes | None = None) -> bytes:
     """The bytes that go on the wire: the message with `Bcc` removed.
 
-    Done here rather than leaning on `smtplib.send_message`, which also strips
-    it. Not because the stdlib is wrong, but because a privacy guarantee that
-    lives in someone else's code is one nobody on this side can test, and this
-    one is a single line to get wrong and impossible to notice afterwards.
+    Pass `raw` -- the bytes the user approved -- whenever you have them, and
+    they are transmitted with only the `Bcc` lines taken out. Done here rather
+    than leaning on `smtplib.send_message`, which also strips it: a privacy
+    guarantee that lives in someone else's code is one nobody on this side can
+    test, and this one is a single line to get wrong and impossible to notice.
     """
-    import copy
-    carbon = copy.copy(message)
-    del carbon["Bcc"]
-    del carbon["Resent-Bcc"]
-    return carbon.as_bytes()
+    source = raw if raw is not None else message.as_bytes()
+    return strip_headers(source, ("Bcc", "Resent-Bcc"))
 
 
 def sender_address(message: email.message.Message) -> str:
@@ -169,14 +200,30 @@ class MailTransport(ABC):
     def status(self) -> TransportStatus:
         """Cheap, synchronous, never raises. Called on every page load."""
 
+    def check(self) -> dict[str, Any]:
+        """Prove the settings work **without sending or writing anything.**
+
+        Settings needs a way to say "this works" before the user composes a
+        message and finds out at the moment they press send. The default is
+        only the configuration check; transports that can log in override it.
+        """
+        state = self.status()
+        return {"ok": state.ready, "detail": state.detail}
+
     @abstractmethod
-    def send(self, message: email.message.EmailMessage) -> SendResult:
+    def send(self, message: email.message.EmailMessage,
+             raw: bytes | None = None) -> SendResult:
         """Get the message out of this app. Raises `TransportError` with
         something the user can act on.
 
         A `DELIVERS` transport transmits it and deals with the copy in Sent. A
         `HANDS_OFF` transport puts it where the user's own client will find it
         and returns `delivered=False`.
+
+        `raw`, when given, is the exact bytes the user approved, and a transport
+        must transmit *those* -- `message` is for reading headers, not for
+        re-serialising. Otherwise approval is of one byte sequence and delivery
+        of another.
         """
 
 
@@ -194,7 +241,8 @@ class NullTransport(MailTransport):
             needs_setup=True,
         )
 
-    def send(self, message: email.message.EmailMessage) -> SendResult:
+    def send(self, message: email.message.EmailMessage,
+             raw: bytes | None = None) -> SendResult:
         raise TransportError(
             "No outgoing mail server is configured, so nothing was sent. "
             "Add one in Settings → Sending."

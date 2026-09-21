@@ -233,3 +233,8 @@ dist/
 *.db-shm
 .foolsgold/
 secret.key
+# Release packaging (scripts/build_backend.sh). The PyInstaller spec is
+# hand-written and must be tracked despite the generic *.spec rule above.
+backend-dist/
+.pyinstaller-work/
+!backend/foolsgold-backend.spec

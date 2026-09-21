@@ -64,6 +64,19 @@ export const api = {
   rescan: () => request('/api/mail/rescan', { method: 'POST' }),
   digest: (force = false) => request(`/api/mail/digest/today?force=${force}`),
 
+  // --- writing mail -----------------------------------------------------
+  // `sendDraft` takes a token and nothing else, mirroring the endpoint. There
+  // is deliberately no way from here to send content that was not first built
+  // and returned by `draft`.
+  draft: (body) => request('/api/compose/draft', { method: 'POST', body: JSON.stringify(body) }),
+  sendDraft: (token) => request(`/api/compose/${encodeURIComponent(token)}/send`, { method: 'POST' }),
+  getDraft: (token) => request(`/api/compose/${encodeURIComponent(token)}`),
+
+  transports: () => request('/api/transports'),
+  // Signs in and finds the mailbox. Sends nothing, writes nothing.
+  testTransport: (name) =>
+    request('/api/transports/test', { method: 'POST', body: JSON.stringify({ name: name ?? null }) }),
+
   getSettings: () => request('/api/settings'),
   patchSettings: (values) => request('/api/settings', { method: 'PATCH', body: JSON.stringify({ values }) }),
   testProvider: () => request('/api/settings/test-provider', { method: 'POST' }),

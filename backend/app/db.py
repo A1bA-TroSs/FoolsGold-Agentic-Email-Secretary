@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from .config import DATA_DIR, DB_PATH, DEFAULT_SETTINGS, SECRET_SETTINGS
@@ -151,6 +151,33 @@ CREATE TABLE IF NOT EXISTS task_sources (
     PRIMARY KEY (email_id, source_key)
 );
 CREATE INDEX IF NOT EXISTS idx_task_sources_task ON task_sources(task_id);
+
+-- Messages this app has built, and what became of them.
+--
+-- The point is not storage, it is the approval gate. The send endpoint takes a
+-- token and nothing else, so the only thing that can be sent is a message the
+-- server already rendered and handed to the user to look at. There is no field
+-- on the send request that can change a recipient, a subject or a word of the
+-- body -- not because the handler is careful, but because it has nowhere to
+-- put one.
+--
+-- `sent_at` also makes sending idempotent: a second click on a token that has
+-- already gone returns what happened the first time instead of sending twice.
+--
+-- And it is the log the drafting model will need later: what was shown, what
+-- was sent, and the distance between them is the only label-free quality
+-- signal available for a single user.
+CREATE TABLE IF NOT EXISTS outgoing (
+    token       TEXT PRIMARY KEY,
+    email_id    TEXT,                  -- the parent, for a reply or forward
+    action      TEXT NOT NULL,         -- new | reply | reply_all | forward
+    mime        BLOB NOT NULL,         -- exactly what will be transmitted
+    summary     TEXT NOT NULL,         -- JSON, for re-rendering the preview
+    created_at  TEXT NOT NULL,
+    sent_at     TEXT,
+    outcome     TEXT                   -- JSON SendResult
+);
+CREATE INDEX IF NOT EXISTS idx_outgoing_created ON outgoing(created_at);
 
 CREATE TABLE IF NOT EXISTS digests (
     day        TEXT PRIMARY KEY,
@@ -476,6 +503,52 @@ def init_db() -> None:
 
 
 # --------------------------------------------------------------------------
+# outgoing mail
+# --------------------------------------------------------------------------
+
+# A draft the user never sent is not worth keeping for ever, and a table that
+# only grows is how a local database becomes a surprise. Anything unsent and
+# older than this is cleared when a new draft is made.
+DRAFT_TTL_HOURS = 72
+
+
+def save_draft(token: str, *, action: str, email_id: str | None, mime: bytes,
+               summary: dict[str, Any]) -> None:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=DRAFT_TTL_HOURS)).isoformat()
+    with connect() as conn:
+        conn.execute("DELETE FROM outgoing WHERE sent_at IS NULL AND created_at < ?", (cutoff,))
+        conn.execute(
+            "INSERT OR REPLACE INTO outgoing (token, email_id, action, mime, summary, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (token, email_id, action, mime, json.dumps(summary, ensure_ascii=False), now_iso()))
+        conn.commit()
+
+
+def get_draft(token: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM outgoing WHERE token = ?", (token,)).fetchone()
+    if row is None:
+        return None
+    out = dict(row)
+    out["summary"] = json.loads(out["summary"] or "{}")
+    out["outcome"] = json.loads(out["outcome"]) if out["outcome"] else None
+    return out
+
+
+def mark_draft_sent(token: str, outcome: dict[str, Any], sent_at: str = "") -> None:
+    """`sent_at` comes from the transport, not from this clock.
+
+    Otherwise the first response reports when the transport acted and every
+    later one reports when the row was written, and the same send appears to
+    have happened at two different times depending on how you ask.
+    """
+    with connect() as conn:
+        conn.execute("UPDATE outgoing SET sent_at = ?, outcome = ? WHERE token = ?",
+                     (sent_at or now_iso(), json.dumps(outcome, ensure_ascii=False), token))
+        conn.commit()
+
+
+# --------------------------------------------------------------------------
 # settings
 # --------------------------------------------------------------------------
 
@@ -533,42 +606,14 @@ def all_settings(redact_secrets: bool = True) -> dict[str, Any]:
 def email_count() -> int:
     """How many messages are stored. Used as a sanity guard before skipping a
     scan: an empty database means the last sync never finished, whatever the
-    fingerprint says."""
+    fingerprint says.
+
+    Restored 2026-09-21: removed by a stale-base overwrite while
+    `AppleMailSource.sync` still called it, which would have raised on every
+    poll after the first unchanged scan and reported a healthy mailbox as a
+    failing sync."""
     with connect() as conn:
         return int(conn.execute("SELECT COUNT(*) FROM emails").fetchone()[0])
-
-
-def emails_missing_source_path() -> set[str]:
-    """Ids of stored messages with no path to the file they came from.
-
-    A set, and the backfill discards from it as it goes, so the walk can stop
-    the moment every blank is filled instead of reading the whole store.
-    """
-    with connect() as conn:
-        rows = conn.execute(
-            "SELECT id FROM emails WHERE source_path IS NULL OR source_path = ''"
-        ).fetchall()
-    return {row["id"] for row in rows}
-
-
-def set_source_paths(paths: dict[str, str]) -> int:
-    """Fill in blank `source_path`s. Never overwrites one already there.
-
-    The WHERE clause carries that rule rather than the caller, because a path
-    already stored is the one the sync itself wrote -- and a backfill matching
-    the same message in two mailboxes (an inbox copy and an All Mail copy, say)
-    must not be able to flip it back and forth on alternating runs.
-    """
-    if not paths:
-        return 0
-    with connect() as conn:
-        cursor = conn.executemany(
-            "UPDATE emails SET source_path = ? "
-            "WHERE id = ? AND (source_path IS NULL OR source_path = '')",
-            [(path, email_id) for email_id, path in paths.items()],
-        )
-        conn.commit()
-        return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(paths)
 
 
 def upsert_emails(rows: Iterable[dict[str, Any]]) -> int:

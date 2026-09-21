@@ -7,6 +7,14 @@ const AI_KEYS = ['llm_provider', 'ollama_model', 'ollama_host', 'copilot_model',
                  'anthropic_model', 'openai_api_key', 'openai_model', 'openai_base_url'];
 const SYNC_KEYS = ['sync_days', 'sync_max_messages', 'classify_batch_size'];
 const NOTIFY_KEYS = ['notify_enabled', 'notify_morning', 'notify_evening'];
+/* Every key the Sending section can write. `smtp_password` is in here but is
+   bound to the *draft* only, never to the saved value -- the server returns a
+   saved secret as a mask, and a field initialised from it would save the mask
+   as the password. The backend refuses the mask too; this is the first line. */
+const SEND_KEYS = ['mail_transport', 'user_name',
+                   'imap_host', 'imap_port', 'imap_security', 'imap_username', 'drafts_folder',
+                   'smtp_host', 'smtp_port', 'smtp_security', 'smtp_username', 'sent_copy',
+                   'smtp_password'];
 
 const THEMES = [
   { id: 'gold', key: 'themeGold', colors: ['#FAF6EC', '#F0E6C8', '#C9A227', '#3A2E1F'] },
@@ -32,6 +40,7 @@ const THEMES = [
 const GROUPS = [
   { id: 'all',  key: 'grpAll' },
   { id: 'mail', key: 'grpMail' },
+  { id: 'send', key: 'grpSend' },
   { id: 'view', key: 'grpView' },
   { id: 'rank', key: 'grpRank' },
   { id: 'ai',   key: 'grpAi' },
@@ -44,6 +53,7 @@ const SEARCHABLE = [
   'deadlineWindow', 'deadlineUrgent', 'rankVolume', 'catTitle',
   'rescoreTitle', 'rescoreHelp', 'rescanTitle', 'notifyTitle', 'sync',
   'daysToKeep', 'maxMessages', 'batchSize',
+  'sendTitle', 'sendHelp', 'imapHost', 'draftsFolder', 'appPassword',
 ];
 
 function Section({ group, titleKey, hintKey, terms = [], tab, q, t, children }) {
@@ -84,6 +94,8 @@ export default function Settings({
   const [cats, setCats] = useState(null);
   const [tab, setTab] = useState('all');
   const [query, setQuery] = useState('');
+  const [sendCheck, setSendCheck] = useState(null);
+  const [checkingSend, setCheckingSend] = useState(false);
 
   useEffect(() => {
     api.ranking().then((r) => {
@@ -154,6 +166,25 @@ export default function Settings({
   useEffect(() => {
     if (provider === 'ollama' && models === null) loadModels();
   }, [provider, models, loadModels]);
+
+  const transport = value('mail_transport') || 'none';
+
+  /* Save, THEN test. The test runs against saved settings on purpose -- a
+     result about the half-typed form would be a result about a configuration
+     that will never be used. Saving first makes "it works" true of the thing
+     that will actually send. */
+  async function checkSending() {
+    setCheckingSend(true); setSendCheck(null);
+    try {
+      await save(SEND_KEYS);
+      setDraft((d) => { const n = { ...d }; for (const k of SEND_KEYS) delete n[k]; return n; });
+      setSendCheck(await api.testTransport());
+    } catch (e) {
+      setSendCheck({ ok: false, detail: e.message });
+    } finally {
+      setCheckingSend(false);
+    }
+  }
 
   const needle = query.trim().toLowerCase();
 
@@ -246,6 +277,149 @@ export default function Settings({
               <button className="btn" onClick={onSignOut}>{t('signOutOutlook')}</button>
             )}
           </div>
+        </Section>
+
+        <Section group="send" titleKey="sendTitle" hintKey="sendHelp"
+                 terms={["imapHost", "draftsFolder", "appPassword"]}
+                 tab={tab} q={query} t={t}>
+          <h3>{t('sendTitle')}</h3>
+          <p className="hint">{t('sendHelp')}</p>
+
+          <div className="field">
+            <label>{t('sendMethod')}</label>
+            <select className="input" data-key="mail_transport" value={transport}
+                    onChange={(e) => { edit('mail_transport', e.target.value); setSendCheck(null); }}>
+              <option value="none">{t('sendNone')}</option>
+              <option value="imap_draft">{t('sendDrafts')}</option>
+              <option value="smtp">{t('sendSmtp')}</option>
+            </select>
+            <p className="hint" style={{ marginTop: 4 }}>
+              {transport === 'imap_draft' ? t('sendDraftsHelp')
+                : transport === 'smtp' ? t('sendSmtpHelp') : t('sendNoneHelp')}
+            </p>
+          </div>
+
+          {transport !== 'none' && (
+            <>
+              <div className="field">
+                <label>{t('sendFrom')}</label>
+                {/* The address lives in the mail-source section and is shown
+                    here, not duplicated: two fields for one value is how they
+                    come to disagree. */}
+                <div className="send-from">
+                  <input className="input" data-key="user_name" placeholder={t('sendNamePlaceholder')}
+                         value={value('user_name')} onChange={(e) => edit('user_name', e.target.value)} />
+                  <span className="send-from-address">
+                    {value('user_address') ? `<${value('user_address')}>` : t('sendNoAddress')}
+                  </span>
+                </div>
+              </div>
+
+              <div className="send-grid">
+                <div className="field">
+                  <label>{t('imapHost')}</label>
+                  <input className="input" data-key="imap_host" placeholder="imap.example.com"
+                         spellCheck={false} autoCapitalize="off"
+                         value={value('imap_host')} onChange={(e) => edit('imap_host', e.target.value.trim())} />
+                </div>
+                <div className="field">
+                  <label>{t('port')}</label>
+                  <input className="input" data-key="imap_port" inputMode="numeric"
+                         value={value('imap_port')} onChange={(e) => edit('imap_port', e.target.value.replace(/\D/g, ''))} />
+                </div>
+                <div className="field">
+                  <label>{t('security')}</label>
+                  <select className="input" data-key="imap_security" value={value('imap_security') || 'ssl'}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            edit('imap_security', v);
+                            /* Only move the port if it is still the other
+                               mode's default. A port the user typed is theirs. */
+                            const port = value('imap_port');
+                            if (v === 'ssl' && (!port || port === '143')) edit('imap_port', '993');
+                            if (v !== 'ssl' && (!port || port === '993')) edit('imap_port', '143');
+                          }}>
+                    <option value="ssl">SSL/TLS</option>
+                    <option value="starttls">STARTTLS</option>
+                    <option value="plain">{t('securityNone')}</option>
+                  </select>
+                </div>
+              </div>
+              {value('imap_security') === 'plain' && (
+                <p className="compose-error" style={{ margin: '0 0 12px' }}>{t('securityNoneWarn')}</p>
+              )}
+
+              <div className="field">
+                <label>{t('username')}</label>
+                <input className="input" data-key="imap_username" spellCheck={false} autoCapitalize="off"
+                       placeholder={value('user_address') || 'you@example.com'}
+                       value={value('imap_username')} onChange={(e) => edit('imap_username', e.target.value.trim())} />
+              </div>
+              <div className="field">
+                <label>
+                  {t('appPassword')}{' '}
+                  {settings?.smtp_password_set && <span style={{ color: 'var(--muted)' }}>{t('savedNote')}</span>}
+                </label>
+                <input className="input" data-key="smtp_password" type="password" autoComplete="off"
+                       placeholder={settings?.smtp_password_set ? '••••••••' : ''}
+                       value={draft.smtp_password ?? ''} onChange={(e) => edit('smtp_password', e.target.value)} />
+                <p className="hint" style={{ marginTop: 4 }}>{t('appPasswordHelp')}</p>
+              </div>
+              <div className="field">
+                <label>{t('draftsFolder')}</label>
+                <input className="input" data-key="drafts_folder" placeholder={t('draftsFolderAuto')}
+                       value={value('drafts_folder')} onChange={(e) => edit('drafts_folder', e.target.value)} />
+              </div>
+
+              {transport === 'smtp' && (
+                <div className="send-grid">
+                  <div className="field">
+                    <label>{t('smtpHost')}</label>
+                    <input className="input" data-key="smtp_host" placeholder="smtp.example.com"
+                           spellCheck={false} autoCapitalize="off"
+                           value={value('smtp_host')} onChange={(e) => edit('smtp_host', e.target.value.trim())} />
+                  </div>
+                  <div className="field">
+                    <label>{t('port')}</label>
+                    <input className="input" data-key="smtp_port" inputMode="numeric"
+                           value={value('smtp_port')} onChange={(e) => edit('smtp_port', e.target.value.replace(/\D/g, ''))} />
+                  </div>
+                  <div className="field">
+                    <label>{t('security')}</label>
+                    <select className="input" data-key="smtp_security" value={value('smtp_security') || 'starttls'}
+                            onChange={(e) => edit('smtp_security', e.target.value)}>
+                      <option value="starttls">STARTTLS</option>
+                      <option value="ssl">SSL/TLS</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn primary" data-action="save-send"
+                    onClick={async () => { await save(SEND_KEYS); setSendCheck(null); }}
+                    disabled={!dirty(SEND_KEYS)}>{t('save')}</button>
+            {transport !== 'none' && (
+              <button className="btn" data-action="test-send" onClick={checkSending} disabled={checkingSend}>
+                {checkingSend ? t('testing') : t('sendTest')}
+              </button>
+            )}
+          </div>
+          {sendCheck && (
+            /* Success is built here from the folder the server found, in the
+               user's language. The server's `detail` is an English sentence
+               and it reached a Korean screen verbatim. On failure it is still
+               shown -- it quotes what the server said, which is the useful
+               part -- but under a translated headline that says what kind of
+               thing went wrong. */
+            <p className={`send-result ${sendCheck.ok ? 'ok' : 'bad'}`} data-result={sendCheck.ok ? 'ok' : 'bad'}>
+              {sendCheck.ok
+                ? <>✓ {t('sendTestOk', { arg: sendCheck.folder || '' })}</>
+                : <><strong>{t('sendTestFailed')}</strong> {sendCheck.detail}</>}
+            </p>
+          )}
         </Section>
 
         {value('mail_source') === 'graph' && (

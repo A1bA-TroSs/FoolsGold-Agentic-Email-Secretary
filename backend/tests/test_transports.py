@@ -403,15 +403,33 @@ def test_settings_can_see_every_transport_and_which_one_is_chosen(configured):
     assert body["statuses"]["imap_draft"]["label"] == "Save to Drafts"
 
 
-def test_no_http_route_can_send_anything_yet():
-    """The approval gate is not built, so the safe state is that there is no
-    way to reach a transport over HTTP at all. If this test ever fails,
-    something added a send route without a confirmation step."""
+def test_only_one_route_can_send_and_it_accepts_nothing_but_a_token():
+    """The approval gate, asserted as the shape of the API.
+
+    A send endpoint that took recipients or a body could transmit something the
+    user never saw, however careful its handler was. This one has no request
+    body at all -- the only input is a token naming a message the server
+    already rendered -- so there is nowhere to put a change.
+
+    **This test replaces one that could not fail.** Its predecessor iterated
+    `app.routes` looking for send paths; in this FastAPI version `app.routes`
+    holds lazy `_IncludedRouter` objects and never contained an API path, so it
+    searched an empty list and passed regardless. The spec is the source of
+    truth for what is actually reachable."""
     from app.main import app
-    sending = [r for r in app.routes
-               if getattr(r, "path", "").startswith("/api")
-               and any(word in getattr(r, "path", "") for word in ("send", "reply", "forward"))]
-    assert sending == [], f"unreviewed send routes: {[r.path for r in sending]}"
+    spec = app.openapi()
+    assert len(spec["paths"]) > 20, "sanity: the spec must actually list the API"
+
+    # Whole path segments, not substrings: `/api/mail/senders/mute` contains
+    # "send" and sends nothing. A substring match here would either flag five
+    # innocent routes or, loosened to shut them up, stop flagging real ones.
+    sending = sorted(p for p in spec["paths"]
+                     if {"send", "reply", "forward"} & set(p.strip("/").split("/")))
+    assert sending == ["/api/compose/{token}/send"], f"unreviewed send routes: {sending}"
+
+    post = spec["paths"]["/api/compose/{token}/send"]["post"]
+    assert "requestBody" not in post, "a send request must carry no content"
+    assert [(q["name"], q["in"]) for q in post.get("parameters", [])] == [("token", "path")]
 
 
 # --------------------------------------------------- handing off, not sending
@@ -547,3 +565,63 @@ def test_the_connection_is_closed_even_when_the_append_fails(drafts):
     with pytest.raises(base.TransportError, match="over quota"):
         transport.send(a_message())
     assert broken.logged_out
+
+
+
+# ------------------------------------------------------- exact bytes, minus Bcc
+
+from app.transports.base import strip_headers                    # noqa: E402
+
+RAW = (b"From: a@x.edu\r\n"
+       b"To: b@x.edu\r\n"
+       b"Bcc: dean@x.edu,\r\n"
+       b" provost@x.edu\r\n"
+       b"X-Bcc-Note: keep me\r\n"
+       b"References:\r\n <a@x> <b@x>\r\n"
+       b"Subject: hi\r\n"
+       b"\r\n"
+       b"Bcc: this line is body text, not a header\r\n")
+
+
+def test_a_folded_bcc_is_removed_with_its_continuation_lines():
+    """A long Bcc list folds onto a second line. Removing only the first line
+    leaves the rest of the blind recipients sitting in the message as a
+    malformed continuation of whatever header came before."""
+    out = strip_headers(RAW, ("Bcc",))
+    assert b"dean@x.edu" not in out.split(b"\r\n\r\n")[0]
+    assert b"provost@x.edu" not in out
+
+
+def test_stripping_touches_no_other_byte():
+    out = strip_headers(RAW, ("Bcc",))
+    expected = RAW.replace(b"Bcc: dean@x.edu,\r\n provost@x.edu\r\n", b"")
+    assert out == expected
+    assert b"References:\r\n <a@x> <b@x>" in out, "folding must survive untouched"
+
+
+def test_only_the_named_field_goes_not_fields_that_contain_its_name():
+    out = strip_headers(RAW, ("Bcc",))
+    assert b"X-Bcc-Note: keep me" in out
+
+
+def test_the_body_is_never_read_as_headers():
+    """A body line that happens to start with `Bcc:` is text the user wrote."""
+    out = strip_headers(RAW, ("Bcc",))
+    assert out.endswith(b"\r\nBcc: this line is body text, not a header\r\n")
+
+
+def test_header_names_match_case_insensitively():
+    assert b"dean" not in strip_headers(RAW.replace(b"Bcc:", b"BCC:", 1), ("Bcc",)).split(
+        b"\r\n\r\n")[0]
+
+
+def test_smtp_transmits_the_approved_bytes_minus_bcc_and_nothing_else(configured, server):
+    """Delivery cannot be byte-identical to approval -- Bcc has to go -- so
+    the claim is exactly that and no more: the approved bytes, minus the Bcc
+    lines."""
+    msg = a_message(bcc=[Mailbox("dean@uni.edu")])
+    approved = msg.as_bytes()
+    fake = server()
+    configured(fake.port).send(msg, raw=approved)
+    fake.join(timeout=5)
+    assert fake.payload.rstrip(b"\r\n") == strip_headers(approved, ("Bcc",)).rstrip(b"\r\n")

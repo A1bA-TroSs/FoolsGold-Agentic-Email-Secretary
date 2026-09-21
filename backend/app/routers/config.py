@@ -10,10 +10,13 @@ from ..llm.copilot_provider import CopilotProvider
 from ..llm import registry
 from ..llm.registry import get_provider, reset_cache
 from ..sources.registry import all_status, get_source
-from ..transports.registry import all_status as all_transport_status
+from ..transports.registry import all_status as all_transport_status, get_transport
 from ..llm.base import ProviderUnavailable
 
 router = APIRouter(prefix="/api", tags=["config"])
+
+# What `db.all_settings()` returns in place of a saved secret.
+REDACTED = "********"
 
 
 # --------------------------------------------------------------------------
@@ -35,6 +38,13 @@ def patch_settings(body: SettingsPatch) -> dict:
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown settings: {', '.join(unknown)}")
     for key, value in body.values.items():
+        # `all_settings()` hands secrets to the UI as a mask, so a form that
+        # round-trips its fields would save the mask *as* the password -- and
+        # the next login would fail with the user certain they typed it
+        # correctly. Refusing the mask here closes that for every secret field,
+        # present and future, rather than trusting each form to remember.
+        if key in SECRET_SETTINGS and value == REDACTED:
+            continue
         db.set_setting(key, value)
     reset_cache()  # provider or model may have changed
     return db.all_settings()
@@ -50,6 +60,28 @@ def transports() -> dict:
     seeing the message, and that route does not exist yet.
     """
     return {"current": db.get_setting("mail_transport", "none"), "statuses": all_transport_status()}
+
+
+class TransportTest(BaseModel):
+    name: str | None = None
+
+
+@router.post("/transports/test")
+def test_transport(body: TransportTest | None = None) -> dict:
+    """Prove the sending settings work before the user needs them to.
+
+    Logs in and finds the right mailbox; **sends nothing and writes nothing**.
+    A test that left a stray draft behind, or put a message in someone's inbox,
+    would be the first thing the user had to apologise for. Uses the saved
+    settings, so Settings must save before testing -- which is also what makes
+    the result true of the configuration that will actually be used.
+    """
+    transport = get_transport((body.name if body else None) or None)
+    try:
+        result = transport.check()
+    except Exception as exc:  # noqa: BLE001 - a test button must never 500
+        result = {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+    return {"transport": transport.name, "mode": transport.mode, **result}
 
 
 @router.get("/sources")

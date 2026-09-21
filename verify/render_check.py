@@ -31,6 +31,10 @@ ROOT = Path(__file__).resolve().parent.parent
 SHOTS = ROOT / "verify" / "shots"
 THEMES = ["gold", "dark", "green", "purple"]
 LANGS = ["en", "ko", "zh", "ja"]
+# `--quick` runs one theme x language pair. For iterating on a single check;
+# a green quick run is not a green run, and main() says so in its output.
+if "--quick" in sys.argv:
+    THEMES, LANGS = ["gold"], ["ko"]
 # The production bundle hardcodes `http://127.0.0.1:8765` as its API base
 # (frontend/src/lib/api.js), so the stub has to answer on THAT port. Serving on
 # any other port produced a page stuck on the connect screen -- where checks 3
@@ -193,6 +197,175 @@ def open_put_away(page) -> None:
         page.wait_for_timeout(250)
 
 
+
+COMPOSE_JS = """() => {
+  const el = (q) => document.querySelector(q);
+  const dlg = el('.compose');
+  if (!dlg) return { open: false };
+  const r = dlg.getBoundingClientRect();
+  const foot = [...document.querySelectorAll('.compose-foot .btn')]
+    .map(b => ({ text: b.textContent.trim(), primary: b.classList.contains('primary'),
+                 w: b.getBoundingClientRect().width }));
+  return {
+    open: true,
+    w: r.width, h: r.height,
+    offscreen: r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight,
+    // Anything the user could type into on the screen they are approving.
+    editable: document.querySelectorAll(
+      '.compose-review input, .compose-review textarea, '
+      + '.compose-review [contenteditable="true"]').length,
+    fields: [...document.querySelectorAll('.compose-field > span')].map(e => e.textContent.trim()),
+    review: el('.compose-preview') ? el('.compose-preview').textContent : '',
+    headers: [...document.querySelectorAll('.compose-review dd')].map(e => e.textContent.trim()),
+    field: Object.fromEntries([...document.querySelectorAll('.compose-review dd[data-field]')]
+      .map(e => [e.dataset.field, e.textContent.trim()])),
+    handoff: !!el('.compose-note.handoff'),
+    // An undefined custom property resolves to nothing, so a dialog can end up
+    // with no background at all. Against a pale scrim that is invisible; the
+    // fix is to assert the pixel, not the declaration.
+    bg: getComputedStyle(dlg).backgroundColor,
+    done: el('.compose-done-line') ? el('.compose-done-line').textContent.trim() : '',
+    foot,
+  };
+}"""
+
+TYPED = "Registering now, thank you."
+
+
+def compose_check(page, tag, shots):
+    """Write a reply, approve it, send it -- and assert the three claims the
+    design rests on.
+
+    1. The review screen shows the message the SERVER built, headers included,
+       not a replay of the form. That is the only thing that makes approval
+       mean anything.
+    2. The review screen has nothing to type into. Editing and approving are
+       separate acts; a screen that does both is one where a half-finished
+       message goes out.
+    3. The button names what will actually happen. A transport that only files
+       a draft must not offer a button marked "Send" -- the user finds out from
+       the recipient who never got it.
+    """
+    bad = []
+    rows = page.query_selector_all(".mail-item")
+    if not rows:
+        return ["no mail row to reply to"]
+    rows[0].click()
+    page.wait_for_timeout(350)
+
+    actions = page.evaluate(
+        "() => [...document.querySelectorAll('.detail-actions .btn')]"
+        ".map(b => ({ t: b.textContent.trim(), w: b.getBoundingClientRect().width,"
+        "             h: b.getBoundingClientRect().height }))")
+    if len(actions) < 3:
+        return [f"{tag}: {len(actions)} reply controls on an open message"]
+    if any(a["w"] < 40 or a["h"] < 18 for a in actions):
+        bad.append(f"{tag}: a reply control collapsed -- {actions}")
+    if len({a["t"] for a in actions}) < 3:
+        bad.append(f"{tag}: reply / reply-all / forward share a label {actions}")
+
+    page.click(".detail-actions .btn")
+    page.wait_for_timeout(350)
+    state = page.evaluate(COMPOSE_JS)
+    if not state["open"]:
+        return bad + [f"{tag}: reply did not open a compose window"]
+    page.fill(".compose-body", TYPED)
+    page.screenshot(path=str(shots / f"{tag}-compose.png"))
+
+    page.click(".compose-foot .btn.primary")
+    page.wait_for_timeout(450)
+    review = page.evaluate(COMPOSE_JS)
+    if not review["review"]:
+        bad.append(f"{tag}: the review screen showed no message")
+    else:
+        if TYPED not in review["review"]:
+            bad.append(f"{tag}: the review omits what was typed")
+        if ">" not in review["review"]:
+            bad.append(f"{tag}: the review omits the quoted original")
+    if review["editable"]:
+        bad.append(f"{tag}: {review['editable']} editable fields on the approval screen")
+    # Asked of the To line by name. A reply whose recipient the user did not
+    # type still has one -- the sender of the original -- and it is the server
+    # that works that out. Showing the empty form field here instead would be
+    # invisible to any check that asks "is there an address somewhere".
+    field = review.get("field") or {}
+    if "@" not in (field.get("to") or ""):
+        bad.append(f"{tag}: the To line on the approval screen is {field.get('to')!r} "
+                   "-- the derived recipient is not being shown")
+    if "@" not in (field.get("from") or ""):
+        bad.append(f"{tag}: no From address on the approval screen")
+    if "Re:" not in (field.get("subject") or ""):
+        bad.append(f"{tag}: the reply subject is {field.get('subject')!r}")
+    if review["offscreen"]:
+        bad.append(f"{tag}: the compose window is partly off screen")
+    bg = review.get("bg") or ""
+    alpha = 1.0
+    if bg.startswith("rgba"):
+        try:
+            alpha = float(bg.rsplit(",", 1)[1].strip(" )"))
+        except ValueError:
+            alpha = 1.0
+    if alpha < 0.99:
+        bad.append(f"{tag}: the compose window background is {bg} -- the list "
+                   "behind it shows through")
+    page.screenshot(path=str(shots / f"{tag}-review.png"))
+
+    labels = [b["text"] for b in review["foot"]]
+    primary = next((b for b in review["foot"] if b["primary"]), None)
+    if primary is None:
+        bad.append(f"{tag}: no confirm button on the approval screen")
+    elif primary["w"] < 40:
+        bad.append(f"{tag}: the confirm button collapsed to {primary['w']}px")
+
+    page.click(".compose-foot .btn.primary")
+    page.wait_for_timeout(450)
+    done = page.evaluate(COMPOSE_JS)
+    if not done["done"]:
+        bad.append(f"{tag}: sending reported nothing back")
+    page.screenshot(path=str(shots / f"{tag}-sent.png"))
+    page.click(".compose-foot .btn.primary")
+    page.wait_for_timeout(250)
+
+    # Now the other transport mode, on the same page. The words on the button
+    # are the only warning the user gets before clicking it.
+    page.request.get(f"http://127.0.0.1:{PORT}/__set?transport=hands_off")
+    page.click(".detail-actions .btn")
+    page.wait_for_timeout(300)
+    page.fill(".compose-body", TYPED)
+    page.click(".compose-foot .btn.primary")
+    page.wait_for_timeout(450)
+    handoff = page.evaluate(COMPOSE_JS)
+    hand_labels = [b["text"] for b in handoff["foot"] if b["primary"]]
+    if not handoff["handoff"]:
+        bad.append(f"{tag}: a hands-off transport gave no warning before the button")
+    if hand_labels and labels and hand_labels[0] in labels:
+        bad.append(f"{tag}: 'save to drafts' and 'send' share the label {hand_labels[0]!r}")
+    page.screenshot(path=str(shots / f"{tag}-handoff.png"))
+    page.request.get(f"http://127.0.0.1:{PORT}/__set?transport=delivers")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(200)
+    page.click("button[data-view='priority']")
+    page.wait_for_timeout(300)
+    return bad
+
+
+def undefined_custom_properties() -> list[str]:
+    """Every `var(--x)` in the stylesheet must have a `--x:` somewhere.
+
+    An undefined custom property is not an error anywhere in the toolchain: the
+    build succeeds, the rule is simply dropped. `background: var(--panel)` in a
+    stylesheet whose variable is called `--surface` produced a modal with no
+    background, which was invisible until the scrim behind it was darkened.
+    Cheap to check, and it catches the whole class rather than the one case.
+    """
+    css = (ROOT / "frontend" / "src" / "styles.css").read_text()
+    defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", css))
+    used = set(re.findall(r"var\((--[a-z0-9-]+)", css))
+    # A var() with a fallback still renders, so only bare ones matter.
+    bare = {m for m in re.findall(r"var\((--[a-z0-9-]+)\s*\)", css)}
+    return sorted((used & bare) - defined)
+
+
 def main() -> int:
     SHOTS.mkdir(parents=True, exist_ok=True)
     result = Result()
@@ -205,6 +378,7 @@ def main() -> int:
             browser = pw.chromium.launch()
             overflow_bad, wrap_bad, raw_bad, untranslated, reached, themed = [], [], [], [], [], []
             off_scale, stagger_bad, done_bad, irr_bad, set_bad = [], [], [], [], []
+            compose_bad = []
             grounds: dict[str, set] = {}
             badge_seen, why_seen, contrast_bad = 0, 0, []
             badge_covers: list[str] = []
@@ -516,6 +690,8 @@ def main() -> int:
                             untranslated.append(f"{tag}: English string in a Korean UI")
                     page.screenshot(path=str(SHOTS / f"{tag}.png"), full_page=False)
 
+                    compose_bad += compose_check(page, tag, SHOTS)
+
                     # The completed box. Muting had a drawer you could open and
                     # reverse; completing had a six-second toast. This asserts
                     # the drawer exists, is readable, and offers the way back --
@@ -649,6 +825,17 @@ def main() -> int:
                          "\n".join(set_bad[:4]) or
                          f"{total} combinations: tabs narrow the screen, and a term from "
                          "another group still finds its section")
+            result.check(not compose_bad,
+                         "20. a reply can be written, approved and sent -- and the "
+                         "approval screen cannot be typed into",
+                         "\n".join(compose_bad))
+
+            undefined = undefined_custom_properties()
+            result.check(not undefined,
+                         "21. every custom property the stylesheet uses is defined",
+                         ", ".join(undefined) or
+                         "an undefined one is dropped silently, leaving no background at all")
+
             result.check(not ai_bad, "19. the AI failure is in the reader's language",
                          "\n".join(ai_bad))
             result.check(not copies_bad, "18. a collapsed row says how many it stands for",

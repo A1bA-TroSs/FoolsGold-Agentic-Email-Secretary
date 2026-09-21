@@ -40,6 +40,9 @@ DEFAULT_SETTINGS = {
     # Your own address. Graph fills this in at sign-in; with Apple Mail you type
     # it, and it drives the strongest structural signal there is (To: you vs Cc:).
     "user_address": "",
+    # Optional. Goes in the From display name of anything you send; an empty
+    # one is fine and common.
+    "user_name": "",
     # No provider is preselected. The app must never reach for a credential the
     # user did not choose, and until they choose one it ranks mail on
     # structural signals -- which works, and says so.
@@ -79,6 +82,8 @@ DEFAULT_SETTINGS = {
     # because every provider that offers both expects the same ones.
     "imap_host": "",
     "imap_port": "993",
+    # ssl (implicit TLS, 993) | starttls (143) | plain (local test servers).
+    "imap_security": "ssl",
     # auto | skip. "auto" looks for the server's own copy first and uploads one
     # only if there is none -- Gmail and Exchange file it themselves, and
     # appending on top is how a Sent folder ends up with two of everything.
