@@ -43,7 +43,8 @@ class FakeIMAP(threading.Thread):
         self.port: int = self._sock.getsockname()[1]
         self.ready = threading.Event()
         self.logins: list[tuple[str, str]] = []
-        self.appended: list[dict] = []          # {mailbox, flags, message}
+        self.appended: list[dict] = []
+        self.selected: list[str] = []          # {mailbox, flags, message}
         self.commands: list[str] = []
         self._stop = False
 
@@ -117,6 +118,12 @@ class FakeIMAP(threading.Thread):
                     say(f'* LIST ({flags}) "/" "{name}"')
                 say(f"{tag} OK done")
             elif verb in ("SELECT", "EXAMINE"):
+                # As strict as a real server: a name with a space must be
+                # quoted, or it is two arguments and the command is malformed.
+                if not re.match(r'^("[^"]*"|\S+)$', rest.strip()):
+                    say(f"{tag} BAD malformed {verb}")
+                    continue
+                self.selected.append(rest.strip().strip('"'))
                 say("* 0 EXISTS")
                 say(f"{tag} OK [READ-WRITE] selected")
             elif verb == "UID":

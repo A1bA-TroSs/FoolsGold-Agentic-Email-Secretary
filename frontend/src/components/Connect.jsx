@@ -1,17 +1,31 @@
 import { useState } from 'react';
-import { api } from '../lib/api.js';
+import { api, canRelaunch, openFullDiskAccess, relaunchApp } from '../lib/api.js';
+import { LANGUAGES, useT } from '../lib/i18n.js';
 import Login from './Login.jsx';
 
 /* The screen shown before any mail is available. Which of the two sources is
    selected decides what "getting connected" even means:
      - Apple Mail: nothing to sign into. Grant a macOS permission, tell us your
        address, done.
-     - Outlook:    a Microsoft app registration and an OAuth round trip. */
-export default function Connect({ source, settings, onSettings, onReady, onOpenSettings }) {
+     - Outlook:    a Microsoft app registration and an OAuth round trip.
+
+   This is the first screen a new user ever sees, so three things it used to
+   get wrong are now rules:
+   * It speaks the user's language, and lets them change it right here --
+     Settings is not reachable until setup is done.
+   * It speaks to a user, not a developer. The macOS permission is explained
+     as what to click, with buttons that open the pane and restart the app;
+     "the app you launched from -- Terminal if you ran npm start" is shown only
+     to someone who is in fact running from a terminal.
+   * It scrolls. The card is taller than a laptop window once a problem is
+     shown, and the fix for the problem was the part cut off. */
+export default function Connect({ source, settings, onSettings, onReady, onOpenSettings, lang, onLanguage }) {
+  const t = useT();
   const [address, setAddress] = useState(settings?.user_address || '');
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
+  const [stillBlocked, setStillBlocked] = useState(false);
 
   async function switchSource(name) {
     onSettings(await api.patchSettings({ mail_source: name }));
@@ -31,19 +45,33 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
     }
   }
 
+  /* Re-reads the source and lets App re-render this screen from it. The old
+     version copied the source's detail into an error line, so the same
+     paragraph appeared twice -- once grey, once red. */
   async function recheck() {
     setChecking(true);
     setError('');
+    setStillBlocked(false);
     try {
       const health = await api.health();
       if (health.source?.ready) onReady();
-      else setError(health.source?.detail || 'Still not ready.');
+      else { setStillBlocked(true); onReady(); }
     } catch (e) {
       setError(e.message);
     } finally {
       setChecking(false);
     }
   }
+
+  const languages = (
+    <div className="setup-langs" role="group" aria-label={t('language')}>
+      {LANGUAGES.map((l) => (
+        <button key={l.id} type="button"
+                className={`chip sm ${l.id === lang ? 'active' : ''}`}
+                onClick={() => onLanguage(l.id)}>{l.native}</button>
+      ))}
+    </div>
+  );
 
   const picker = (
     <div style={{ display: 'flex', gap: 6, justifyContent: 'center', marginBottom: 18 }}>
@@ -56,25 +84,23 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
 
   // Outlook, already configured, just needs the OAuth round trip.
   if (source.name === 'graph' && source.needs_auth) {
-    return <Login configured onSignedIn={onReady} picker={picker} />;
+    return <Login configured onSignedIn={onReady} picker={picker} languages={languages} />;
   }
 
   if (source.name === 'graph') {
     return (
       <div className="centered">
         <div className="card">
-          <img src="./logo.png" alt="Fools Gold" />
-          <h2>Connect Outlook</h2>
+          {languages}
+          <img className="brand-mark" src="./logo.png" alt="FoolsGold" />
+          <h2>{t('setupOutlookTitle')}</h2>
           {picker}
-          <p className="sub">
-            Outlook needs a Microsoft app registration first &mdash; that&rsquo;s an Entra
-            client ID you create once under your own account. If your university blocks
-            that page, switch to <strong>Apple Mail</strong> above; it needs no registration
-            at all.
-          </p>
-          <p className="sub" style={{ color: 'var(--accent-strong)' }}>{source.detail}</p>
+          <p className="sub">{t('setupOutlookBody')}</p>
+          {source.detail && (
+            <p className="sub" style={{ color: 'var(--accent-strong)' }}>{source.detail}</p>
+          )}
           <button className="btn primary" style={{ width: '100%' }} onClick={onOpenSettings}>
-            Open Settings
+            {t('setupOpenSettings')}
           </button>
         </div>
       </div>
@@ -82,31 +108,46 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
   }
 
   // Apple Mail.
+  const needsAccess = !source.ready && source.detail_key === 'fdaNeeded';
+  const fromTerminal = source.detail_vars?.launcher === 'terminal';
+  const otherProblem = !source.ready && !needsAccess && (source.detail_key || source.detail);
+
   return (
     <div className="centered">
       <div className="card" style={{ maxWidth: 440 }}>
-        <img src="./logo.png" alt="Fools Gold" />
-        <h2>Read from Apple Mail</h2>
+        {languages}
+        <img className="brand-mark" src="./logo.png" alt="FoolsGold" />
+        <h2>{t('setupAppleTitle')}</h2>
         {picker}
-        <p className="sub">
-          No sign-in, no app registration. Apple Mail has already downloaded your
-          messages &mdash; Fools Gold reads them straight off this Mac, and nothing
-          leaves it.
-        </p>
+        <p className="sub">{t('setupAppleBody')}</p>
 
-        <ol style={{ textAlign: 'left', fontSize: 12.5, color: 'var(--muted)',
-                     lineHeight: 1.65, paddingLeft: 18, margin: '0 0 18px' }}>
-          <li>Add your Outlook account to <strong>Apple Mail</strong> and let it finish
-              downloading. macOS handles the Microsoft login for you.</li>
-          <li>Give Fools Gold <strong>Full Disk Access</strong> in System Settings →
-              Privacy &amp; Security. macOS protects <code>~/Library/Mail</code>, so this is
-              required. Restart the app afterwards.</li>
-          <li>Type your own address below &mdash; it&rsquo;s how we tell mail addressed
-              <em> to</em> you from mail you&rsquo;re merely copied on.</li>
+        <ol className="setup-steps">
+          <li>{t('setupStepMail')}</li>
+          <li>{t('setupStepAccess')}</li>
+          <li>{t('setupStepAddress')}</li>
         </ol>
 
+        {needsAccess && (
+          <div className="setup-callout" role="status">
+            <b>{t('fdaTitle')}</b>
+            <p>{fromTerminal ? t('fdaBodyTerminal') : t('fdaBody')}</p>
+            {stillBlocked && <p className="setup-still">{t('fdaStillBlocked')}</p>}
+            {canRelaunch() && (
+              <div className="setup-actions">
+                <button className="btn" onClick={openFullDiskAccess}>{t('fdaOpenSettings')}</button>
+                <button className="btn primary" onClick={relaunchApp}>{t('fdaRestart')}</button>
+              </div>
+            )}
+          </div>
+        )}
+        {otherProblem && (
+          <div className="setup-callout" role="status">
+            <p>{source.detail_key ? t(source.detail_key, source.detail_vars || {}) : source.detail}</p>
+          </div>
+        )}
+
         <div className="field">
-          <label htmlFor="addr">Your email address</label>
+          <label htmlFor="addr">{t('setupAddressLabel')}</label>
           <input id="addr" className="input" type="email" placeholder="you@outlook.com"
                  value={address} onChange={(e) => setAddress(e.target.value)}
                  onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
@@ -115,17 +156,14 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn primary" style={{ flex: 1 }}
                   onClick={saveAndCheck} disabled={saving || !address.trim()}>
-            {saving ? <><span className="spin" /> Saving…</> : 'Save and continue'}
+            {saving ? <><span className="spin" /> {t('setupSaving')}</> : t('setupSave')}
           </button>
           <button className="btn" onClick={recheck} disabled={checking}>
-            {checking ? <span className="spin" /> : 'Re-check'}
+            {checking ? <span className="spin" /> : t('setupRecheck')}
           </button>
         </div>
 
-        {source.detail && !source.ready && (
-          <p className="sub" style={{ marginTop: 14, marginBottom: 0 }}>{source.detail}</p>
-        )}
-        {error && <p className="sub" style={{ marginTop: 10, marginBottom: 0, color: '#B4483C' }}>{error}</p>}
+        {error && <p className="sub setup-error">{error}</p>}
       </div>
     </div>
   );

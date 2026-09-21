@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 from .. import db
+from .auto_transport import AutoTransport
 from .base import MailTransport, NullTransport
 from .drafts_transport import ImapDraftTransport
 from .smtp_transport import SmtpTransport
 
 TRANSPORTS: dict[str, type[MailTransport]] = {
     "none": NullTransport,
+    "auto": AutoTransport,
     "smtp": SmtpTransport,
     "imap_draft": ImapDraftTransport,
 }

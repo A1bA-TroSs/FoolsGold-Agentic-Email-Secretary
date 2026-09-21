@@ -12,6 +12,20 @@ from .config import DATA_DIR, DB_PATH, DEFAULT_SETTINGS, SECRET_SETTINGS
 from .crypto import decrypt, encrypt
 
 SCHEMA = """
+-- Permission to send mail to a cloud AI provider (Apple guideline 5.1.2(i),
+-- Korea PIPA art. 17/28-8). A ledger, not a flag: each grant and each
+-- withdrawal is a row, so "when did I agree, to what, and to whom" has an
+-- answer. A grant counts only for the recipient and disclosure version it was
+-- given for -- see app/consent.py.
+CREATE TABLE IF NOT EXISTS ai_consent (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider      TEXT NOT NULL,
+    recipient     TEXT NOT NULL,
+    version       INTEGER NOT NULL,
+    granted_at    TEXT NOT NULL,
+    withdrawn_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS emails (
     id                TEXT PRIMARY KEY,
     conversation_id   TEXT,
