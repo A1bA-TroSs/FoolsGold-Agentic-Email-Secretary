@@ -16,8 +16,8 @@
     "dist:mas": "npm run build:ui && npm run build:backend && electron-builder --mac mas --arm64"
   },
   "devDependencies": {
-    "electron": "^32.0.0",
-    "electron-builder": "^25.0.0"
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "dev.foolsgold.app",

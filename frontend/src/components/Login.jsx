@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { api, openExternal } from '../lib/api.js';
+import { useT } from '../lib/i18n.js';
 
 /* Two-step sign-in, matching how Outlook actually works:
    type the address -> we hand Microsoft the login_hint -> the real Microsoft
    consent page opens in the system browser -> it redirects back to our
    loopback listener. We poll for the result rather than trying to detect it. */
-export default function Login({ onSignedIn, configured, picker = null }) {
+export default function Login({ onSignedIn, configured, picker = null, languages = null }) {
+  const t = useT();
   const [email, setEmail] = useState('');
   const [phase, setPhase] = useState('idle');     // idle | opening | waiting
   const [error, setError] = useState('');
@@ -31,7 +33,7 @@ export default function Login({ onSignedIn, configured, picker = null }) {
       if (Date.now() - started > 5 * 60 * 1000) {
         clearInterval(timer);
         setPhase('idle');
-        setError('Sign-in timed out. Try again.');
+        setError(t('loginTimedOut'));
         return;
       }
       try {
@@ -47,23 +49,19 @@ export default function Login({ onSignedIn, configured, picker = null }) {
   return (
     <div className="centered">
       <div className="card">
-        <img src="./logo.png" alt="Fools Gold" />
-        <h2>Fools Gold</h2>
+        {languages}
+        <img className="brand-mark" src="./logo.png" alt="FoolsGold" />
+        <h2>FoolsGold</h2>
         {picker}
-        <p className="sub">
-          Connect your Outlook mailbox. Fools Gold reads your mail and never writes to it &mdash;
-          everything stays on this Mac.
-        </p>
+        <p className="sub">{t('loginBody')}</p>
 
         {!configured && (
-          <p className="sub" style={{ color: 'var(--accent-strong)' }}>
-            First set your Microsoft client ID in Settings &mdash; see docs/ENTRA_SETUP.md.
-          </p>
+          <p className="sub" style={{ color: 'var(--accent-strong)' }}>{t('loginNeedsClientId')}</p>
         )}
 
         <form onSubmit={start}>
           <div className="field">
-            <label htmlFor="email">Outlook address</label>
+            <label htmlFor="email">{t('loginAddressLabel')}</label>
             <input
               id="email" className="input" type="email" autoFocus
               placeholder="you@outlook.com" value={email}
@@ -73,18 +71,16 @@ export default function Login({ onSignedIn, configured, picker = null }) {
           </div>
           <button className="btn primary" style={{ width: '100%' }}
                   disabled={!configured || phase !== 'idle' || !email.trim()}>
-            {phase === 'idle' && 'Sign in with Microsoft'}
-            {phase === 'opening' && 'Opening Microsoft…'}
-            {phase === 'waiting' && <><span className="spin" /> &nbsp;Waiting for sign-in…</>}
+            {phase === 'idle' && t('loginButton')}
+            {phase === 'opening' && t('loginOpening')}
+            {phase === 'waiting' && <><span className="spin" /> &nbsp;{t('loginWaiting')}</>}
           </button>
         </form>
 
         {phase === 'waiting' && (
-          <p className="sub" style={{ marginTop: 14, marginBottom: 0 }}>
-            Finish signing in the browser window that just opened, then come back here.
-          </p>
+          <p className="sub" style={{ marginTop: 14, marginBottom: 0 }}>{t('loginFinishInBrowser')}</p>
         )}
-        {error && <p className="sub" style={{ marginTop: 14, marginBottom: 0, color: '#B4483C' }}>{error}</p>}
+        {error && <p className="sub setup-error">{error}</p>}
       </div>
     </div>
   );

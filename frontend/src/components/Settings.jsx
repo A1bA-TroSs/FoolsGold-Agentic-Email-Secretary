@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { LANGUAGES, useT } from '../lib/i18n.js';
+import './Compose.css';
 
 const SOURCE_KEYS = ['user_address', 'applemail_root', 'applemail_inbox_only'];
 const AI_KEYS = ['llm_provider', 'ollama_model', 'ollama_host', 'copilot_model', 'anthropic_api_key',
@@ -73,6 +74,7 @@ function Section({ group, titleKey, hintKey, terms = [], tab, q, t, children }) 
 
 export default function Settings({
   settings, onSettings, theme, onTheme, source, onSourceChange, onSignOut, lang, onLanguage,
+  consent, onReviewConsent, onWithdrawConsent,
 }) {
   const t = useT();
   const [priorities, setPriorities] = useState([]);
@@ -96,6 +98,7 @@ export default function Settings({
   const [query, setQuery] = useState('');
   const [sendCheck, setSendCheck] = useState(null);
   const [checkingSend, setCheckingSend] = useState(false);
+  const [sendAccounts, setSendAccounts] = useState(null);
 
   useEffect(() => {
     api.ranking().then((r) => {
@@ -167,7 +170,17 @@ export default function Settings({
     if (provider === 'ollama' && models === null) loadModels();
   }, [provider, models, loadModels]);
 
-  const transport = value('mail_transport') || 'none';
+  const transport = value('mail_transport') || 'auto';
+  const manualSend = transport === 'imap_draft' || transport === 'smtp';
+
+  /* Automatic sending has nothing to configure, so what Settings shows for it
+     is what it has learned: which addresses it can already send from. */
+  useEffect(() => {
+    if (transport !== 'auto' || sendAccounts !== null) return;
+    api.transports()
+      .then((r) => setSendAccounts(r?.statuses?.auto?.accounts || []))
+      .catch(() => setSendAccounts([]));
+  }, [transport, sendAccounts]);
 
   /* Save, THEN test. The test runs against saved settings on purpose -- a
      result about the half-typed form would be a result about a configuration
@@ -289,17 +302,43 @@ export default function Settings({
             <label>{t('sendMethod')}</label>
             <select className="input" data-key="mail_transport" value={transport}
                     onChange={(e) => { edit('mail_transport', e.target.value); setSendCheck(null); }}>
+              <option value="auto">{t('sendAuto')}</option>
               <option value="none">{t('sendNone')}</option>
               <option value="imap_draft">{t('sendDrafts')}</option>
               <option value="smtp">{t('sendSmtp')}</option>
             </select>
             <p className="hint" style={{ marginTop: 4 }}>
-              {transport === 'imap_draft' ? t('sendDraftsHelp')
+              {transport === 'auto' ? t('sendAutoHelp')
+                : transport === 'imap_draft' ? t('sendDraftsHelp')
                 : transport === 'smtp' ? t('sendSmtpHelp') : t('sendNoneHelp')}
             </p>
           </div>
 
-          {transport !== 'none' && (
+          {transport === 'auto' && sendAccounts && sendAccounts.length > 0 && (
+            <ul className="send-accounts" data-accounts={sendAccounts.length}>
+              {sendAccounts.map((a) => (
+                <li key={a.address}>
+                  <span className="addr">{a.address}</span>
+                  <span className="state">
+                    {a.oauth_only ? t('sendAccountOauth')
+                      : a.ready ? (a.last_mode === 'drafts' ? t('sendAccountDrafts') : t('sendAccountReady'))
+                      : t('sendAccountAsk')}
+                  </span>
+                  {a.ready && (
+                    <button className="btn ghost" data-action="forget-password"
+                            onClick={async () => {
+                              try {
+                                const r = await api.forgetCredentials(a.address);
+                                setSendAccounts(r.accounts || []);
+                              } catch { /* list stays as it was */ }
+                            }}>{t('sendForget')}</button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {manualSend && (
             <>
               <div className="field">
                 <label>{t('sendFrom')}</label>
@@ -401,7 +440,7 @@ export default function Settings({
             <button className="btn primary" data-action="save-send"
                     onClick={async () => { await save(SEND_KEYS); setSendCheck(null); }}
                     disabled={!dirty(SEND_KEYS)}>{t('save')}</button>
-            {transport !== 'none' && (
+            {manualSend && (
               <button className="btn" data-action="test-send" onClick={checkSending} disabled={checkingSend}>
                 {checkingSend ? t('testing') : t('sendTest')}
               </button>
@@ -495,6 +534,24 @@ export default function Settings({
             )}
             {provider === 'none' && (
               <p className="hint" style={{ marginTop: 6 }}>{t('providerNoneHelp')}</p>
+            )}
+            {/* Where the cloud-AI permission stands, for the provider that is
+                saved -- not the one mid-edit in the box above, which has not
+                been asked about yet. */}
+            {consent?.required && consent.provider === (settings?.llm_provider || '') && (
+              <div className={`consent-status ${consent.granted ? 'ok' : ''}`}>
+                <span>
+                  {consent.granted
+                    ? t('consentStatusGranted', {
+                        recipient: consent.recipient,
+                        date: new Date(consent.granted_at).toLocaleDateString(lang || 'en'),
+                      })
+                    : t('consentStatusMissing', { recipient: consent.recipient })}
+                </span>
+                {consent.granted
+                  ? <button className="btn sm" onClick={onWithdrawConsent}>{t('consentWithdraw')}</button>
+                  : <button className="btn sm primary" onClick={onReviewConsent}>{t('consentReview')}</button>}
+              </div>
             )}
           </div>
 

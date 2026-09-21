@@ -39,7 +39,7 @@ from .base import (
     HANDS_OFF, MailTransport, SendResult, TransportError, TransportStatus,
     check_sendable, envelope_recipients,
 )
-from .imap_folders import discover_drafts, open_imap
+from .imap_folders import discover_drafts, open_imap, quoted
 
 TIMEOUT = 30.0
 
@@ -143,7 +143,7 @@ class ImapDraftTransport(MailTransport):
             client = self._imap(cfg)
             folder = discover_drafts(client, cfg["folder"])
             typ, data = client.append(
-                folder, "(\\Draft)", imaplib.Time2Internaldate(time.time()), raw)
+                quoted(folder), "(\\Draft)", imaplib.Time2Internaldate(time.time()), raw)
             if typ != "OK":
                 raise TransportError(f"The server refused the draft: {data}")
         except TransportError:

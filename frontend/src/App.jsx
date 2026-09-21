@@ -8,6 +8,7 @@ import Digest from './components/Digest.jsx';
 import MailDetail from './components/MailDetail.jsx';
 import MailList from './components/MailList.jsx';
 import ConfirmMute from './components/ConfirmMute.jsx';
+import ConsentDialog from './components/ConsentDialog.jsx';
 import MutedBox from './components/MutedBox.jsx';
 import RemovedBox from './components/RemovedBox.jsx';
 import HighlightBox from './components/HighlightBox.jsx';
@@ -144,6 +145,14 @@ export default function App() {
     if (PUT_AWAY_IDS.includes(view)) setPutAwayOpen(true);
   }, [view]);
   const [settings, setSettings] = useState(null);
+  /* Cloud-AI permission for the provider saved in Settings. The backend refuses
+     to send without it; this is how the user is asked. A "no" is remembered for
+     the session per (provider, recipient, disclosure version), so the dialog
+     does not nag -- Settings keeps a way back to it. */
+  const [consent, setConsent] = useState(null);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const [consentBusy, setConsentBusy] = useState(false);
+  const declinedConsent = useRef(new Set());
   const [theme, setTheme] = useState('gold');
   const [lang, setLang] = useState('en');
   const t = useMemo(() => translator(lang), [lang]);
@@ -196,6 +205,49 @@ export default function App() {
 
   const inSettings = view === 'settings';
 
+  const consentKey = (c) => `${c.provider}|${c.recipient}|${c.version}`;
+
+  const checkConsent = useCallback(async () => {
+    try {
+      const c = await api.aiConsent();
+      setConsent(c);
+      if (c.required && !c.granted && !declinedConsent.current.has(consentKey(c))) {
+        setConsentOpen(true);
+      }
+    } catch { /* backend without the endpoint, or offline -- the gate still holds server-side */ }
+  }, []);
+
+  // Asked when the saved provider (or the server it points at) changes, not
+  // while it is being typed -- Settings saves, then this runs.
+  useEffect(() => {
+    if (!booting && settings) checkConsent();
+  }, [booting, settings?.llm_provider, settings?.openai_base_url, checkConsent]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function allowConsent() {
+    if (!consent) return;
+    setConsentBusy(true);
+    try {
+      setConsent(await api.grantConsent(consent.provider));
+      setConsentOpen(false);
+      sync();            // rank with the AI the user just allowed, now
+    } catch (e) {
+      setBanner(e.message);
+    } finally {
+      setConsentBusy(false);
+    }
+  }
+
+  const declineConsent = useCallback(() => {
+    setConsent((c) => { if (c) declinedConsent.current.add(consentKey(c)); return c; });
+    setConsentOpen(false);
+  }, []);
+
+  async function withdrawConsent() {
+    if (!consent) return;
+    setConsent(await api.withdrawConsent(consent.provider));
+    declinedConsent.current.add(consentKey(consent));
+  }
+
   // ---- boot ---------------------------------------------------------------
   useEffect(() => {
     (async () => {
@@ -205,7 +257,19 @@ export default function App() {
         setSource(health.source || { name: 'applemail', ready: false });
         setSettings(cfg);
         applyTheme(cfg.theme || 'gold');
-        setLang(cfg.ui_language || 'en');
+        /* A fresh install speaks the Mac's language. Only on a genuinely new
+           setup (no address saved, never chosen by hand), so nobody who picked
+           English on purpose is switched. */
+        let startLang = cfg.ui_language || 'en';
+        try {
+          const sys = (navigator.language || 'en').slice(0, 2);
+          if (!cfg.user_address && startLang === 'en' && ['ko', 'zh', 'ja'].includes(sys)
+              && !localStorage.getItem('foolsgold.langChosen')) {
+            startLang = sys;
+            api.patchSettings({ ui_language: sys }).then(setSettings).catch(() => {});
+          }
+        } catch { /* storage unavailable: keep the saved language */ }
+        setLang(startLang);
         setBootDetail(health.source?.ready ? 'Ranking what arrived' : 'Finding your mailbox');
       } catch (e) {
         setBanner(translator(lang)('backendUnreachable', { detail: e.message }));
@@ -229,6 +293,7 @@ export default function App() {
   }
 
   async function chooseLanguage(next) {
+    try { localStorage.setItem('foolsgold.langChosen', '1'); } catch { /* private mode */ }
     setLang(next);
     document.documentElement.setAttribute('lang', next);
     setSettings(await api.patchSettings({ ui_language: next }));
@@ -569,6 +634,12 @@ export default function App() {
 
     function onKey(e) {
       const tag = document.activeElement?.tagName;
+      /* A dialog owns the keyboard. Without this, Enter on a dialog's focused
+         button opened a mail row behind it instead of pressing the button --
+         found by render check 22, where Enter on "Don't allow" left the
+         consent dialog open (and ConfirmMute had the same hole). */
+      if (document.querySelector('.modal-scrim')) return;
+      if (tag === 'BUTTON' && (e.key === 'Enter' || e.key === ' ')) return;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
         if (e.key === 'Escape') document.activeElement.blur();
         return;
@@ -809,6 +880,7 @@ export default function App() {
           <div className="pane-detail">
             {banner && <div className="banner"><span className="dot" />{banner}</div>}
             <Connect source={source} settings={settings} onSettings={setSettings}
+                     lang={lang} onLanguage={chooseLanguage}
                      onReady={refreshSource} onOpenSettings={() => setView('settings')} />
           </div>
         </div>
@@ -843,6 +915,8 @@ export default function App() {
           <div className="pane-detail view-enter">
             <div className="settings-wrap">
               <Settings settings={settings} onSettings={setSettings} theme={theme} onTheme={chooseTheme}
+                        consent={consent} onReviewConsent={() => setConsentOpen(true)}
+                        onWithdrawConsent={withdrawConsent}
                         source={source} onSourceChange={refreshSource} onSignOut={signOut}
                     lang={lang} onLanguage={chooseLanguage} />
             </div>
@@ -1020,6 +1094,15 @@ export default function App() {
         )}
       </div>
 
+      <ConsentDialog
+        open={consentOpen}
+        status={consent}
+        lang={lang}
+        busy={consentBusy}
+        onAllow={allowConsent}
+        onDecline={declineConsent}
+      />
+
       <ConfirmMute
         open={!!muteTarget}
         sender={muteTarget?.email?.from_name}
@@ -1047,7 +1130,7 @@ function Titlebar({ title, sub, right }) {
 function Rail({ view, setView, counts, logoOpen, onLogo, t, putAwayOpen, setPutAwayOpen }) {
   return (
     <nav className="rail">
-      <img className={`logo ${logoOpen ? 'open' : ''}`} src="./logo.png"
+      <img className={`logo brand-mark ${logoOpen ? 'open' : ''}`} src="./logo.png"
            alt="Fools Gold — status" title="Status and sync"
            role="button" tabIndex={0}
            onClick={onLogo}

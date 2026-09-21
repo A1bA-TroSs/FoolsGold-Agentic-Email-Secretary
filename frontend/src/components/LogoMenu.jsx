@@ -33,7 +33,7 @@ export default function LogoMenu({ open, onClose, counts, source, ai, lastSync, 
   return (
     <div className="logo-menu" ref={ref} role="dialog" aria-label={t('statusTitle')}>
       <div className="lm-head">
-        <img src="./logo.png" alt="" />
+        <img className="brand-mark" src="./logo.png" alt="" />
         <div>
           <strong>{t('appName')}</strong>
           <span>{version || 'v1.0'}</span>

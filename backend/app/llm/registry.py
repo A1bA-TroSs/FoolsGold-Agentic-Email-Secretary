@@ -16,7 +16,7 @@ Two rules this file exists to enforce:
 """
 from __future__ import annotations
 
-from .. import db
+from .. import consent, db
 from .api_providers import AnthropicProvider, OpenAIProvider
 from .base import LLMProvider, ProviderUnavailable
 from .copilot_provider import CopilotProvider
@@ -80,6 +80,18 @@ def get_provider() -> LLMProvider:
     if setting and not db.get_setting(setting, "").strip():
         raise ProviderUnavailable(
             f"No API key for {name}. Add one in Settings, or turn AI off."
+        )
+
+    # No mail leaves this Mac for a provider the user has not explicitly allowed
+    # to receive it (Apple 5.1.2(i), PIPA). Checked here, the one door every AI
+    # call walks through, so no caller can forget -- and checked before the
+    # cache, so withdrawing permission takes effect on the very next request.
+    if not consent.is_granted(name):
+        info = consent.disclosure(name) or {}
+        raise ProviderUnavailable(
+            f"Waiting for permission to send mail to {info.get('recipient', name)}.",
+            key="aiConsentRequired",
+            vars={"recipient": info.get("recipient", name)},
         )
 
     if _cached and _cached[0] == name and _cached[1] == model:

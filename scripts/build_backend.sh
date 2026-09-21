@@ -28,17 +28,59 @@ test -x "$BIN" || { echo "freeze produced no executable at $BIN"; exit 1; }
 # Smoke test: the frozen server must actually start and answer. A freeze that
 # builds but misses a lazily imported module only fails here -- or in a user's
 # hands. Port 8799 so a running dev backend on 8765 is not disturbed.
-FOOLSGOLD_PORT=8799 FOOLSGOLD_HOME="$(mktemp -d)" "$BIN" >/tmp/foolsgold-freeze.log 2>&1 &
-PID=$!
-for _ in $(seq 1 40); do
-  if curl -fsS http://127.0.0.1:8799/api/health >/dev/null 2>&1; then
-    kill "$PID"; wait "$PID" 2>/dev/null || true
-    echo "frozen backend OK: $BIN"
-    exit 0
+#
+# The wait is generous on purpose. The first launch of a freshly built,
+# unsigned 50 MB onedir is slow on macOS: every .dylib/.so in _internal/ is
+# checked by the system on first load, so "Application startup complete" can
+# land well after 20 s -- which is exactly what the original 40 x 0.5 s loop
+# reported as a failure (2026-09-21, on a binary that was fine). So:
+#   * up to FOOLSGOLD_SMOKE_TIMEOUT seconds (default 120), polling once a second;
+#   * stop at once if the process dies -- a real failure should not wait 2 min;
+#   * run it twice and print both times: the cold number is what a user sees
+#     on first launch, the warm number on every launch after. Electron waits
+#     for the backend too (electron/main.js waitForBackend), so these numbers
+#     are what that timeout has to cover.
+SMOKE_TIMEOUT="${FOOLSGOLD_SMOKE_TIMEOUT:-120}"
+LOG=/tmp/foolsgold-freeze.log
+PID=""
+cleanup() {   # never fails: it runs under `set -e` and from the EXIT trap
+  if [ -n "$PID" ]; then
+    kill "$PID" 2>/dev/null || true
+    wait "$PID" 2>/dev/null || true
   fi
-  sleep 0.5
-done
-kill "$PID" 2>/dev/null || true
-echo "frozen backend did not answer /api/health -- see /tmp/foolsgold-freeze.log"
-tail -20 /tmp/foolsgold-freeze.log
-exit 1
+  PID=""
+}
+trap cleanup EXIT
+
+smoke() {  # $1 = label; prints seconds taken, returns non-zero on failure
+  local label="$1" home start now
+  home="$(mktemp -d)"
+  start=$(date +%s)
+  FOOLSGOLD_PORT=8799 FOOLSGOLD_HOME="$home" "$BIN" >"$LOG" 2>&1 &
+  PID=$!
+  while :; do
+    if curl -fsS --max-time 30 http://127.0.0.1:8799/api/health >/dev/null 2>&1; then
+      now=$(date +%s)
+      echo "frozen backend answered /api/health ($label start: $((now - start))s)"
+      cleanup
+      return 0
+    fi
+    if ! kill -0 "$PID" 2>/dev/null; then
+      echo "frozen backend EXITED before answering ($label start) -- log:"
+      tail -30 "$LOG"
+      PID=""
+      return 1
+    fi
+    now=$(date +%s)
+    if [ $((now - start)) -ge "$SMOKE_TIMEOUT" ]; then
+      echo "frozen backend did not answer /api/health within ${SMOKE_TIMEOUT}s ($label start) -- log:"
+      tail -30 "$LOG"
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+smoke cold
+smoke warm
+echo "frozen backend OK: $BIN"

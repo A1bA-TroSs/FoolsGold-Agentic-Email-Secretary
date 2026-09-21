@@ -247,7 +247,7 @@ def _browser_flow(claim) -> None:
             page.wait_for_timeout(500)
             page.click(".mail-item:has-text('ICAC')")
             page.wait_for_timeout(600)
-            page.click(".detail-actions .btn")                    # 답장
+            page.click(".reply-bar [data-action='reply']")                    # 답장
             page.wait_for_timeout(400)
             page.fill(".compose-body", TYPED)
             page.screenshot(path=str(SHOTS / "e2e-3-compose.png"))

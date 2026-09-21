@@ -14,8 +14,13 @@ async function request(path, options = {}) {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
-    const err = new Error(data?.detail || `Request failed (${res.status})`);
+    // `detail` is a string for most errors; a few (compose send) return an
+    // object the caller needs to act on, so keep it whole on `err.data`.
+    const detail = data?.detail;
+    const message = typeof detail === 'string' ? detail : detail?.message;
+    const err = new Error(message || `Request failed (${res.status})`);
     err.status = res.status;
+    err.data = detail && typeof detail === 'object' ? detail : null;
     throw err;
   }
   return data;
@@ -70,6 +75,12 @@ export const api = {
   // and returned by `draft`.
   draft: (body) => request('/api/compose/draft', { method: 'POST', body: JSON.stringify(body) }),
   sendDraft: (token) => request(`/api/compose/${encodeURIComponent(token)}/send`, { method: 'POST' }),
+  // One-time password for the address a reply is sent from; the backend
+  // checks it against that account's own server before keeping it.
+  saveCredentials: (address, password) =>
+    request('/api/compose/credentials', { method: 'POST', body: JSON.stringify({ address, password }) }),
+  forgetCredentials: (address) =>
+    request(`/api/compose/credentials/${encodeURIComponent(address)}`, { method: 'DELETE' }),
   getDraft: (token) => request(`/api/compose/${encodeURIComponent(token)}`),
 
   transports: () => request('/api/transports'),
@@ -83,6 +94,13 @@ export const api = {
   copilotStatus: () => request('/api/settings/copilot-status'),
   // What Ollama reports it has. Asked for by the Settings screen only.
   ollamaModels: () => request('/api/ollama/models'),
+  // Cloud-AI permission. Granting happens only from the consent dialog.
+  aiConsent: (provider) =>
+    request(`/api/ai/consent${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),
+  grantConsent: (provider) =>
+    request('/api/ai/consent', { method: 'POST', body: JSON.stringify({ provider: provider ?? null }) }),
+  withdrawConsent: (provider) =>
+    request(`/api/ai/consent${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`, { method: 'DELETE' }),
 
   calendarMonth: (year, month, weekStartsOn = 0) =>
     request(`/api/calendar/month?year=${year}&month=${month}&week_starts_on=${weekStartsOn}`),
@@ -125,4 +143,16 @@ export const api = {
 export function openExternal(url) {
   if (window.foolsgold?.openExternal) window.foolsgold.openExternal(url);
   else window.open(url, '_blank', 'noopener');
+}
+
+/* macOS setup helpers. Only the packaged/Electron app can do these; in a plain
+   browser (the render harness, `npm run dev:ui`) the buttons are not shown. */
+export function canRelaunch() {
+  return typeof window !== 'undefined' && !!window.foolsgold?.relaunch;
+}
+export function openFullDiskAccess() {
+  return window.foolsgold?.openFullDiskAccess?.();
+}
+export function relaunchApp() {
+  return window.foolsgold?.relaunch?.();
 }

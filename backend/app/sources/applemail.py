@@ -37,6 +37,7 @@ from urllib.parse import unquote
 import os
 import plistlib
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,11 +49,28 @@ from .base import MailSource, SourceError, SourceStatus
 MAIL_HOME = Path.home() / "Library" / "Mail"
 
 FULL_DISK_ACCESS_HINT = (
-    "macOS is blocking access to ~/Library/Mail. This is Full Disk Access, not a "
-    "missing mailbox. Open System Settings → Privacy & Security → Full Disk Access "
-    "and add the app you launched from — Terminal if you ran `npm start` there — "
-    "then QUIT AND REOPEN it. macOS never applies the change to a running process."
+    "macOS has not given FoolsGold access to your mail yet. Turn FoolsGold on in "
+    "System Settings > Privacy & Security > Full Disk Access, then restart FoolsGold."
 )
+
+
+def _launcher() -> str:
+    """Who macOS holds responsible for reading ~/Library/Mail -- which is who
+    needs Full Disk Access. A packaged build runs this backend frozen, as a child
+    of FoolsGold.app, so the answer is the app. A checkout runs it with Python
+    from the terminal that ran `npm start`, so the answer is that terminal, and
+    only a developer ever sees that case.
+
+    The UI words both; this only names which applies. The old hint told someone
+    who had downloaded the app to "add the app you launched from -- Terminal if
+    you ran `npm start`", which is a sentence written to a developer."""
+    return "app" if getattr(sys, "frozen", False) else "terminal"
+
+
+def _fda_status() -> "SourceStatus":
+    return SourceStatus(ready=False, needs_setup=True, detail=FULL_DISK_ACCESS_HINT,
+                        extra={"detail_key": "fdaNeeded",
+                               "detail_vars": {"launcher": _launcher()}})
 
 # Mailboxes we never want in a priority inbox.
 EXCLUDED_MAILBOXES = {
@@ -741,7 +759,7 @@ class AppleMailSource(MailSource):
         try:
             return self._status()
         except PermissionError:
-            return SourceStatus(ready=False, needs_setup=True, detail=FULL_DISK_ACCESS_HINT)
+            return _fda_status()
         except OSError as exc:
             return SourceStatus(ready=False, needs_setup=True, detail=str(exc))
 
@@ -756,6 +774,7 @@ class AppleMailSource(MailSource):
                     ready=False,
                     needs_setup=True,
                     detail=f"The mail store path in Settings does not exist: {override}",
+                    extra={"detail_key": "mailRootMissing", "detail_vars": {"path": override}},
                 )
             if not MAIL_HOME.exists():
                 return SourceStatus(
@@ -765,11 +784,13 @@ class AppleMailSource(MailSource):
                         "No ~/Library/Mail directory found. Add your account to Apple Mail "
                         "and let it finish downloading, then hit refresh."
                     ),
+                    extra={"detail_key": "mailNotSetUp"},
                 )
             return SourceStatus(
                 ready=False,
                 needs_setup=True,
                 detail="Found ~/Library/Mail but no V<n> message store inside it.",
+                extra={"detail_key": "mailStoreEmpty"},
             )
         # PermissionError and OSError here are handled by status() above.
         next(iter(iter_message_files(root, inbox_only=False)), None)

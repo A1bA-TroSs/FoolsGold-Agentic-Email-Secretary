@@ -68,10 +68,14 @@ DEFAULT_SETTINGS = {
     "deadline_horizon_days": "7",
     "deadline_urgent_days": "2",
     # --- sending ---------------------------------------------------------
-    # Off until the user turns it on. An unrecognised value means "none", not a
-    # guess: reading the wrong mailbox shows you something you can ignore,
-    # sending through the wrong server is not recoverable.
-    "mail_transport": "none",
+    # "auto" works out everything from the address a reply comes from, so a
+    # new user can answer mail without a settings screen. It is a safe default
+    # because nothing leaves without the user approving the exact message, and
+    # the first send from an address stops to ask for its password. The manual
+    # modes remain for accounts discovery gets wrong. An unrecognised value
+    # means "none", not a guess: sending through the wrong server is not
+    # recoverable.
+    "mail_transport": "auto",
     "smtp_host": "",
     "smtp_port": "587",
     # starttls | ssl | plain. There is no automatic downgrade from starttls:

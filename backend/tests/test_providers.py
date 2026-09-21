@@ -16,7 +16,7 @@ import json
 import httpx
 import pytest
 
-from app import db
+from app import consent, db
 from app.llm import registry
 from app.llm.api_providers import AnthropicProvider, OpenAIProvider, scrub
 from app.llm.base import ProviderUnavailable
@@ -102,6 +102,7 @@ def test_a_key_makes_it_configured(store):
     db.set_setting("llm_provider", "anthropic")
     db.set_setting("anthropic_api_key", KEY)
     assert registry.is_configured() is True
+    consent.grant("anthropic")    # a key alone no longer sends mail anywhere
     assert registry.get_provider().name == "anthropic"
 
 
@@ -117,12 +118,14 @@ def test_the_openai_endpoint_is_configurable(store):
     db.set_setting("llm_provider", "openai")
     db.set_setting("openai_api_key", KEY)
     db.set_setting("openai_base_url", "https://openrouter.ai/api/v1/")
+    consent.grant("openai")
     assert registry.get_provider().base_url == "https://openrouter.ai/api/v1"
 
 
 def test_the_endpoint_falls_back_to_openai_when_blank(store):
     db.set_setting("llm_provider", "openai")
     db.set_setting("openai_api_key", KEY)
+    consent.grant("openai")
     assert registry.get_provider().base_url == "https://api.openai.com/v1"
 
 

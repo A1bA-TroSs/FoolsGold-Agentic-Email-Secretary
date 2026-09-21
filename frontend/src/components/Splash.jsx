@@ -53,7 +53,7 @@ export default function Splash({ done, detail }) {
 
       <div className="splash-mark">
         <span className="splash-ring" />
-        <img src="./logo.png" alt="" />
+        <img className="brand-mark" src="./logo.png" alt="" />
       </div>
       <div className="splash-name">{t('appName')}</div>
       <div className="splash-stage">{detail || t(STAGE_KEYS[stage])}</div>

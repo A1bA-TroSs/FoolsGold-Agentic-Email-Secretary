@@ -181,6 +181,22 @@ FIXTURES = {
     "/api/settings/copilot-status": {"signed_in": True, "detail": "auto"},
 }
 
+# Cloud-AI consent. Off by default (the provider is local), so every other
+# check runs exactly as before; `/__set?consent=pending` switches the provider
+# to a cloud one that has not been allowed yet.
+CONSENT = {"state": "off"}
+CONSENT_POSTS: list = []
+
+
+def consent_status():
+    if CONSENT["state"] == "off":
+        return {"provider": SETTINGS.get("llm_provider", "ollama"), "required": False, "granted": True}
+    return {"provider": "anthropic", "version": 1, "recipient": "Anthropic, PBC", "country": "US",
+            "policy_url": "https://www.anthropic.com/legal/privacy", "required": True,
+            "granted": CONSENT["state"] == "granted",
+            "granted_at": "2026-09-21T10:00:00+00:00" if CONSENT["state"] == "granted" else None}
+
+
 SETTINGS = {
     "theme": THEME, "ui_language": LANG, "mail_source": "applemail",
     "user_address": "me@x.com", "llm_provider": "ollama", "copilot_model": "auto",
@@ -302,6 +318,21 @@ class Handler(SimpleHTTPRequestHandler):
                 SETTINGS["theme"] = q["theme"][0]
             if q.get("lang"):
                 SETTINGS["ui_language"] = q["lang"][0]
+            if q.get("setup"):
+                # First-run screen: Apple Mail chosen, macOS still denying
+                # ~/Library/Mail. Exactly the state a user who just downloaded
+                # the DMG sees -- the one that shipped in English, unscrollable,
+                # and addressed to a developer.
+                setup_state = q["setup"][0]
+                FIXTURES["/api/health"]["source"] = (
+                    {"ready": True, "kind": "applemail", "detail": ""} if setup_state == "off" else
+                    {"ready": False, "name": "applemail", "label": "Apple Mail", "needs_setup": True,
+                     "detail": "macOS has not given FoolsGold access to your mail yet.",
+                     "detail_key": "fdaNeeded", "detail_vars": {"launcher": "app"}})
+            if q.get("consent"):
+                CONSENT["state"] = q["consent"][0]
+                CONSENT_POSTS.clear()
+                SETTINGS["llm_provider"] = "ollama" if CONSENT["state"] == "off" else "anthropic"
             if q.get("transport"):
                 TRANSPORT.clear()
                 TRANSPORT.update(HANDOFF if q["transport"][0] == "hands_off"
@@ -310,6 +341,10 @@ class Handler(SimpleHTTPRequestHandler):
                                        "verb": "send"})
             return self._json({"theme": SETTINGS["theme"], "lang": SETTINGS["ui_language"],
                                "transport": TRANSPORT["mode"]})
+        if urlparse(self.path).path == "/__consent_posts":
+            return self._json({"posts": CONSENT_POSTS})
+        if urlparse(self.path).path == "/api/ai/consent":
+            return self._json(consent_status())
         # One email, opened.
         #
         # `/api/mail/<id>` fell through the prefix rule and was answered with
@@ -349,11 +384,21 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(payload if payload is not None else {}, 200 if payload else 404)
         return super().do_GET()
 
+    def do_DELETE(self):
+        if urlparse(self.path).path == "/api/ai/consent":
+            CONSENT["state"] = "pending"
+            return self._json({"withdrawn": 1, **consent_status()})
+        return self._json({}, 404)
+
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
         path = urlparse(self.path).path
 
+        if path == "/api/ai/consent":
+            CONSENT_POSTS.append(json.loads(raw or b"{}"))
+            CONSENT["state"] = "granted"
+            return self._json(consent_status())
         if path == "/api/compose/draft":
             try:
                 body = json.loads(raw or b"{}")

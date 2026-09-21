@@ -247,8 +247,16 @@ class FakeImap:
     def capability(self): return ("OK", [b"IMAP4rev1"])
     def list(self, directory='""', pattern="*"): return ("OK", self.mailboxes)
 
+    # Like a server: a name arrives as an IMAP quoted string (see
+    # imap_folders.quoted) and is recorded as the name itself. An unquoted
+    # name with a space is the bug that made Sent copies fail on Exchange.
+    @staticmethod
+    def _name(mailbox):
+        assert mailbox.startswith('"') and mailbox.endswith('"'), f"unquoted: {mailbox!r}"
+        return mailbox[1:-1]
+
     def select(self, mailbox, readonly=False):
-        self.selected.append(mailbox)
+        self.selected.append(self._name(mailbox))
         return ("OK", [b"1"])
 
     def uid(self, command, *args):
@@ -256,7 +264,7 @@ class FakeImap:
         return ("OK", [b" ".join(self.found.get(mailbox, []))])
 
     def append(self, mailbox, flags, date_time, message):
-        self.appended.append((mailbox, message))
+        self.appended.append((self._name(mailbox), message))
         self.append_flags = flags
         return self.append_result
 
@@ -393,7 +401,7 @@ def test_settings_can_see_every_transport_and_which_one_is_chosen(configured):
     with TestClient(app) as client:
         body = client.get("/api/transports").json()
     assert body["current"] == "smtp"
-    assert set(body["statuses"]) == {"none", "smtp", "imap_draft"}
+    assert set(body["statuses"]) == {"none", "auto", "smtp", "imap_draft"}
     assert body["statuses"]["smtp"]["ready"] is True
     # The mode is what decides whether the button says "Send" or "Save to
     # Drafts", and whether the user still has something to do afterwards.

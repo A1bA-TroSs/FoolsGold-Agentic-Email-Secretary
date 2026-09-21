@@ -8,6 +8,7 @@ from .. import db, pipeline, priority
 from ..config import DEFAULT_SETTINGS, SECRET_SETTINGS
 from ..llm.copilot_provider import CopilotProvider
 from ..llm import registry
+from .. import consent
 from ..llm.registry import get_provider, reset_cache
 from ..sources.registry import all_status, get_source
 from ..transports.registry import all_status as all_transport_status, get_transport
@@ -92,12 +93,41 @@ def sources() -> dict:
     return {"current": current.name, "statuses": all_status()}
 
 
+class ConsentBody(BaseModel):
+    provider: str | None = None
+
+
+@router.get("/ai/consent")
+def ai_consent_status(provider: str | None = None) -> dict:
+    """What the consent dialog shows: whether the chosen provider would receive
+    mail, who that is, where, and whether the user has already agreed."""
+    return consent.status(provider or registry.configured_provider())
+
+
+@router.post("/ai/consent")
+def ai_consent_grant(body: ConsentBody) -> dict:
+    """Record an explicit yes. Only the dialog's Allow button calls this; the
+    generic settings endpoint cannot, so no form round-trip can forge one."""
+    result = consent.grant(body.provider or registry.configured_provider())
+    reset_cache()
+    return result
+
+
+@router.delete("/ai/consent")
+def ai_consent_withdraw(provider: str | None = None) -> dict:
+    closed = consent.withdraw(provider)
+    reset_cache()
+    return {"withdrawn": closed,
+            **consent.status(provider or registry.configured_provider())}
+
+
 @router.post("/settings/test-provider")
 async def test_provider() -> dict:
     try:
         provider = get_provider()
     except ProviderUnavailable as exc:
-        return {"ok": False, "detail": str(exc)}
+        return {"ok": False, "detail": str(exc),
+                "detail_key": exc.key, "detail_vars": exc.vars}
     result = await provider.check()
     ok, detail = result
     # A provider that has something structured to say says it; one that returns
