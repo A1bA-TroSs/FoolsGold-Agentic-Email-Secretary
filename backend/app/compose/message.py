@@ -85,6 +85,11 @@ class ParentMessage:
     body_text: str = ""
     body_html: str = ""
     raw: bytes | None = None          # only needed for message/rfc822 forwards
+    # Where the message was actually delivered, from the headers the receiving
+    # server adds. Not the same as To: a list mail is *to* the list and
+    # *delivered to* you, and the second is the address a reply should come
+    # from. Ordered as Thunderbird's catch-all rule reads them.
+    delivered_to: tuple[Mailbox, ...] = ()
 
     @classmethod
     def from_headers(cls, message: email.message.Message, **extra) -> ParentMessage:
@@ -102,6 +107,10 @@ class ParentMessage:
             to=Mailbox.parse(head("To")),
             cc=Mailbox.parse(head("Cc")),
             date=head("Date"),
+            delivered_to=tuple(
+                box for name in ("Delivered-To", "Envelope-To", "X-Original-To")
+                for value in (message.get_all(name) or [])
+                for box in Mailbox.parse(str(value))),
             **extra,
         )
 

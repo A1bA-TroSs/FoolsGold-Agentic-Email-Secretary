@@ -17,15 +17,15 @@
   --text: #3A2E1F;
   --muted: #6B5B3A;
   --shadow: rgba(58, 46, 31, 0.10);
-  /* The logo plate is one flat colour taken from the theme's own palette:
-     --muted, the desaturated mid-tone. It is the least saturated colour each
-     light palette has that still clears 3:1 against the gold mark (gold 3.4,
-     green 2.9, purple 3.2), and it sits only ~5:1 off the rail -- half the
-     jump of the near-black bronze tile it replaces (11.5:1), which read as a
-     hole in the ivory rail. No gradient, glow or highlight: the mark is the
-     only thing on the plate with depth. */
-  --logo-plate: var(--muted);
-  --logo-plate-border: var(--muted);
+  /* The logo tile is a card, like every other surface in the app: --surface
+     fill, --border hairline, the theme's own soft shadow. Dark already worked
+     because its tile was exactly that -- one quiet step off the rail, with the
+     mark doing the work. A mid-tone slab (muted) matched no role the UI has:
+     not a surface, not the accent, and it read as a disabled button. The
+     legibility the old ivory tile lacked is fixed in the mark instead (see
+     img.brand-mark below), which is where it was actually missing. */
+  --logo-plate: var(--surface);
+  --logo-plate-border: var(--border);
   --ok: #3E7A48;
   --danger: #B4483C;
   --ember: #E4622F;
@@ -46,8 +46,7 @@
   --shadow: rgba(0, 0, 0, 0.45);
   /* Warm and a shade lighter than the rail, so the plate reads as a plate and
      the gold artwork still has something to sit against. */
-  /* Dark keeps a quiet tile one step up from the rail: --border. Its --muted
-     is a light khaki the gold would vanish into. */
+  /* Dark's tile sits one step up from the rail, as it always did. */
   --logo-plate: var(--border);
   --logo-plate-border: var(--border);
   --ok: #63B074;
@@ -69,8 +68,8 @@
   --muted: #5C6E52;
   --shadow: rgba(43, 61, 36, 0.10);
   /* Forest, in this theme's own hue: 1.9:1 -> 7.0:1. */
-  --logo-plate: var(--muted);
-  --logo-plate-border: var(--muted);
+  --logo-plate: var(--surface);
+  --logo-plate-border: var(--border);
   --ok: #2F6E3C;
   --danger: #B4483C;
   --ember: #E4622F;
@@ -90,8 +89,8 @@
   --muted: #6B5A79;
   --shadow: rgba(60, 44, 74, 0.10);
   /* Aubergine, in this theme's own hue: 1.9:1 -> 7.9:1. */
-  --logo-plate: var(--muted);
-  --logo-plate-border: var(--muted);
+  --logo-plate: var(--surface);
+  --logo-plate-border: var(--border);
   --ok: #3E7A48;
   --danger: #B4483C;
   --ember: #E4622F;
@@ -160,6 +159,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border-radius: 16px;
   background: var(--logo-plate);
   border: 1px solid var(--logo-plate-border);
+  box-shadow: 0 1px 3px var(--shadow);
   margin-bottom: 12px;
   transition: transform var(--dur-base) var(--ease-spring);
 }
@@ -2128,14 +2128,6 @@ body.resizing-v iframe { pointer-events: none; }
 
 /* ---------------------------------------------------------------- compose */
 
-.detail-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.detail-actions .btn { display: inline-flex; align-items: center; gap: 6px; }
 
 /* Every custom property below is one this stylesheet actually defines. The
    first draft used --panel, --line and --motion-base, none of which exist
@@ -2340,3 +2332,59 @@ body.resizing-v iframe { pointer-events: none; }
   background: color-mix(in srgb, var(--danger) 14%, transparent);
   border-color: color-mix(in srgb, var(--danger) 38%, transparent);
 }
+
+/* ------------------------------------------------------------ brand mark */
+/* One artwork, drawn twice. On dark grounds the original: light gold with a
+   white orbit. On light grounds the white orbit vanished into ivory (1.1:1)
+   and the pale facets with it, so that variant carries the ring in deep gold
+   and slightly deeper facet shading -- the silhouette's shadow side clears
+   3:1 on --surface. Both are cropped to the artwork, so the mark fills its
+   tile instead of floating in the 20% margin the source PNG carries. */
+img.brand-mark { content: url('./assets/mark-light.png'); }
+[data-theme='dark'] img.brand-mark { content: url('./assets/mark-dark.png'); }
+
+/* ------------------------------------------------------------ consent */
+.modal.consent { max-width: 460px; }
+.consent-terms {
+  display: grid; grid-template-columns: max-content 1fr; gap: 7px 14px;
+  margin: 12px 0 10px; padding: 12px 14px;
+  background: var(--surface-hover); border: 1px solid var(--border); border-radius: var(--r-md);
+  font-size: 12.5px; line-height: 1.5;
+}
+.consent-terms dt { color: var(--muted); font-weight: 600; }
+.consent-terms dd { margin: 0; color: var(--text); }
+.consent-policy { margin: 0 0 10px; font-size: 12.5px; }
+.consent-policy a { color: var(--accent-strong); }
+.consent-status {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 10px; padding: 8px 10px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  font-size: 12.5px; color: var(--text);
+}
+.consent-status.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+
+/* ------------------------------------------------------------ first-run setup */
+/* The setup card is taller than a laptop window once a problem is explained,
+   and the explanation was the part cut off: .centered was a grid centred in a
+   100%-high box inside a body with overflow:hidden, so nothing could scroll.
+   Flex + margin:auto centres when it fits and scrolls from the top when it
+   does not -- plain `place-items: center` clips both ends instead. */
+.centered { display: flex; overflow-y: auto; box-sizing: border-box; }
+.centered > * { margin: auto; }
+.setup-langs { display: flex; gap: 4px; justify-content: center; flex-wrap: wrap; margin: -8px 0 16px; }
+.setup-langs .chip { padding: 2px 10px; font-size: 11.5px; }
+.setup-steps {
+  text-align: left; font-size: 12.5px; color: var(--muted);
+  line-height: 1.65; padding-left: 18px; margin: 0 0 16px;
+}
+.setup-callout {
+  text-align: left; margin: 0 0 16px; padding: 12px 14px;
+  background: var(--surface-hover); border: 1px solid var(--border);
+  border-left: 3px solid var(--accent); border-radius: var(--r-md);
+  font-size: 12.5px; line-height: 1.55;
+}
+.setup-callout b { display: block; margin-bottom: 4px; font-size: 13px; }
+.setup-callout p { margin: 0; color: var(--muted); }
+.setup-callout .setup-still { margin-top: 6px; color: var(--text); }
+.setup-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.setup-error { margin: 10px 0 0; color: var(--danger); }

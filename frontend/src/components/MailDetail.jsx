@@ -3,7 +3,7 @@ import { api, openExternal, API_BASE } from '../lib/api.js';
 import { prepareBody, frameDocument } from '../lib/mailBody.js';
 import { ThinkingNote } from './Loading.jsx';
 import Compose from './Compose.jsx';
-import { ForwardIcon, ReplyAllIcon, ReplyIcon } from './Icons.jsx';
+import ReplyBar from './ReplyBar.jsx';
 import { useT } from '../lib/i18n.js';
 
 /* Note on the body frame.
@@ -200,22 +200,6 @@ export default function MailDetail({ emailId }) {
           )}
         </div>
 
-        {/* Reply lives beside the message it answers, not in a global toolbar:
-            the action and its subject have to be unambiguous, and a toolbar
-            button means "reply to whatever is selected", which is one stale
-            selection away from answering the wrong person. */}
-        <div className="detail-actions">
-          <button className="btn ghost" onClick={() => setWriting('reply')}>
-            <ReplyIcon /> {t('compose_reply')}
-          </button>
-          <button className="btn ghost" onClick={() => setWriting('reply_all')}>
-            <ReplyAllIcon /> {t('compose_reply_all')}
-          </button>
-          <button className="btn ghost" onClick={() => setWriting('forward')}>
-            <ForwardIcon /> {t('compose_forward')}
-          </button>
-        </div>
-
         {(reason || mail.matched?.length > 0) && (
           /* No "no AI used" marker any more. It said the same thing on every
              row of a mailbox ranked without a model -- which is every row, for
@@ -269,6 +253,12 @@ export default function MailDetail({ emailId }) {
           <pre>{mail.body_text || mail.body_preview}</pre>
         )}
       </div>
+
+      {/* Outside the resizable header and outside the mail frame, so it can
+          neither be clipped by the one nor scrolled away by the other. It
+          still answers *this* message -- it lives in this pane, not in a
+          global toolbar that means "whatever is selected". */}
+      <ReplyBar mail={mail} onWrite={setWriting} />
 
       {writing && (
         <Compose action={writing} emailId={emailId} onClose={() => setWriting(null)} />

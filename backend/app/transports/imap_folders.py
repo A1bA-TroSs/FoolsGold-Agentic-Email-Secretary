@@ -117,6 +117,21 @@ def _decode(raw: bytes | str) -> str:
         return raw.decode("latin-1", "replace")
 
 
+def quoted(mailbox: str) -> str:
+    """A mailbox name as an IMAP quoted string.
+
+    Python's imaplib sends mailbox arguments verbatim, so `Sent Items`
+    (Outlook, Exchange) and `[Gmail]/Sent Mail` went out as two atoms and the
+    server answered BAD. Every name that reaches SELECT or APPEND passes
+    through here. The name is already in wire form (modified UTF-7, as LIST
+    returned it); only quoting is added.
+    """
+    name = mailbox.strip()
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        return name
+    return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def parse_list_line(line: bytes | str) -> tuple[list[str], str]:
     """`(\\HasNoChildren \\Sent) "/" "Sent Items"` -> `(["\\Sent"], "Sent Items")`."""
     raw = line if isinstance(line, bytes) else line.encode("utf-8", "replace")
@@ -179,7 +194,7 @@ def find_by_message_id(imap: ImapLike, mailbox: str, message_id: str) -> list[by
     when the mailbox cannot be opened -- a failed *search* must not stop us
     filing the copy."""
     try:
-        typ, _ = imap.select(mailbox)
+        typ, _ = imap.select(quoted(mailbox))
         if typ != "OK":
             return []
         typ, data = imap.uid("SEARCH", None, "HEADER", "Message-ID", f'"{message_id}"')
@@ -225,7 +240,7 @@ def save_copy(
             return "server", mailbox
         if index == 0 and not delays[1:]:
             break
-    typ, data = imap.append(mailbox, "(\\Seen)", None, raw)
+    typ, data = imap.append(quoted(mailbox), "(\\Seen)", None, raw)
     if typ != "OK":
         raise LookupError(f"could not append to {mailbox}: {data}")
     return "appended", mailbox

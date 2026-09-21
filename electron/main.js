@@ -397,6 +397,63 @@ function openSafely(raw) {
 
 ipcMain.handle('open-external', (_event, url) => openSafely(url));
 
+/* First-run setup for the Apple Mail source.
+
+   Full Disk Access is granted to FoolsGold.app, and macOS applies it only to
+   processes started AFTER the grant. Closing the window is not enough -- on
+   macOS the app keeps running in the Dock, and so does its backend, still
+   without access. That is how "I gave it Full Disk Access and it still says
+   blocked" happens. So the setup screen gets a real restart: relaunch, then
+   quit, which also ends the backend (see the 'quit' handler). */
+const FULL_DISK_ACCESS_PANE =
+  'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles';
+ipcMain.handle('open-full-disk-access', () => shell.openExternal(FULL_DISK_ACCESS_PANE));
+ipcMain.handle('relaunch-app', () => { app.relaunch(); app.quit(); });
+
+/* Run from /Applications, not from the disk image or Downloads.
+
+   An app opened straight from the DMG -- or from Downloads with the quarantine
+   flag still on -- runs from a read-only or randomised ("translocated") path.
+   Full Disk Access then attaches to a copy the user will not find again, and
+   the grant appears not to work. Offer the move once, the way most Mac apps
+   downloaded from the web do. */
+const MOVE_TEXT = {
+  en: ['Move FoolsGold to your Applications folder?',
+       'FoolsGold is running from the download. Moving it to Applications lets macOS keep its permissions (such as Full Disk Access) and lets you open it from Launchpad.',
+       'Move to Applications', 'Not now'],
+  ko: ['FoolsGold를 응용 프로그램 폴더로 옮길까요?',
+       '지금 FoolsGold가 다운로드한 위치에서 실행되고 있습니다. 응용 프로그램 폴더로 옮겨야 macOS가 권한(전체 디스크 접근 등)을 유지하고, Launchpad에서도 열 수 있습니다.',
+       '응용 프로그램으로 이동', '나중에'],
+  zh: ['要将 FoolsGold 移到“应用程序”文件夹吗？',
+       'FoolsGold 正从下载位置运行。移到“应用程序”后，macOS 才能保留它的权限（例如完全磁盘访问权限），也可以从启动台打开。',
+       '移到“应用程序”', '以后再说'],
+  ja: ['FoolsGold を「アプリケーション」フォルダに移動しますか？',
+       'FoolsGold はダウンロードした場所から実行されています。「アプリケーション」に移動すると、macOS が権限（フルディスクアクセスなど）を保持でき、Launchpad からも開けます。',
+       '「アプリケーション」に移動', '今はしない'],
+};
+
+function offerMoveToApplications() {
+  if (!app.isPackaged || process.platform !== 'darwin') return false;
+  try { if (app.isInApplicationsFolder()) return false; } catch { return false; }
+  const lang = (app.getLocale() || 'en').slice(0, 2);
+  const [message, detail, move, later] = MOVE_TEXT[lang] || MOVE_TEXT.en;
+  const choice = dialog.showMessageBoxSync({
+    type: 'question', message, detail, buttons: [move, later],
+    defaultId: 0, cancelId: 1,
+  });
+  if (choice !== 0) return false;
+  try {
+    // Replaces an older copy already in /Applications (that is how an update
+    // from a newer DMG lands); never touches a copy that is running.
+    return app.moveToApplicationsFolder({
+      conflictHandler: (type) => type !== 'existsAndRunning',
+    });
+  } catch (err) {
+    dialog.showErrorBox('FoolsGold', String(err.message || err));
+    return false;
+  }
+}
+
 /* One app, one backend.
  *
  * A second copy of the app used to spawn a second backend, which died on bind
@@ -416,9 +473,18 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  // Before the backend starts: a successful move quits and relaunches from
+  // /Applications, and a backend started from the old path would be orphaned.
+  if (offerMoveToApplications()) return;
   if (!(await ensureBackend())) { app.quit(); return; }
   try {
-    await waitForBackend();
+    /* A packaged build's first launch is slow: macOS checks every library in
+       the frozen backend the first time it loads (the build's smoke test saw
+       startup land past 20 s on a binary that was fine). 30 s is plenty for
+       `python -m app.main` in development and too tight for that, so the
+       frozen backend gets 90 s. The build script prints the real cold and warm
+       start times -- if the cold one approaches this, raise it here. */
+    await waitForBackend(frozenBackend() ? 90000 : 30000);
   } catch (err) {
     dialog.showErrorBox('Fools Gold could not start', String(err.message));
   }

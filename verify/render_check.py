@@ -254,17 +254,18 @@ def compose_check(page, tag, shots):
     page.wait_for_timeout(350)
 
     actions = page.evaluate(
-        "() => [...document.querySelectorAll('.detail-actions .btn')]"
-        ".map(b => ({ t: b.textContent.trim(), w: b.getBoundingClientRect().width,"
+        "() => [...document.querySelectorAll('.reply-bar button')]"
+        ".map(b => ({ t: b.textContent.trim(), a: b.dataset.action,"
+        "             w: b.getBoundingClientRect().width,"
         "             h: b.getBoundingClientRect().height }))")
-    if len(actions) < 3:
-        return [f"{tag}: {len(actions)} reply controls on an open message"]
+    if not any(a["a"] == "reply" for a in actions) or not any(a["a"] == "forward" for a in actions):
+        return [f"{tag}: reply and forward are not both on an open message -- {actions}"]
     if any(a["w"] < 40 or a["h"] < 18 for a in actions):
         bad.append(f"{tag}: a reply control collapsed -- {actions}")
-    if len({a["t"] for a in actions}) < 3:
-        bad.append(f"{tag}: reply / reply-all / forward share a label {actions}")
+    if len({a["t"] for a in actions}) < len(actions):
+        bad.append(f"{tag}: two reply controls share a label {actions}")
 
-    page.click(".detail-actions .btn")
+    page.click(".reply-bar [data-action='reply']")
     page.wait_for_timeout(350)
     state = page.evaluate(COMPOSE_JS)
     if not state["open"]:
@@ -329,7 +330,7 @@ def compose_check(page, tag, shots):
     # Now the other transport mode, on the same page. The words on the button
     # are the only warning the user gets before clicking it.
     page.request.get(f"http://127.0.0.1:{PORT}/__set?transport=hands_off")
-    page.click(".detail-actions .btn")
+    page.click(".reply-bar [data-action='reply']")
     page.wait_for_timeout(300)
     page.fill(".compose-body", TYPED)
     page.click(".compose-foot .btn.primary")
@@ -349,6 +350,76 @@ def compose_check(page, tag, shots):
     return bad
 
 
+REPLY_BAR_JS = """() => {
+  const bar = document.querySelector('.reply-bar');
+  const wrap = document.querySelector('.detail-wrap');
+  if (!bar || !wrap) return { bar: false };
+  const r = bar.getBoundingClientRect(), w = wrap.getBoundingClientRect();
+  const btns = [...bar.querySelectorAll('button')].map(b => {
+    const q = b.getBoundingClientRect();
+    return { a: b.dataset.action, h: q.height, w: q.width,
+             label: b.textContent.trim(),
+             hit: document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2) };
+  });
+  return {
+    bar: true,
+    inHeader: !!bar.closest('.detail-head'),
+    inFrame: !!bar.closest('iframe, .detail-body'),
+    onScreen: r.top >= w.top - 1 && r.bottom <= Math.min(w.bottom, innerHeight) + 1 && r.height > 0,
+    buttons: btns.map(b => ({ a: b.a, h: Math.round(b.h), w: Math.round(b.w), label: b.label,
+                              covered: !(b.hit && (b.hit.closest('.reply-bar button'))) })),
+  };
+}"""
+
+HEAD_KEY = "foolsgold.detailHeadHeight"
+
+
+def reply_bar_check(page, tag) -> list[str]:
+    """The reply controls stay on screen, uncovered and legible, whatever the
+    user has done to the header above them.
+
+    They used to live inside the resizable header: drag it shorter and they
+    were clipped, and people did not know the app could reply at all. So the
+    extremes are what is tested -- a header saved enormous (the stored height is
+    applied as-is on load) and one dragged to its minimum -- not the default.
+    """
+    bad = []
+    for label, height in (("default", None), ("tall", 5000), ("short", 70)):
+        page.evaluate(f"""() => {{ try {{
+            {'localStorage.removeItem("' + HEAD_KEY + '")' if height is None
+             else 'localStorage.setItem("' + HEAD_KEY + '", "' + str(height) + '")'};
+        }} catch (e) {{}} }}""")
+        page.reload(wait_until="networkidle")
+        page.wait_for_timeout(450)
+        rows = page.query_selector_all(".mail-item")
+        if not rows:
+            return [f"{tag}: no mail to open"]
+        rows[0].click()
+        page.wait_for_timeout(400)
+        got = page.evaluate(REPLY_BAR_JS)
+        where = f"{tag}/{label} header"
+        if not got.get("bar"):
+            bad.append(f"{where}: no reply bar on an open message")
+            continue
+        if got["inHeader"] or got["inFrame"]:
+            bad.append(f"{where}: the bar is inside the header or the mail -- it can be "
+                       "clipped or scrolled away")
+        if not got["onScreen"]:
+            bad.append(f"{where}: the reply bar is pushed off screen")
+        for b in got["buttons"]:
+            if b["h"] < 36:
+                bad.append(f"{where}: {b['a']} is {b['h']}px tall (min 36)")
+            if b["covered"]:
+                bad.append(f"{where}: {b['a']} is covered by something else")
+        primary = next((b for b in got["buttons"] if b["a"] == "reply"), None)
+        if primary is None or len(primary["label"]) < 3:
+            bad.append(f"{where}: the reply action has no visible label -- {got['buttons']}")
+    page.evaluate(f"() => {{ try {{ localStorage.removeItem('{HEAD_KEY}'); }} catch (e) {{}} }}")
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(350)
+    return bad
+
+
 def undefined_custom_properties() -> list[str]:
     """Every `var(--x)` in the stylesheet must have a `--x:` somewhere.
 
@@ -358,7 +429,10 @@ def undefined_custom_properties() -> list[str]:
     background, which was invisible until the scrim behind it was darkened.
     Cheap to check, and it catches the whole class rather than the one case.
     """
-    css = (ROOT / "frontend" / "src" / "styles.css").read_text()
+    # Every stylesheet under src/, not only styles.css: a component can carry
+    # its own (ReplyBar.css does), and a check that reads one file passes over
+    # the rest without a word.
+    css = "\n".join(f.read_text() for f in sorted((ROOT / "frontend" / "src").rglob("*.css")))
     defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", css))
     used = set(re.findall(r"var\((--[a-z0-9-]+)", css))
     # A var() with a fallback still renders, so only bare ones matter.
@@ -379,6 +453,7 @@ def main() -> int:
             overflow_bad, wrap_bad, raw_bad, untranslated, reached, themed = [], [], [], [], [], []
             off_scale, stagger_bad, done_bad, irr_bad, set_bad = [], [], [], [], []
             compose_bad = []
+            reply_bar_bad = []
             grounds: dict[str, set] = {}
             badge_seen, why_seen, contrast_bad = 0, 0, []
             badge_covers: list[str] = []
@@ -691,6 +766,7 @@ def main() -> int:
                     page.screenshot(path=str(SHOTS / f"{tag}.png"), full_page=False)
 
                     compose_bad += compose_check(page, tag, SHOTS)
+                    reply_bar_bad += reply_bar_check(page, tag)
 
                     # The completed box. Muting had a drawer you could open and
                     # reverse; completing had a six-second toast. This asserts
@@ -782,6 +858,129 @@ def main() -> int:
                                            f"group -- got {found}")
                     page.screenshot(path=str(SHOTS / f"{tag}-settings.png"), full_page=False)
                     page.close()
+
+            # 22. Cloud-AI consent. Apple 5.1.2(i) and PIPA both turn on the
+            # same two facts: the user is asked BEFORE anything is sent, and the
+            # safe answer is the easy one. So: the dialog appears on its own
+            # when a cloud provider has no permission; focus lands on "Don't
+            # allow" (Enter must never share a mailbox); every row is in the
+            # reader's language; declining sends nothing; allowing sends exactly
+            # one grant; and Settings then says what was agreed.
+            consent_bad: list[str] = []
+            for theme in THEMES[:2]:
+                for lang in LANGS:
+                    tag = f"{theme}-{lang}-consent"
+                    for answer in ("decline", "allow"):
+                        page = browser.new_page(viewport={"width": 1280, "height": 900})
+                        page.request.get(f"http://127.0.0.1:{PORT}/__set?theme={theme}"
+                                         f"&lang={lang}&consent=pending")
+                        page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
+                        page.wait_for_timeout(700)
+                        info = page.evaluate("""() => {
+                          const m = document.querySelector('.modal.consent');
+                          if (!m) return null;
+                          const btns = [...m.querySelectorAll('.actions .btn')];
+                          return {
+                            text: m.innerText,
+                            focused: document.activeElement === btns[0],
+                            primaryLast: btns[1] && btns[1].classList.contains('primary'),
+                            rows: m.querySelectorAll('dt').length,
+                            rawKey: /\bconsent[A-Z]\w*|aiConsent/.test(m.innerText),
+                          };
+                        }""")
+                        if info is None:
+                            consent_bad.append(f"{tag}: no dialog for an unapproved cloud provider")
+                            page.close()
+                            break
+                        if not info["focused"]:
+                            consent_bad.append(f"{tag}: focus is not on Don't allow")
+                        if info["rows"] != 6:
+                            consent_bad.append(f"{tag}: {info['rows']} disclosure rows, want 6")
+                        if info["rawKey"]:
+                            consent_bad.append(f"{tag}: a raw key is on screen")
+                        if lang != "en" and "Who receives" in info["text"]:
+                            consent_bad.append(f"{tag}: English left in the dialog")
+                        if answer == "decline" and theme == "gold":
+                            page.screenshot(path=str(SHOTS / f"{theme}-{lang}-consent.png"))
+                        if answer == "decline":
+                            page.keyboard.press("Enter")        # focused: Don't allow
+                        else:
+                            page.click(".modal.consent .actions .btn.primary")
+                        page.wait_for_timeout(400)
+                        posts = page.request.get(
+                            f"http://127.0.0.1:{PORT}/__consent_posts").json()["posts"]
+                        still = page.evaluate("() => !!document.querySelector('.modal.consent')")
+                        if still:
+                            consent_bad.append(f"{tag}: the dialog stayed open after {answer}")
+                        if answer == "decline" and posts:
+                            consent_bad.append(f"{tag}: Enter on the dialog GRANTED permission")
+                        if answer == "allow":
+                            if len(posts) != 1:
+                                consent_bad.append(f"{tag}: allow sent {len(posts)} grants")
+                            page.click("button[data-view='settings']")
+                            page.wait_for_timeout(400)
+                            row = page.evaluate("() => document.querySelector('.consent-status.ok')?.innerText || ''")
+                            if "Anthropic" not in row:
+                                consent_bad.append(f"{tag}: Settings does not show the permission")
+                            if theme == "gold":
+                                page.screenshot(path=str(SHOTS / f"{theme}-{lang}-consent-settings.png"))
+                        page.close()
+            # 23. The first-run screen: the one a new user meets before anything
+            # else, on a laptop-height window. It must be in their language, must
+            # not talk to a developer ("npm start", "Terminal", "the app you
+            # launched from"), must say what to do about macOS's permission, and
+            # must scroll so the part that says so can be reached.
+            setup_bad: list[str] = []
+            for theme in THEMES[:2]:
+                for lang in LANGS:
+                    tag = f"{theme}-{lang}-setup"
+                    page = browser.new_page(viewport={"width": 1280, "height": 640})
+                    page.request.get(f"http://127.0.0.1:{PORT}/__set?theme={theme}"
+                                     f"&lang={lang}&setup=fda")
+                    page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
+                    page.wait_for_timeout(600)
+                    info = page.evaluate("""() => {
+                      const card = document.querySelector('.centered .card');
+                      if (!card) return null;
+                      const box = card.closest('.centered');
+                      box.scrollTop = box.scrollHeight;
+                      const btn = [...card.querySelectorAll('.btn.primary')].pop();
+                      const r = btn.getBoundingClientRect();
+                      const top = card.getBoundingClientRect().top + box.scrollTop;
+                      return {
+                        text: card.innerText,
+                        callout: !!card.querySelector('.setup-callout'),
+                        lastButtonVisible: r.bottom <= window.innerHeight && r.top >= 0,
+                        overflowing: box.scrollHeight > box.clientHeight,
+                        topReachable: (box.scrollTop = 0, card.getBoundingClientRect().top >= 0),
+                      };
+                    }""")
+                    if info is None:
+                        setup_bad.append(f"{tag}: the setup card never rendered")
+                        page.close()
+                        continue
+                    if not info["callout"]:
+                        setup_bad.append(f"{tag}: no Full Disk Access instructions")
+                    for dev in ("npm", "Terminal", "launched from"):
+                        if dev in info["text"]:
+                            setup_bad.append(f"{tag}: developer text on a user screen ({dev!r})")
+                    if lang != "en" and ("Save and continue" in info["text"]
+                                         or "Your email address" in info["text"]):
+                        setup_bad.append(f"{tag}: English left on the setup card")
+                    if not info["lastButtonVisible"]:
+                        setup_bad.append(f"{tag}: the Save button cannot be scrolled into view")
+                    if not info["topReachable"]:
+                        setup_bad.append(f"{tag}: the top of the card is cut off")
+                    if theme == "gold":
+                        page.screenshot(path=str(SHOTS / f"{tag}.png"))
+                    page.close()
+            page = browser.new_page()
+            page.request.get(f"http://127.0.0.1:{PORT}/__set?setup=off")
+            page.close()
+
+            page = browser.new_page()
+            page.request.get(f"http://127.0.0.1:{PORT}/__set?consent=off")
+            page.close()
             browser.close()
 
             total = len(THEMES) * len(LANGS)
@@ -807,6 +1006,18 @@ def main() -> int:
                          f"visible in {badge_seen}/{total} combinations")
             result.check(why_seen == total, "6. the reason chip is painted",
                          f"visible in {why_seen}/{total} combinations")
+            result.check(not setup_bad,
+                         "23. the first-run screen is in the user's language, speaks to a "
+                         "user, and scrolls",
+                         "\n".join(setup_bad[:6]) or
+                         f"{len(THEMES[:2]) * len(LANGS)} combinations at 1280x640: the "
+                         "permission steps are there, no npm/Terminal, nothing cut off")
+            result.check(not consent_bad,
+                         "22. mail goes to a cloud AI only after an explicit, easy-to-refuse yes",
+                         "\n".join(consent_bad[:6]) or
+                         f"{len(THEMES[:2]) * len(LANGS)} combinations: the dialog asks on its own, "
+                         "Enter declines, six disclosure rows in the reader's language, "
+                         "one grant on Allow, and Settings says so")
             result.check(not off_scale, "8. every duration comes from the motion scale",
                          "\n".join(off_scale[:4]) or
                          "no bespoke durations -- guessed numbers are what make motion feel cheap")
@@ -829,6 +1040,11 @@ def main() -> int:
                          "20. a reply can be written, approved and sent -- and the "
                          "approval screen cannot be typed into",
                          "\n".join(compose_bad))
+            result.check(not reply_bar_bad,
+                         "23. the reply bar stays on screen, uncovered and labeled, "
+                         "at any header height",
+                         "\n".join(reply_bar_bad[:6]) or
+                         "default, 5000px and 70px headers; every control >= 36px")
 
             undefined = undefined_custom_properties()
             result.check(not undefined,

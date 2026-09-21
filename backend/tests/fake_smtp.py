@@ -19,12 +19,17 @@ class FakeSMTP(threading.Thread):
     daemon = True
 
     def __init__(self, *, auth_ok: bool = True, advertise_starttls: bool = False,
-                 refuse: tuple[str, ...] = (), data_reply: str = "250 queued") -> None:
+                 refuse: tuple[str, ...] = (), data_reply: str = "250 queued",
+                 auth_reply: str = "535 bad credentials") -> None:
         super().__init__()
         self.auth_ok = auth_ok
         self.advertise_starttls = advertise_starttls
         self.refuse = tuple(a.lower() for a in refuse)
         self.data_reply = data_reply
+        # What a refused login says. Microsoft 365 refuses with 5.7.139 when a
+        # tenant has turned password submission off -- a correct password,
+        # a closed door -- and that has to be told apart from a wrong one.
+        self.auth_reply = auth_reply
         self._sock = socket.socket()
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("127.0.0.1", 0))
@@ -108,7 +113,7 @@ class FakeSMTP(threading.Thread):
             say("334 " + base64.b64encode(b"Password:").decode())
             password = base64.b64decode(stream.readline().strip()).decode()
             self.credentials = (user, password)
-        say("235 accepted" if self.auth_ok else "535 bad credentials")
+        say("235 accepted" if self.auth_ok else self.auth_reply)
 
     def stop(self) -> None:
         try:

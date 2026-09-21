@@ -23,7 +23,10 @@ from pydantic import BaseModel, Field
 from .. import db
 from ..compose import Mailbox, build_forward, build_new, build_reply
 from ..sources.registry import get_source
+from ..compose.identity import known_identities, pick_sender
 from ..transports.base import HANDS_OFF, TransportError
+from ..transports import accounts
+from ..transports.auto_transport import NeedsPassword, verify_password
 from ..transports.registry import get_transport
 
 router = APIRouter(prefix="/api/compose", tags=["compose"])
@@ -57,14 +60,22 @@ def _boxes(raw: list[str]) -> list[Mailbox]:
     return out
 
 
-def _me() -> Mailbox:
-    address = db.get_setting("user_address", "").strip()
-    if "@" not in address:
+def _me(parent=None) -> Mailbox:
+    """The address this message goes out from.
+
+    For a reply or forward, the address the original was *delivered to* --
+    "answer from the account I am reading", which is what people mean and
+    almost never what a single default address gives them. For a new message,
+    the configured address. See compose/identity.py for the order.
+    """
+    chosen = pick_sender(parent, known_identities(),
+                         name=db.get_setting("user_name", "").strip())
+    if chosen is None:
         raise HTTPException(
             status_code=400,
             detail="Set your own email address in Settings first — it goes in "
                    "the From line of anything you send.")
-    return Mailbox(address=address, name=db.get_setting("user_name", "").strip())
+    return chosen
 
 
 def _parent(email_id: str | None):
@@ -117,8 +128,9 @@ def _transport_view() -> dict[str, Any]:
 def draft(body: DraftIn) -> dict:
     if body.action not in ACTIONS:
         raise HTTPException(status_code=400, detail=f"action must be one of {list(ACTIONS)}")
-    me = _me()
     to, cc, bcc = _boxes(body.to), _boxes(body.cc), _boxes(body.bcc)
+    parent = _parent(body.email_id) if body.action != "new" else None
+    me = _me(parent)
 
     if body.action == "new":
         if not to:
@@ -128,10 +140,9 @@ def draft(body: DraftIn) -> dict:
     elif body.action == "forward":
         if not to:
             raise HTTPException(status_code=400, detail="Add at least one recipient.")
-        message = build_forward(_parent(body.email_id), sender=me, to=to, cc=cc, bcc=bcc,
+        message = build_forward(parent, sender=me, to=to, cc=cc, bcc=bcc,
                                 text=body.text, as_attachment=body.as_attachment)
     else:
-        parent = _parent(body.email_id)
         message = build_reply(
             parent, sender=me, text=body.text, quote=body.quote,
             reply_all=(body.action == "reply_all"),
@@ -145,6 +156,42 @@ def draft(body: DraftIn) -> dict:
     db.save_draft(token, action=body.action, email_id=body.email_id,
                   mime=message.as_bytes(), summary=summary)
     return {"token": token, "summary": summary, "transport": _transport_view()}
+
+
+class CredentialsIn(BaseModel):
+    address: str
+    password: str
+
+
+@router.post("/credentials")
+def credentials(body: CredentialsIn) -> dict:
+    """Remember the password for one sending address -- after proving it.
+
+    Logs in to the account's own server first and saves nothing unless that
+    works, so a typo is caught here rather than at the moment of sending.
+    Sends nothing. Accepted only for an address the user is known to send
+    as: this is not a way to store credentials for arbitrary accounts.
+    """
+    address = (body.address or "").strip().lower()
+    if address not in known_identities():
+        raise HTTPException(status_code=400, detail="That is not one of your addresses.")
+    if not body.password:
+        raise HTTPException(status_code=400, detail="Enter the password.")
+    try:
+        ok, why = verify_password(address, body.password)
+    except TransportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not ok:
+        return {"ok": False, "address": address, "reason": why.split(":")[0], "detail": why}
+    accounts.remember_password(address, body.password)
+    return {"ok": True, "address": address}
+
+
+@router.delete("/credentials/{address}")
+def forget_credentials(address: str) -> dict:
+    """Forget a remembered password. The next reply from that address asks again."""
+    accounts.forget_password(address.strip().lower())
+    return {"ok": True, "accounts": accounts.summary()}
 
 
 @router.get("/{token}")
@@ -176,6 +223,12 @@ def send(token: str) -> dict:
         # `raw` is the approved bytes. The parsed message is only for the
         # transport to read headers from; re-serialising it would re-fold them.
         result = get_transport().send(message, raw=bytes(stored["mime"]))
+    except NeedsPassword as exc:
+        # Not a failure: the one question automatic sending ever asks, answered
+        # in the compose window. The draft stays unsent and sendable.
+        raise HTTPException(status_code=409, detail={
+            "needs_password": exc.address, "reason": exc.reason,
+            "message": str(exc)}) from exc
     except TransportError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { CloseIcon, SendIcon } from './Icons.jsx';
+import './Compose.css';
 
 /* The compose pane, and the approval step in front of sending.
 
@@ -44,6 +45,12 @@ export default function Compose({ action, emailId, onClose }) {
   const [outcome, setOutcome] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  /* Automatic sending asks exactly one question, once per address: its
+     password. Asked here, at the moment it is needed, with the address in
+     front of the user -- not as a form in Settings that has to be found and
+     filled in before the first reply. */
+  const [unlock, setUnlock] = useState(null);   // { address, reason }
+  const [secret, setSecret] = useState('');
   const body = useRef(null);
 
   const isReply = action === 'reply' || action === 'reply_all';
@@ -82,12 +89,41 @@ export default function Compose({ action, emailId, onClose }) {
     try {
       const result = await api.sendDraft(draft.token);
       setOutcome(result.outcome);
+      setUnlock(null);
       setStage(DONE);
     } catch (e) {
-      setError(e.message);
+      if (e.status === 409 && e.data?.needs_password) {
+        // Not an error. The draft is untouched and still approved; nothing
+        // was sent. The same token is sent once the password is in.
+        setUnlock({ address: e.data.needs_password, reason: e.data.reason });
+      } else {
+        setError(e.message);
+      }
     } finally {
       setBusy(false);
     }
+  }
+
+  /* Save the password (the server logs in with it first and keeps nothing
+     that does not work), then send the SAME approved token. The user has
+     already said yes to this message; asking them to press Send a second
+     time would be ceremony, and re-drafting would change what they approved. */
+  async function unlockAndSend() {
+    setBusy(true); setError('');
+    try {
+      const saved = await api.saveCredentials(unlock.address, secret);
+      if (!saved.ok) {
+        setUnlock({ ...unlock, reason: 'rejected' });
+        setBusy(false);
+        return;
+      }
+      setSecret('');
+    } catch (e) {
+      setError(e.message);
+      setBusy(false);
+      return;
+    }
+    await confirm();
   }
 
   const transport = draft?.transport;
@@ -177,15 +213,36 @@ export default function Compose({ action, emailId, onClose }) {
                  about from the recipient who never got it. */
               <p className="compose-note handoff">{t('composeHandoffNote')}</p>
             )}
+            {unlock && (
+              <form className="compose-unlock" data-unlock={unlock.address}
+                    onSubmit={(e) => { e.preventDefault(); if (secret && !busy) unlockAndSend(); }}>
+                <p className="compose-note">
+                  {t('composeNeedPassword', { arg: unlock.address })}
+                </p>
+                <div className="compose-unlock-row">
+                  <input className="input" type="password" autoFocus autoComplete="current-password"
+                         aria-label={t('composePasswordFor', { arg: unlock.address })}
+                         value={secret} onChange={(e) => setSecret(e.target.value)} />
+                  <button className="btn primary" type="submit" disabled={busy || !secret}
+                          data-action="unlock-send">
+                    <SendIcon /> {busy ? t('composeSending') : t('composeUnlockSend')}
+                  </button>
+                </div>
+                {unlock.reason === 'rejected' && (
+                  <p className="compose-error">{t('composePasswordRejected')}</p>
+                )}
+                <p className="hint">{t('composePasswordHint')}</p>
+              </form>
+            )}
             {error && <p className="compose-error">{error}</p>}
             <footer className="compose-foot">
-              <button className="btn ghost" onClick={() => setStage(WRITE)}>
+              <button className="btn ghost" onClick={() => { setUnlock(null); setStage(WRITE); }}>
                 {t('composeBack')}
               </button>
-              <button className="btn primary" disabled={busy || !transport?.ready}
+              {!unlock && <button className="btn primary" disabled={busy || !transport?.ready}
                       onClick={confirm}>
                 <SendIcon /> {busy ? t('composeSending') : verb}
-              </button>
+              </button>}
             </footer>
           </>
         )}
@@ -195,6 +252,12 @@ export default function Compose({ action, emailId, onClose }) {
             <p className="compose-done-line">
               {outcome.delivered ? t('composeDelivered') : t('composeHandedOff', { arg: outcome.handoff })}
             </p>
+            {!outcome.delivered && transport?.name === 'auto' && (
+              /* The automatic path only lands here when the account's server
+                 refused mail from outside apps. Said plainly, once: the
+                 message is safe, and the one step left is in the mail app. */
+              <p className="compose-note" data-fallback="drafts">{t('composeFellBack')}</p>
+            )}
             {outcome.refused?.length > 0 && (
               <p className="compose-error">{t('composeRefused', { arg: outcome.refused.join(', ') })}</p>
             )}
