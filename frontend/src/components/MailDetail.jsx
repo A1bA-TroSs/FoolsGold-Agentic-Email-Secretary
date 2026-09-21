@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, openExternal, API_BASE } from '../lib/api.js';
 import { prepareBody, frameDocument } from '../lib/mailBody.js';
 import { ThinkingNote } from './Loading.jsx';
+import Compose from './Compose.jsx';
+import { ForwardIcon, ReplyAllIcon, ReplyIcon } from './Icons.jsx';
 import { useT } from '../lib/i18n.js';
 
 /* Note on the body frame.
@@ -66,6 +68,11 @@ export default function MailDetail({ emailId }) {
   const [showRemote, setShowRemote] = useState(false);
   const [error, setError] = useState('');
   const [headHeight, setHeadHeight] = useState(readHeadHeight);
+  /* Which compose window is open, if any. Held here rather than in App so the
+     buttons and the window cannot disagree about which message is being
+     replied to -- the reading pane already knows, and passing the id down two
+     levels is how they drift apart. */
+  const [writing, setWriting] = useState(null);
   const wrapRef = useRef(null);
   const headRef = useRef(null);
   const t = useT();
@@ -154,6 +161,7 @@ export default function MailDetail({ emailId }) {
     if (!emailId) { setMail(null); return undefined; }
     let cancelled = false;
     setMail(null); setError(''); setShowRemote(false);
+    setWriting(null);
     api.getMail(emailId)
       .then((m) => { if (!cancelled) setMail(m); })
       .catch((e) => { if (!cancelled) setError(e.message); });
@@ -190,6 +198,22 @@ export default function MailDetail({ emailId }) {
               {t('openInOutlook')} ↗
             </button>
           )}
+        </div>
+
+        {/* Reply lives beside the message it answers, not in a global toolbar:
+            the action and its subject have to be unambiguous, and a toolbar
+            button means "reply to whatever is selected", which is one stale
+            selection away from answering the wrong person. */}
+        <div className="detail-actions">
+          <button className="btn ghost" onClick={() => setWriting('reply')}>
+            <ReplyIcon /> {t('compose_reply')}
+          </button>
+          <button className="btn ghost" onClick={() => setWriting('reply_all')}>
+            <ReplyAllIcon /> {t('compose_reply_all')}
+          </button>
+          <button className="btn ghost" onClick={() => setWriting('forward')}>
+            <ForwardIcon /> {t('compose_forward')}
+          </button>
         </div>
 
         {(reason || mail.matched?.length > 0) && (
@@ -245,6 +269,10 @@ export default function MailDetail({ emailId }) {
           <pre>{mail.body_text || mail.body_preview}</pre>
         )}
       </div>
+
+      {writing && (
+        <Compose action={writing} emailId={emailId} onClose={() => setWriting(null)} />
+      )}
     </div>
   );
 }
