@@ -33,6 +33,7 @@ import email.utils
 from email.parser import BytesHeaderParser
 import hashlib
 import json
+import unicodedata
 from urllib.parse import unquote
 import os
 import plistlib
@@ -402,7 +403,12 @@ def to_row(path: Path, mtime: float, chain: list[str]) -> dict[str, Any]:
         "has_attachments": 1 if parsed.attachment_count else 0,
         "importance": _importance(message),
         "web_link": "",                       # nothing to link to; it is a local file
-        "folder": "/".join(chain),
+        # macOS gives directory names in NFD: "보낸 편지함" arrives as decomposed
+        # jamo, which is a different string from the NFC "보낸 편지함" every
+        # constant in this codebase is written in. Sent-folder detection
+        # (compose/identity.py) matched nothing on a Korean mailbox because of
+        # it -- normalise once, here, where the filesystem is the source.
+        "folder": unicodedata.normalize("NFC", "/".join(chain)),
         "body_preview": (text or _HTML_TAG.sub(" ", html))[:200].replace("\n", " ").strip(),
         "body_text": text,
         "body_html": html,

@@ -9,8 +9,31 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PY="${FOOLSGOLD_BUILD_PYTHON:-python3.13}"
+# python.org's Python, not Homebrew's. Homebrew builds every binary for the
+# macOS it was installed on, and PyInstaller copies those binaries into the
+# app -- so a backend frozen with Homebrew Python on macOS 15 refuses to load
+# on macOS 14 or older. It ran on the build Mac and would have failed on a
+# tester's. python.org builds target macOS 11. (PyInstaller maintainers'
+# advice: github.com/orgs/pyinstaller/discussions/9143)
+PYORG=/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13
+if [ -z "${FOOLSGOLD_BUILD_PYTHON:-}" ] && [ -x "$PYORG" ]; then
+  PY="$PYORG"
+else
+  PY="${FOOLSGOLD_BUILD_PYTHON:-python3.13}"
+fi
 command -v "$PY" >/dev/null || { echo "need $PY (set FOOLSGOLD_BUILD_PYTHON)"; exit 1; }
+PY_REAL="$("$PY" -c 'import sys, os; print(os.path.realpath(sys.executable))')"
+case "$PY_REAL" in
+  /opt/homebrew/*|/usr/local/Cellar/*|/usr/local/opt/*)
+    if [ "${FOOLSGOLD_ALLOW_HOMEBREW:-}" != "1" ]; then
+      echo "Refusing to freeze with Homebrew Python ($PY_REAL)."
+      echo "The result would only run on this macOS version or newer."
+      echo "Install Python 3.13 from https://www.python.org/downloads/macos/ and run again,"
+      echo "or set FOOLSGOLD_ALLOW_HOMEBREW=1 for a build that stays on this Mac."
+      exit 1
+    fi ;;
+esac
+echo "freezing with $PY_REAL"
 
 BUILD_VENV="$(mktemp -d)/venv"
 "$PY" -m venv "$BUILD_VENV"
@@ -83,4 +106,14 @@ smoke() {  # $1 = label; prints seconds taken, returns non-zero on failure
 
 smoke cold
 smoke warm
+
+# Which macOS the frozen backend actually needs: the highest minimum-OS of any
+# binary it carries. This is the number a tester's Mac has to meet.
+if command -v otool >/dev/null; then
+  MIN=$(find backend-dist -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 \
+        | xargs -0 otool -l 2>/dev/null \
+        | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2; b=0} /LC_VERSION_MIN_MACOSX/{v=1} v&&/version/{print $2; v=0}' \
+        | sort -t. -k1,1n -k2,2n | tail -1)
+  echo "frozen backend needs macOS ${MIN:-unknown} or newer"
+fi
 echo "frozen backend OK: $BIN"

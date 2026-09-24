@@ -5,6 +5,7 @@ import { reuseUnchanged } from './lib/reconcile.js';
 import { I18nContext, translator } from './lib/i18n.js';
 import Connect from './components/Connect.jsx';
 import Digest from './components/Digest.jsx';
+import Recap from './components/Recap.jsx';
 import MailDetail from './components/MailDetail.jsx';
 import MailList from './components/MailList.jsx';
 import ConfirmMute from './components/ConfirmMute.jsx';
@@ -125,6 +126,15 @@ function Notice({ id, onDismiss, dismissLabel, children }) {
   );
 }
 
+/* Shorten text for a one-line notice without cutting a word in half. */
+function clipAtWord(text, max) {
+  const s = String(text || '').trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const at = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf(' '));
+  return `${cut.slice(0, at > max * 0.6 ? at : max).trimEnd()}…`;
+}
+
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [source, setSource] = useState({ name: 'applemail', label: '', ready: false });
@@ -165,6 +175,16 @@ export default function App() {
      until this existed, a source that had stopped producing looked identical
      to a quiet week. */
   const [syncState, setSyncState] = useState(null);
+  /* 'recovering': every recent sync failed on macOS's permission, but the
+     source reads fine now (access granted, app restarted). Sync once straight
+     away so the failure count clears, instead of waiting for the poller. */
+  const recoveredOnce = useRef(false);
+  useEffect(() => {
+    if (syncState?.state === 'recovering' && !recoveredOnce.current) {
+      recoveredOnce.current = true;
+      sync();
+    }
+  }, [syncState?.state]); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedId, setSelectedId] = useState(null);
   const [cursorId, setCursorId] = useState(null);
   const [bucketFilter, setBucketFilter] = useState(null);
@@ -180,6 +200,11 @@ export default function App() {
     return items === prev.items ? { ...next, items: prev.items } : { ...next, items };
   }), []);
   const [digestLoading, setDigestLoading] = useState(false);
+  /* What piled up since the user last looked. Loaded like the briefing and
+     deliberately unlike it in one respect: nothing here writes. Rendering the
+     card does not mark mail read and does not close the window -- only
+     `dismissRecap` does, and it is bound to one button. */
+  const [recap, setRecap] = useState(null);
   const [banner, setBanner] = useState('');
   const [leaving, setLeaving] = useState(null);   // { id, kind } while a row plays out
   const [undo, setUndo] = useState(null);
@@ -358,7 +383,15 @@ export default function App() {
      nobody is looking at. */
   useEffect(() => {
     if (!source.ready) return undefined;
-    const tick = () => { if (!document.hidden) loadMail(); };
+    /* Both panes, not just the list: the briefing is cached for the day but
+       served with current verdicts and refilled from the queue, so re-reading
+       it is cheap and keeps it moving with the mailbox. */
+    const tick = () => {
+      if (document.hidden) return;
+      loadMail();
+      api.digest(false).then(setDigest).catch(() => {});
+      api.recap().then(setRecap).catch(() => {});
+    };
     const timer = setInterval(tick, 90_000);
     window.addEventListener('focus', tick);
     document.addEventListener('visibilitychange', tick);
@@ -402,7 +435,21 @@ export default function App() {
     if (!source.ready) return;
     setDigestLoading(true);
     api.digest(false).then(setDigest).catch(() => {}).finally(() => setDigestLoading(false));
+    api.recap().then(setRecap).catch(() => {});
   }, [source.ready]);
+
+  /* The one place the absence window closes.
+
+     Not on render, not on opening a mail from the card. Someone who opens the
+     app to check one thing has not read their mail, and spending the window
+     there would leave tomorrow's card empty about the forty they never saw.
+     The card hides immediately rather than waiting for the refetch, because
+     the server will now answer `too_soon` and the component renders nothing
+     for it anyway. */
+  async function dismissRecap() {
+    setRecap(null);
+    try { await api.recapSeen(); } catch { /* the window stays open; try again next time */ }
+  }
 
   async function refreshDigest() {
     setDigestLoading(true);
@@ -423,6 +470,8 @@ export default function App() {
       await api.sync();
       setLastSync(new Date().toISOString());
       await loadMail();
+      api.digest(false).then(setDigest).catch(() => {});
+      api.recap().then(setRecap).catch(() => {});
     } catch (e) {
       setBanner(e.status === 401 ? t('sessionExpired') : e.message);
       if (e.status === 401 || e.status === 428) {
@@ -535,6 +584,15 @@ export default function App() {
       return next;
     });
     if (exits) setLeaving({ id, kind });
+    /* The briefing is a checklist, so a settled row leaves it -- after the
+       tick has had time to draw -- without waiting on the server. The refetch
+       below brings up the next row from the queue. Undo puts it back (the
+       refetch after an undo re-joins it). */
+    if (['done', 'not_relevant', 'snoozed'].includes(verdict)) {
+      setTimeout(() => setDigest((d) => (d && d.items
+        ? { ...d, items: d.items.filter((x) => x.email_id !== id) } : d)),
+      verdict === 'done' ? 650 : 250);
+    }
 
     clearTimeout(undoTimer.current);
     setUndo({ id, previous, verdict });
@@ -817,8 +875,13 @@ export default function App() {
     if (syncState?.state === 'failing') {
       out.push({
         id: 'sync-failing',
+        /* A recognised failure is worded in the reader's language; anything
+           else is shown whole (up to a sentence boundary), never cut mid-word
+           -- "Privacy & Security > Full" was the tail of a sentence the user
+           needed. */
         body: `${t('syncFailing', { arg: String(syncState.consecutive_failures || 1) })}`
-          + (syncState.error ? ` — ${syncState.error.slice(0, 120)}` : ''),
+          + (syncState.error_key ? ` — ${t(syncState.error_key)}`
+            : syncState.error ? ` — ${clipAtWord(syncState.error, 240)}` : ''),
       });
     }
     if (syncState?.state === 'frozen') {
@@ -1066,6 +1129,12 @@ export default function App() {
                 </div>
               ) : (
                 <div className="scroll">
+                  {/* Above the briefing, because it answers the question that
+                      comes first: not "what should I do" but "what is in
+                      there". It disappears once dismissed and stays gone for
+                      the floor window. */}
+                  <Recap card={recap} selectedId={selectedId}
+                         onOpen={openEmail} onDismiss={dismissRecap} />
                   <Digest
                     digest={digest} loading={digestLoading} onRefresh={refreshDigest}
                     selectedId={selectedId} checkedIds={doneIds}

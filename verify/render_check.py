@@ -925,6 +925,59 @@ def main() -> int:
                             if theme == "gold":
                                 page.screenshot(path=str(SHOTS / f"{theme}-{lang}-consent-settings.png"))
                         page.close()
+            # 24. The briefing is a checklist that moves. A row can be dismissed as
+            # well as ticked -- "done" is not the only honest answer -- and either
+            # way it leaves and the next one in the queue takes its place, without
+            # waiting for tomorrow. And a structural briefing carries no "made
+            # without AI" footer: it is complete, not a failure notice.
+            brief_bad: list[str] = []
+            for theme in THEMES[:2]:
+                for lang in ("ko", "en"):
+                    tag = f"{theme}-{lang}-briefing"
+                    page = browser.new_page(viewport={"width": 1280, "height": 900})
+                    page.request.get(f"http://127.0.0.1:{PORT}/__set?theme={theme}"
+                                     f"&lang={lang}&digest=structural")
+                    page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
+                    page.wait_for_timeout(600)
+                    subjects = lambda: page.evaluate(
+                        "() => [...document.querySelectorAll('.agenda .agenda-subject')]"
+                        ".map(e => e.textContent.trim())")
+                    before = subjects()
+                    if len(before) != 3:
+                        brief_bad.append(f"{tag}: expected 3 rows, saw {len(before)}")
+                        page.close()
+                        continue
+                    if not page.query_selector(".agenda-item .agenda-dismiss"):
+                        brief_bad.append(f"{tag}: no way to dismiss a briefing row")
+                        page.close()
+                        continue
+                    page.hover(".agenda-item >> nth=0")
+                    page.click(".agenda-item >> nth=0 >> .agenda-dismiss")
+                    page.wait_for_timeout(1300)
+                    after_dismiss = subjects()
+                    if before[0] in after_dismiss:
+                        brief_bad.append(f"{tag}: a dismissed row stayed on the briefing")
+                    if len(after_dismiss) != 3:
+                        brief_bad.append(f"{tag}: the gap was not refilled after dismissing "
+                                         f"({len(after_dismiss)} rows)")
+                    page.click(".agenda-item >> nth=0 >> .row-check")
+                    page.wait_for_timeout(1500)
+                    after_tick = subjects()
+                    if after_dismiss and after_dismiss[0] in after_tick:
+                        brief_bad.append(f"{tag}: a ticked row stayed on the briefing")
+                    if len(after_tick) != 3:
+                        brief_bad.append(f"{tag}: the gap was not refilled after ticking "
+                                         f"({len(after_tick)} rows)")
+                    foot = page.evaluate("() => document.querySelector('.digest-foot')?.innerText || ''")
+                    if foot:
+                        brief_bad.append(f"{tag}: a structural briefing still has a footer: {foot!r}")
+                    if theme == "gold" and lang == "ko":
+                        page.screenshot(path=str(SHOTS / f"{tag}.png"))
+                    page.close()
+            page = browser.new_page()
+            page.request.get(f"http://127.0.0.1:{PORT}/__set?digest=reset")
+            page.close()
+
             # 23. The first-run screen: the one a new user meets before anything
             # else, on a laptop-height window. It must be in their language, must
             # not talk to a developer ("npm start", "Terminal", "the app you
@@ -978,6 +1031,101 @@ def main() -> int:
             page.request.get(f"http://127.0.0.1:{PORT}/__set?setup=off")
             page.close()
 
+            # ---------------------------------------------------------- 25
+            # The recap card. Three claims, and the third is the one that can
+            # quietly destroy the feature: a summary that closes its own window
+            # when you merely look at it leaves tomorrow's card empty about the
+            # forty messages you never saw.
+            recap_bad: list[str] = []
+            for lang in LANGS:
+                page = browser.new_page(viewport={"width": 1280, "height": 900})
+                page.request.get(f"http://127.0.0.1:{PORT}/__set?theme=gold&lang={lang}")
+                posts: list[str] = []
+                page.on("request", lambda r, posts=posts: (
+                    posts.append(r.url) if r.method == "POST" else None))
+                page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
+                page.wait_for_timeout(400)
+
+                card = page.query_selector(".recap")
+                if card is None:
+                    recap_bad.append(f"{lang}: the recap card never rendered")
+                    page.close()
+                    continue
+
+                shape = page.evaluate("""() => {
+                  const card = document.querySelector('.recap');
+                  const lines = [...card.querySelectorAll('.recap-line')];
+                  return {
+                    sections: [...card.querySelectorAll('.recap-section h4')]
+                                .map(h => h.textContent.trim()),
+                    lines: lines.length,
+                    subjects: lines.map(l => (l.querySelector('.recap-subject')||{}).textContent || ''),
+                    openable: lines.every(l => !!l.querySelector('.recap-open')),
+                    text: card.innerText,
+                    wide: card.scrollWidth > card.clientWidth + 1,
+                  };
+                }""")
+                # 1. one line is one mail, and every line can be opened.
+                if shape["lines"] < 3:
+                    recap_bad.append(f"{lang}: {shape['lines']} lines, fixture has 3")
+                if not shape["openable"]:
+                    recap_bad.append(f"{lang}: a line with nothing to click -- "
+                                     "a line that cannot be opened is a line that lies")
+                if any(not t.strip() for t in shape["subjects"]):
+                    recap_bad.append(f"{lang}: a line with no subject")
+                if shape["wide"]:
+                    recap_bad.append(f"{lang}: the card scrolls sideways")
+                if lang == "ko":
+                    for english in ("Needs you", "Mark as seen", "Show ", "Bulk"):
+                        if english in shape["text"]:
+                            recap_bad.append(f"{lang}: English left on the card ({english!r})")
+                if "recapTitle" in shape["text"] or "cat_" in shape["text"]:
+                    recap_bad.append(f"{lang}: a raw i18n key reached the card")
+
+                # The picture is taken here, with the card still up. Taking it
+                # after the dismissal flow below photographed an empty pane and
+                # called it evidence of a card.
+                if lang == "ko":
+                    page.screenshot(path=str(SHOTS / "recap-ko.png"))
+
+                # 2. clicking a line opens that mail, and writes nothing.
+                before = list(posts)
+                page.click(".recap-line .recap-open")
+                page.wait_for_timeout(250)
+                # Selecting a mail replaces the whole right pane, exactly as it
+                # does from the briefing -- so the card is gone and `.detail-wrap`
+                # is what proves the click landed on the right thing.
+                opened = page.evaluate(
+                    "() => !!document.querySelector('.detail-wrap, .detail-back')")
+                if not opened:
+                    recap_bad.append(f"{lang}: clicking a line opened no mail")
+                wrote = [u for u in posts[len(before):] if "/api/" in u]
+                if wrote:
+                    recap_bad.append(f"{lang}: opening from the card wrote: {wrote}")
+
+                # 3. only the dismiss button closes the window.
+                page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
+                page.wait_for_timeout(300)
+                posts.clear()
+                if page.query_selector(".recap-seen") is None:
+                    recap_bad.append(f"{lang}: no way to dismiss the card")
+                else:
+                    page.click(".recap-seen")
+                    page.wait_for_timeout(300)
+                    if page.query_selector(".recap") is not None:
+                        recap_bad.append(f"{lang}: the card stayed after being dismissed")
+                    if not any("/api/mail/recap/seen" in u for u in posts):
+                        recap_bad.append(f"{lang}: dismissing never closed the window")
+                    page.reload(wait_until="networkidle")
+                    page.wait_for_timeout(300)
+                    if page.query_selector(".recap") is not None:
+                        recap_bad.append(f"{lang}: the card came back after being dismissed")
+                page.close()
+                # Re-open the window for the next language.
+                page = browser.new_page()
+                page.request.get(f"http://127.0.0.1:{PORT}/__set?recap=reset")
+                page.close()
+
             page = browser.new_page()
             page.request.get(f"http://127.0.0.1:{PORT}/__set?consent=off")
             page.close()
@@ -1006,6 +1154,12 @@ def main() -> int:
                          f"visible in {badge_seen}/{total} combinations")
             result.check(why_seen == total, "6. the reason chip is painted",
                          f"visible in {why_seen}/{total} combinations")
+            result.check(not brief_bad,
+                         "24. a briefing row can be ticked or dismissed, leaves, and the next "
+                         "one comes up",
+                         "\n".join(brief_bad[:6]) or
+                         "4 combinations: dismiss and tick each remove the row and refill the "
+                         "gap; no 'made without AI' footer")
             result.check(not setup_bad,
                          "23. the first-run screen is in the user's language, speaks to a "
                          "user, and scrolls",
@@ -1036,6 +1190,12 @@ def main() -> int:
                          "\n".join(set_bad[:4]) or
                          f"{total} combinations: tabs narrow the screen, and a term from "
                          "another group still finds its section")
+            result.check(not recap_bad,
+                         "25. the recap card lists one line per mail, every line opens it, "
+                         "and only dismissing closes the window",
+                         "\n".join(recap_bad[:6]) or
+                         "4 languages: lines openable, opening writes nothing, dismiss "
+                         "closes the window and it stays closed")
             result.check(not compose_bad,
                          "20. a reply can be written, approved and sent -- and the "
                          "approval screen cannot be typed into",

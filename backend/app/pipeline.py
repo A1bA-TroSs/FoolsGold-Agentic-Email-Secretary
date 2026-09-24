@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from . import db, dedup, learning, priority
@@ -254,6 +254,7 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
             # destroy the only unrewritten input rescore_all has.
             "model_bucket": c.bucket,
             "category": c.category,
+            "summary": c.summary,
         })
 
     # Exploration, decided over the whole suppressed batch. An oracle ranker
@@ -685,6 +686,10 @@ DIGEST_LOGIC_VERSION = 3
 # says "this matters", which is the opposite of "I am finished with it".
 _SETTLED_VERDICTS = ("done", "not_relevant", "snoozed")
 
+# How long a briefing that fell back to structural (AI configured but not
+# answering) is served before the model is tried again.
+DIGEST_AI_RETRY_MINUTES = 10
+
 
 def _with_current_verdicts(digest: dict[str, Any], today: date | None = None) -> dict[str, Any]:
     """Join on what the user has since done, drop what they have finished, and
@@ -792,8 +797,18 @@ def cached_digest(day: str | None = None) -> dict[str, Any] | None:
         return None
     if stamped == "structural" and configured not in ("", "none"):
         # It fell back because AI was unavailable. If a provider has since been
-        # configured, the fallback is not the answer any more.
-        return None
+        # configured, the fallback is not the answer any more -- but only try
+        # again every few minutes. This check used to rebuild on EVERY read, so
+        # each tick in the briefing (which re-reads it to drop the row and pull
+        # up the next one) waited on a fresh model call that was going to fail
+        # the same way; the ticked row sat there struck through until it did.
+        built = cached.get("created_at") or ""
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(built)
+        except ValueError:
+            age = timedelta(days=1)
+        if age >= timedelta(minutes=DIGEST_AI_RETRY_MINUTES):
+            return None
     return _with_current_verdicts(cached)
 
 

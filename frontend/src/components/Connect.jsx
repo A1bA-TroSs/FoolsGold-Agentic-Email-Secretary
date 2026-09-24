@@ -131,6 +131,11 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
           <div className="setup-callout" role="status">
             <b>{t('fdaTitle')}</b>
             <p>{fromTerminal ? t('fdaBodyTerminal') : t('fdaBody')}</p>
+            {/* Until the app is signed with a Developer ID, macOS may list it twice:
+                once by bundle (the gold icon, which is the one people turn on) and
+                once by the executable's path (a plain black icon) -- and the path
+                entry is the one it actually checks. Seen on the first DMG run. */}
+            {!fromTerminal && <p className="setup-still">{t('fdaTwoEntries')}</p>}
             {stillBlocked && <p className="setup-still">{t('fdaStillBlocked')}</p>}
             {canRelaunch() && (
               <div className="setup-actions">

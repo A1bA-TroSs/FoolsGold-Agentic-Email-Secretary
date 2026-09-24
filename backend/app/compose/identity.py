@@ -11,6 +11,8 @@ headers first, because they name *you* where To may only name a list.
 """
 from __future__ import annotations
 
+import unicodedata
+
 from .. import db
 from .message import Mailbox, ParentMessage
 
@@ -33,7 +35,12 @@ def known_identities() -> list[str]:
             "SELECT folder, lower(from_address) AS a, COUNT(*) AS n FROM emails "
             "WHERE from_address LIKE '%@%' GROUP BY folder, a ORDER BY n DESC").fetchall()
     for row in rows:
-        leaf = (row["folder"] or "").split("/")[-1].strip().lower()
+        # NFC as well as lower(): a folder name that came off a macOS
+        # filesystem is decomposed, and decomposed Hangul is not equal to the
+        # composed constants in SENT_NAMES. Rows written before this fix are
+        # still in the database, so normalising here is not redundant.
+        leaf = unicodedata.normalize(
+            "NFC", (row["folder"] or "").split("/")[-1]).strip().lower()
         if leaf in SENT_NAMES and row["a"] not in out:
             out.append(row["a"])
     return out

@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from .. import db, dedup, pipeline
+from .. import db, dedup, pipeline, recap
 from ..sources.base import SourceError
 from ..sources.registry import get_source
 
@@ -270,6 +270,28 @@ def clear_feedback(email_id: str) -> dict:
     return {"email_id": email_id, "verdict": None}
 
 
+# Declared above `/{email_id}` on purpose: FastAPI matches in declaration order,
+# and a single-segment path registered after it would be swallowed as an email
+# id. `/digest/today` escapes that by having two segments; this one does not.
+@router.get("/recap")
+def recap_card() -> dict:
+    """What piled up since the user last looked.
+
+    A read with no writes: it does not mark anything read and it does not move
+    the window. Both of those would make the card consume its own input."""
+    return recap.build()
+
+
+@router.post("/recap/seen")
+def recap_seen() -> dict:
+    """The only caller that moves the window.
+
+    The frontend calls this when the card is DISMISSED -- not when it renders,
+    not when an email is opened from it. Opening one thing from the summary
+    must not spend the summary."""
+    return {"since": recap.mark_seen()}
+
+
 @router.get("/{email_id}")
 def get_mail(email_id: str) -> dict:
     with db.connect() as conn:
@@ -331,6 +353,17 @@ async def sync(classify: bool = True) -> dict:
     return result
 
 
+def _sync_error_key(error: str) -> str | None:
+    """Name a sync failure the UI can word, when we recognise it. The error text
+    is stored in English (it goes to logs and the diagnostic tail), and pasting
+    it into a Korean banner is the bug this replaces."""
+    e = (error or "").lower()
+    if ("full disk access" in e or "permissionerror" in e
+            or "operation not permitted" in e or "not given foolsgold access" in e):
+        return "fdaNeeded"
+    return None
+
+
 def sync_state() -> dict:
     """What the UI needs to tell "nothing arrived" from "this is broken".
 
@@ -351,8 +384,20 @@ def sync_state() -> dict:
             state = "frozen"
         else:
             state = "ok"
+    error_key = _sync_error_key(last["error"]) if last and not last["ok"] else None
+    if state == "failing" and error_key == "fdaNeeded":
+        # The failures were macOS refusing access. If the source reads fine NOW
+        # -- permission granted and the app restarted -- those failures are
+        # history, and repeating "no access" to someone who just granted it
+        # reads as "your fix didn't work". The next sync clears the count.
+        try:
+            if get_source().status().ready:
+                state = "recovering"
+        except Exception:  # noqa: BLE001 - a status probe must not break the list
+            pass
     return {
         "state": state,
+        "error_key": error_key,
         "at": last["finished_at"] if last else None,
         "trigger": last["trigger"] if last else None,
         "error": last["error"] if last else "",

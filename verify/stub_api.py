@@ -184,6 +184,80 @@ FIXTURES = {
 # Cloud-AI consent. Off by default (the provider is local), so every other
 # check runs exactly as before; `/__set?consent=pending` switches the provider
 # to a cloud one that has not been allowed yet.
+# The briefing is served the way the backend serves it: settled rows dropped
+# and the gap refilled from the queue behind them (pipeline._with_current_verdicts).
+# A static fixture here would put a ticked row straight back on the next read,
+# and the harness would be testing a briefing no backend produces.
+# The recap card: what piled up since the user last looked.
+#
+# Shaped like the real endpoint, including the parts that decide whether the
+# card renders at all. `too_soon` is the app declining to speak, and the only
+# thing that sets it here is the dismiss POST -- which is the whole state rule
+# this fixture exists to exercise.
+RECAP_SEEN: list = []
+
+
+def recap_card() -> dict:
+    lines = [
+        {"email_id": "m1", "email_ids": ["m1"],
+         "subject": "[Invitation] Recruitment Talk \u2013 Huawei Technologies Ltd",
+         "task": "Register for the Huawei recruitment talk", "summary": "",
+         "sender": "Center for Industry Engagement", "deadline": "2026-09-18",
+         "received_at": "2026-09-16T09:00:00+00:00", "bucket": "action", "copies": 1},
+        {"email_id": "m3", "email_ids": ["m3", "m6", "m7"],
+         "subject": "Final Reminder: submit the progress report",
+         "task": "Submit the Co-op progress report", "summary": "",
+         "sender": "Co-op Office", "deadline": "2026-09-19",
+         "received_at": "2026-09-16T08:00:00+00:00", "bucket": "action", "copies": 3},
+    ]
+    events = [
+        {"email_id": "m4", "email_ids": ["m4"],
+         "subject": "Seminar: Ethics in Practice", "task": "",
+         "summary": "The ICAC seminar moves to Wednesday and registration closes Monday.",
+         "sender": "Student Affairs", "deadline": None,
+         "received_at": "2026-09-15T10:00:00+00:00", "bucket": "fyi", "copies": 1},
+    ]
+    return {
+        "since": "2026-09-15T09:00:00+00:00",
+        "clamped": False, "first_run": False,
+        "too_soon": bool(RECAP_SEEN),
+        "total": 4, "lines": 3,
+        "sections": [
+            {"key": "needs", "count": 2, "lines": lines, "truncated": False},
+            {"key": "cat:event", "count": 1, "lines": events, "truncated": False},
+        ],
+        "bulk": {"key": "bulk", "count": 1, "more": 0, "senders": [
+            {"sender": "ShopCo", "count": 1, "lines": [
+                {"email_id": "m5", "email_ids": ["m5"],
+                 "subject": "Weekly round-up: 40% off boots", "task": "",
+                 "summary": "", "sender": "ShopCo", "deadline": None,
+                 "received_at": "2026-09-14T10:00:00+00:00", "bucket": "noise",
+                 "copies": 1}]}]},
+        "hidden": {"hidden": 12, "explored": 1},
+    }
+
+
+DIGEST_SETTLED: set = set()
+DIGEST_RESERVE = [
+    {"email_id": "m4", "note": "", "note_key": "dueOn", "note_vars": {"date": "2026-09-19"},
+     "subject": "Scholarship Application - UG", "sender": "Student Affairs",
+     "bucket": "action", "deadline": "2026-09-19", "done": False},
+    {"email_id": "m5", "note": "", "note_key": "dueOn", "note_vars": {"date": "2026-09-20"},
+     "subject": "Talk. Lead. Get coached", "sender": "Center for Language Education",
+     "bucket": "action", "deadline": "2026-09-20", "done": False},
+]
+DIGEST_MODEL = {"model": None}
+
+
+def digest_now():
+    base = dict(FIXTURES["/api/mail/digest/today"])
+    rows = [r for r in base["items"] + DIGEST_RESERVE if r["email_id"] not in DIGEST_SETTLED]
+    base["items"] = rows[:3]
+    if DIGEST_MODEL["model"]:
+        base["model"] = DIGEST_MODEL["model"]
+    return base
+
+
 CONSENT = {"state": "off"}
 CONSENT_POSTS: list = []
 
@@ -318,6 +392,15 @@ class Handler(SimpleHTTPRequestHandler):
                 SETTINGS["theme"] = q["theme"][0]
             if q.get("lang"):
                 SETTINGS["ui_language"] = q["lang"][0]
+            if q.get("theme"):
+                DIGEST_SETTLED.clear()      # every combination starts from the full briefing
+            if q.get("recap"):
+                RECAP_SEEN.clear()
+            if q.get("theme"):
+                RECAP_SEEN.clear()      # every combination starts with the card open
+            if q.get("digest"):
+                DIGEST_SETTLED.clear()
+                DIGEST_MODEL["model"] = None if q["digest"][0] == "reset" else q["digest"][0]
             if q.get("setup"):
                 # First-run screen: Apple Mail chosen, macOS still denying
                 # ~/Library/Mail. Exactly the state a user who just downloaded
@@ -345,6 +428,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json({"posts": CONSENT_POSTS})
         if urlparse(self.path).path == "/api/ai/consent":
             return self._json(consent_status())
+        if urlparse(self.path).path == "/api/mail/digest/today":
+            return self._json(digest_now())
         # One email, opened.
         #
         # `/api/mail/<id>` fell through the prefix rule and was answered with
@@ -375,6 +460,8 @@ class Handler(SimpleHTTPRequestHandler):
                                "registered.</p>" + "<p>Body line.</p>" * 40),
                 ))
 
+        if urlparse(self.path).path == "/api/mail/recap":
+            return self._json(recap_card())
         if self.path.startswith("/api/mail?") or self.path == "/api/mail":
             special = self._mail_query()
             if special is not None:
@@ -385,6 +472,10 @@ class Handler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_DELETE(self):
+        fb = re.match(r"^/api/mail/([^/]+)/feedback$", urlparse(self.path).path)
+        if fb:
+            DIGEST_SETTLED.discard(fb.group(1))
+            return self._json({"ok": True})
         if urlparse(self.path).path == "/api/ai/consent":
             CONSENT["state"] = "pending"
             return self._json({"withdrawn": 1, **consent_status()})
@@ -395,6 +486,18 @@ class Handler(SimpleHTTPRequestHandler):
         raw = self.rfile.read(length) if length else b""
         path = urlparse(self.path).path
 
+        if path == "/api/mail/recap/seen":
+            RECAP_SEEN.append("2026-09-16T12:00:00+00:00")
+            return self._json({"since": RECAP_SEEN[-1]})
+        fb = re.match(r"^/api/mail/([^/]+)/feedback$", path)
+        if fb:
+            try:
+                verdict = (json.loads(raw or b"{}") or {}).get("verdict")
+            except ValueError:
+                verdict = None
+            if verdict in ("done", "not_relevant", "snoozed"):
+                DIGEST_SETTLED.add(fb.group(1))
+            return self._json({"ok": True, "verdict": verdict})
         if path == "/api/ai/consent":
             CONSENT_POSTS.append(json.loads(raw or b"{}"))
             CONSENT["state"] = "granted"
