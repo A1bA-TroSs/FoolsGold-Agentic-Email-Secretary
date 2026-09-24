@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { RefreshIcon } from './Icons.jsx';
+import { IrrelevantIcon, RefreshIcon } from './Icons.jsx';
 import { ThinkingNote } from './Loading.jsx';
 import { useT } from '../lib/i18n.js';
 import { dueChip } from '../lib/due.js';
@@ -89,6 +89,16 @@ const AgendaItem = memo(function AgendaItem({ it, t, delay, checked, active, onO
           {it.sender && <span className="agenda-sender">· {it.sender}</span>}
         </span>
       </button>
+
+      {/* Ticking is not the only honest answer to a briefing row. "This isn't
+          for me" is the other one, and a checklist that only offers "done"
+          makes the user lie to clear it -- or leaves the row sitting there.
+          Same verdict as the mail list's "not relevant", so the row leaves
+          and the next one in the queue comes up. */}
+      <button className="agenda-dismiss" onClick={() => onDone(it.email_id, 'not_relevant')}
+              title={t('notRelevant')} aria-label={`${t('notRelevant')}: ${it.subject}`}>
+        <IrrelevantIcon />
+      </button>
     </li>
   );
 });
@@ -143,7 +153,11 @@ export default function Digest({ digest, loading, onRefresh, onOpen, onDone, sel
         </>
       )}
 
-      {digest?.model && digest.model !== 'none' && (
+      {/* Structural briefings carry no footer at all. "Made without AI" was the
+          same marker Danny asked to have removed from the reading pane on
+          2026-09-20 -- it reads as a failure notice about a briefing that is
+          complete, and the AI banner already says when AI is unavailable. */}
+      {digest?.model && digest.model !== 'none' && digest.model !== 'structural' && (
         <div className="digest-foot">
           {/* `digest.model` is "provider:model" -- an internal identifier.
               "via copilot:auto" reads as a hardcoded string because "auto" is
@@ -162,9 +176,7 @@ export default function Digest({ digest, loading, onRefresh, onOpen, onDone, sel
               For a product whose argument is that mail never leaves the
               machine, "which provider is running" is not a footnote. A cloud
               provider now says so, and says where to change it. */}
-          {digest.model === 'structural'
-            ? t('digestNoAi')
-            : (() => {
+          {(() => {
                 const id = digest.model.split(':')[0];
                 const name = PROVIDER_NAMES[id] || id;
                 return id === 'ollama'

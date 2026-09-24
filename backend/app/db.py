@@ -375,6 +375,10 @@ MIGRATIONS: list[tuple[str, str, str]] = [
     # the database to serve pictures nobody has asked to see yet.
     ("emails", "source_path", "TEXT"),
     ("classifications", "category", "TEXT"),
+    # One line of what the mail SAYS, for the recap card. Written by the
+    # same classify call that fills the columns above, so the card costs no
+    # model call of its own.
+    ("classifications", "summary", "TEXT"),
     ("classifications", "model_bucket", "TEXT"),
     # Why this email ranks where it does, as a code the UI translates. Stored
     # rather than computed on read so the list does not need one API call per
@@ -717,22 +721,32 @@ def save_classification(rec: dict[str, Any]) -> None:
         conn.execute(
             "INSERT INTO classifications (email_id, bucket, deadline, rationale, score, matched, "
             "model, source, created_at, actionability, relevance, explored, model_bucket, "
-            "reason_code, reason_arg) "
+            "reason_code, reason_arg, category, summary) "
             "VALUES (:email_id, :bucket, :deadline, :rationale, :score, :matched, :model, :source, "
             ":created_at, :actionability, :relevance, :explored, :model_bucket, "
-            ":reason_code, :reason_arg) "
+            ":reason_code, :reason_arg, :category, :summary) "
             "ON CONFLICT(email_id) DO UPDATE SET bucket=excluded.bucket, deadline=excluded.deadline, "
             "rationale=excluded.rationale, score=excluded.score, matched=excluded.matched, "
             "model=excluded.model, source=excluded.source, created_at=excluded.created_at, "
             "actionability=excluded.actionability, relevance=excluded.relevance, "
             "explored=excluded.explored, model_bucket=excluded.model_bucket, "
-            "reason_code=excluded.reason_code, reason_arg=excluded.reason_arg",
+            "reason_code=excluded.reason_code, reason_arg=excluded.reason_arg, "
+            # `category` was in the caller's dict and missing from this
+            # statement, so every classification ever written dropped it
+            # silently -- 1,315 rows, all uncategorised, while the model was
+            # being asked for a category on every call and `category_evidence`
+            # was reporting on a column nothing had filled. Extra keys in a
+            # named-parameter dict are ignored by sqlite3, so nothing ever
+            # raised. A column that is only ever read by a feature nobody
+            # had built yet is a column with no test.
+            "category=excluded.category, summary=excluded.summary",
             # The two axes are optional on the way in so an older caller -- or a
             # test that only cares about the bucket -- does not have to know
             # about them. A missing axis is NULL, which is honestly "not
             # computed" rather than a plausible zero.
             {"actionability": None, "relevance": None, "explored": 0,
-             "model_bucket": None, "reason_code": None, "reason_arg": None, **rec},
+             "model_bucket": None, "reason_code": None, "reason_arg": None,
+             "category": "", "summary": "", **rec},
         )
         conn.commit()
 

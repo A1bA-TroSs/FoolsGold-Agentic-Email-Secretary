@@ -102,6 +102,10 @@ class Classification:
     rationale: str = ""
     matched: list[str] = field(default_factory=list)
     category: str = ""
+    # What the email SAYS, for someone who has not opened it. Deliberately
+    # not `rationale`: that explains why the app ranked the mail where it
+    # did, which is a sentence about the app. This one is about the mail.
+    summary: str = ""
     tasks: list[ExtractedTask] = field(default_factory=list)
 
 
@@ -242,10 +246,18 @@ hackathon invitation can be "action".
 - "service"       IT tickets, system notices, password and account mail
 Use "" if genuinely none of them fit. Do not invent a category outside this list.
 
+Finally write "summary": one plain sentence, at most 20 words, saying what this email
+TELLS the recipient -- the fact, the change, the offer, the date. It is read by someone
+who has not opened their mail yet, so it has to stand on its own: never "this email" or
+"the sender", and never a restatement of the subject line, which is printed beside it.
+Write it in the same language the email is written in. Use "" when the subject already
+says everything there is to say.
+
 Reply with a JSON array and nothing else. One object per email, same order as given:
 [{"id": "<id>", "bucket": "action|fyi|noise", "deadline": "YYYY-MM-DD or null",
   "tasks": [{"title": "<verb-first, max 12 words>", "due": "YYYY-MM-DD"}],
   "matched": ["priority", ...], "category": "<one of the list above, or \"\">",
+  "summary": "<max 20 words, or \"\">",
   "rationale": "<max 15 words>"}]"""
 
 DIGEST_SYSTEM = """You write one short morning briefing for a busy person, in the voice of
@@ -482,6 +494,7 @@ def parse_classifications(raw: str, expected_ids: list[str]) -> list[Classificat
                 rationale=str(item.get("rationale") or "")[:300],
                 matched=[str(m) for m in matched if m] if isinstance(matched, list) else [],
                 category=category,
+                summary=str(item.get("summary") or "").strip()[:300],
                 tasks=parse_tasks(item.get("tasks")),
             )
         )

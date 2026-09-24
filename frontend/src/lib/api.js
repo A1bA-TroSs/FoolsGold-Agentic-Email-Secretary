@@ -68,6 +68,12 @@ export const api = {
   sync: () => request('/api/mail/sync', { method: 'POST' }),
   rescan: () => request('/api/mail/rescan', { method: 'POST' }),
   digest: (force = false) => request(`/api/mail/digest/today?force=${force}`),
+  /* The recap is a pure read: it marks nothing read and moves no window.
+     `recapSeen` is the only call that closes the window, and it is wired
+     to the dismiss button alone -- never to rendering, never to opening a
+     mail from the card. */
+  recap: () => request('/api/mail/recap'),
+  recapSeen: () => request('/api/mail/recap/seen', { method: 'POST' }),
 
   // --- writing mail -----------------------------------------------------
   // `sendDraft` takes a token and nothing else, mirroring the endpoint. There
