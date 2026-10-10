@@ -72,7 +72,7 @@ export const api = {
      `recapSeen` is the only call that closes the window, and it is wired
      to the dismiss button alone -- never to rendering, never to opening a
      mail from the card. */
-  recap: () => request('/api/mail/recap'),
+  recap: (force = false) => request(`/api/mail/recap?force=${force}`),
   recapSeen: () => request('/api/mail/recap/seen', { method: 'POST' }),
 
   // --- writing mail -----------------------------------------------------

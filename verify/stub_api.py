@@ -197,7 +197,7 @@ FIXTURES = {
 RECAP_SEEN: list = []
 
 
-def recap_card() -> dict:
+def recap_card(force: bool = False) -> dict:
     lines = [
         {"email_id": "m1", "email_ids": ["m1"],
          "subject": "[Invitation] Recruitment Talk \u2013 Huawei Technologies Ltd",
@@ -220,7 +220,7 @@ def recap_card() -> dict:
     return {
         "since": "2026-09-15T09:00:00+00:00",
         "clamped": False, "first_run": False,
-        "too_soon": bool(RECAP_SEEN),
+        "too_soon": bool(RECAP_SEEN) and not force,
         "total": 4, "lines": 3,
         "sections": [
             {"key": "needs", "count": 2, "lines": lines, "truncated": False},
@@ -461,7 +461,9 @@ class Handler(SimpleHTTPRequestHandler):
                 ))
 
         if urlparse(self.path).path == "/api/mail/recap":
-            return self._json(recap_card())
+            from urllib.parse import parse_qs
+            forced = (parse_qs(urlparse(self.path).query).get("force") or ["false"])[0]
+            return self._json(recap_card(forced == "true"))
         if self.path.startswith("/api/mail?") or self.path == "/api/mail":
             special = self._mail_query()
             if special is not None:

@@ -274,12 +274,17 @@ def clear_feedback(email_id: str) -> dict:
 # and a single-segment path registered after it would be swallowed as an email
 # id. `/digest/today` escapes that by having two segments; this one does not.
 @router.get("/recap")
-def recap_card() -> dict:
+def recap_card(force: bool = False) -> dict:
     """What piled up since the user last looked.
 
     A read with no writes: it does not mark anything read and it does not move
-    the window. Both of those would make the card consume its own input."""
-    return recap.build()
+    the window. Both of those would make the card consume its own input.
+
+    `force=true` comes from the rail entry, where the user asked for the card
+    by name. The quiet period after a dismissal exists to stop the card
+    VOLUNTEERING itself; it has no business refusing someone who walked over
+    and asked. The window does not move either way."""
+    return recap.build(force=force)
 
 
 @router.post("/recap/seen")

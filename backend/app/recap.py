@@ -247,10 +247,17 @@ def _section(key: str, lines: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def build(now: datetime | None = None) -> dict[str, Any]:
-    """The card. No model call, no writes."""
+def build(now: datetime | None = None, force: bool = False) -> dict[str, Any]:
+    """The card. No model call, no writes.
+
+    `force` is what the rail entry passes. The two-hour floor exists to stop
+    the card *volunteering* itself right after it was dismissed; it has no
+    business refusing a user who walked over and asked. The window is not
+    touched either way -- only `mark_seen` moves it."""
     now = now or datetime.now(timezone.utc)
     win = window(now)
+    if force:
+        win = {**win, "too_soon": False}
     rows = _rows(win["since"])
 
     # One announcement is one line however many times the department sent it.
