@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "Fools Gold"
-VERSION = "1.0.0-dev"
+VERSION = "1.2.7"
 
 # All user state lives in one directory the user can inspect or delete.
 DATA_DIR = Path(os.environ.get("FOOLSGOLD_HOME", Path.home() / ".foolsgold"))

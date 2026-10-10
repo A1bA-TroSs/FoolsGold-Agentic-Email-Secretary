@@ -223,3 +223,27 @@ def test_the_model_label_wins_over_the_keyword_guess(tmp_path, monkeypatch):
     _email(db, "a", subject="Hackathon registration now open")
     _classify(db, "a", category="career")
     assert any(s["key"] == "cat:career" for s in recap.build()["sections"])
+
+
+# ------------------------------------------------- asking for it on purpose
+
+def test_the_rail_view_can_ask_inside_the_quiet_period(tmp_path, monkeypatch):
+    """The floor stops the card volunteering itself. It must not refuse a user
+    who navigated to it -- that would be the app sulking."""
+    db = _db(tmp_path, monkeypatch)
+    _email(db, "e1", hours_ago=0)
+    _classify(db, "e1")
+    recap.mark_seen()
+    assert recap.build()["too_soon"] is True
+    assert recap.build(force=True)["too_soon"] is False
+
+
+def test_asking_for_it_still_does_not_move_the_window(tmp_path, monkeypatch):
+    db = _db(tmp_path, monkeypatch)
+    _email(db, "e1", hours_ago=2)
+    _classify(db, "e1")
+    recap.mark_seen()
+    before = db.get_setting(recap.SEEN_KEY, "")
+    recap.build(force=True)
+    recap.build(force=True)
+    assert db.get_setting(recap.SEEN_KEY, "") == before

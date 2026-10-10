@@ -1103,7 +1103,50 @@ def main() -> int:
                 if wrote:
                     recap_bad.append(f"{lang}: opening from the card wrote: {wrote}")
 
-                # 3. only the dismiss button closes the window.
+                # 2b. the rail entry is a door of its own: it opens the pile
+                # even inside the quiet period, it puts the card in the LEFT
+                # column so the reading pane stays free, and it does not offer
+                # to mark as seen -- a card you walked to has been seen.
+                page.click('[data-view="recap"]')
+                page.wait_for_timeout(350)
+                rail = page.evaluate("""() => {
+                  const cards = [...document.querySelectorAll('.recap')];
+                  const inList = cards.filter(c => c.closest('.pane-list'));
+                  return {
+                    cards: cards.length,
+                    inList: inList.length,
+                    dismiss: cards.some(c => c.querySelector('.recap-seen')),
+                    filters: !!document.querySelector('.pane-list .filters'),
+                    // The pile and the inbox stacked in one column is the
+                    // confusion the removed Today view was deleted for, and the
+                    // first cut of this view shipped it.
+                    list: !!document.querySelector('.pane-list .mail-item, .pane-list .mail-row'),
+                    lines: inList.length ? inList[0].querySelectorAll('.recap-line').length : 0,
+                  };
+                }""")
+                if rail["inList"] != 1:
+                    recap_bad.append(f"{lang}: the rail view put {rail['inList']} cards "
+                                     "in the list column, expected exactly 1")
+                if rail["cards"] != 1:
+                    recap_bad.append(f"{lang}: {rail['cards']} recap cards on one screen "
+                                     "-- two doors into one room")
+                if rail["dismiss"]:
+                    recap_bad.append(f"{lang}: the rail view offers 'mark as seen'")
+                if rail["filters"]:
+                    recap_bad.append(f"{lang}: bucket filters left on the recap view")
+                if not rail["lines"]:
+                    recap_bad.append(f"{lang}: the rail view rendered no lines")
+                if rail["list"]:
+                    recap_bad.append(f"{lang}: the rail view also rendered the ranked list "
+                                     "under the card -- two readings of the same mail in "
+                                     "one column")
+                if lang == "ko":
+                    page.screenshot(path=str(SHOTS / "recap-rail-ko.png"))
+
+                # 3. only the dismiss button closes the window. Back to the
+                # dashboard first -- the rail view has no dismiss button, by
+                # design, so the assertion below has to be made where the card
+                # volunteered itself.
                 page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
                 page.wait_for_timeout(300)
                 posts.clear()

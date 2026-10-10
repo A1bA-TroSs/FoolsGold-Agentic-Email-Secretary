@@ -1,7 +1,7 @@
 {
   "name": "foolsgold",
   "productName": "Fools Gold",
-  "version": "1.0.0",
+  "version": "1.2.7",
   "description": "Agentic email secretary for Outlook — local-first, read-only.",
   "main": "electron/main.js",
   "scripts": {

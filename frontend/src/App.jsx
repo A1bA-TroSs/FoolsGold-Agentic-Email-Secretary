@@ -18,7 +18,7 @@ import Calendar, { DayPanel, useCalendar, todayIso } from './components/Calendar
 import Splash from './components/Splash.jsx';
 import LogoMenu from './components/LogoMenu.jsx';
 import { SkeletonList, Sweep, SyncStep, ThinkingNote } from './components/Loading.jsx';
-import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
+import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, PileIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
 
 /* Views are a flat list including Settings, not a modal on top of everything
    else. Settings used to be a boolean overlay, which meant clicking a sidebar
@@ -36,6 +36,14 @@ import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDown
    onto is a checklist for today, which is what that icon has always said. */
 const VIEWS = [
   { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: AgendaIcon },
+  /* The pile, and it is a different room from either neighbour -- which is
+     the test the removed Today view failed. Priority ranks what to do next
+     and shows seven rows; All is the mailbox in date order; this is what
+     arrived while you were gone, sectioned by what it is about, including the
+     fyi and bulk mail neither of the others puts in front of you. Without a
+     door it would be reachable only in the two-hour window after new mail
+     lands, which is not a feature, it is a coincidence. */
+  { id: 'recap',    key: 'viewRecap',    hintKey: 'viewRecapHint',    short: 'railRecap',    icon: PileIcon },
   { id: 'all',      key: 'viewAll',      hintKey: 'viewAllHint',      short: 'railAll',      icon: InboxIcon },
   { id: 'calendar', key: 'viewCalendar', hintKey: 'viewCalendarHint', short: 'railCalendar', icon: CalendarIcon },
 ];
@@ -205,6 +213,11 @@ export default function App() {
      card does not mark mail read and does not close the window -- only
      `dismissRecap` does, and it is bound to one button. */
   const [recap, setRecap] = useState(null);
+  /* Two payloads, deliberately. The card that volunteers itself obeys the
+     quiet period after a dismissal; the one behind the rail button does not,
+     because the user asked for it. One piece of state would have to serve
+     both rules and would get one of them wrong. */
+  const [recapView, setRecapView] = useState(null);
   const [banner, setBanner] = useState('');
   const [leaving, setLeaving] = useState(null);   // { id, kind } while a row plays out
   const [undo, setUndo] = useState(null);
@@ -391,6 +404,7 @@ export default function App() {
       loadMail();
       api.digest(false).then(setDigest).catch(() => {});
       api.recap().then(setRecap).catch(() => {});
+      if (view === 'recap') api.recap(true).then(setRecapView).catch(() => {});
     };
     const timer = setInterval(tick, 90_000);
     window.addEventListener('focus', tick);
@@ -446,6 +460,11 @@ export default function App() {
      The card hides immediately rather than waiting for the refetch, because
      the server will now answer `too_soon` and the component renders nothing
      for it anyway. */
+  useEffect(() => {
+    if (!source.ready || view !== 'recap') return;
+    api.recap(true).then(setRecapView).catch(() => {});
+  }, [source.ready, view]);
+
   async function dismissRecap() {
     setRecap(null);
     try { await api.recapSeen(); } catch { /* the window stays open; try again next time */ }
@@ -938,6 +957,7 @@ export default function App() {
         <Titlebar title={t('appName')} sub={t('notConnected')} />
         <div className="app">
           <Rail view={view} setView={setView} counts={counts} t={t}
+              recapCount={recap?.total || 0}
                 putAwayOpen={putAwayOpen} setPutAwayOpen={setPutAwayOpen}
                 logoOpen={logoOpen} onLogo={() => setLogoOpen((v) => !v)} />
           <div className="pane-detail">
@@ -1002,7 +1022,7 @@ export default function App() {
                 </button>
               </div>
 
-              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && <div className="filters">
+              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && view !== 'recap' && <div className="filters">
                 {[
                   { id: null, label: `${t('filterAll')} ${visible.length ? `(${visible.length})` : ''}` },
                   { id: 'action', label: `${t('filterAction')} ${counts.action ? `(${counts.action})` : ''}` },
@@ -1029,6 +1049,14 @@ export default function App() {
                   />
                 ) : (
                   <>
+                    {/* The recap is the LIST here, for the same reason the
+                        briefing is: it lives in the left column so the reading
+                        pane stays free for whatever line you click. The
+                        briefing filling the reading pane itself is what once
+                        made its rows look dead on click. */}
+                    {view === 'recap' && (
+                      <Recap card={recapView} selectedId={selectedId} onOpen={openEmail} />
+                    )}
                     {view === 'muted' && <>
                       <MutedBox senders={mutedSenders} onUnmute={unmute} />
                       <HighlightBox items={highlighted} onHighlight={setHighlight} />
@@ -1038,7 +1066,12 @@ export default function App() {
                         onPurge={(it) => actOnRemoved(it, () => api.purgeEntry(it.kind, it.id))}
                       />
                     </>}
-                    {listLoading && !mail.length
+                    {/* ...and nothing else. The first cut left the ranked list
+                        rendering underneath the card, so the pile and the inbox
+                        were stacked in one column saying different things about
+                        the same mail -- the exact confusion the removed Today
+                        view was deleted for. */}
+                    {view === 'recap' ? null : listLoading && !mail.length
                       ? <SkeletonList />
                       : <MailList items={visible} selectedId={selectedId} cursorId={cursorId}
                                   leaving={leaving} mutedView={view === 'muted'}
@@ -1108,6 +1141,7 @@ export default function App() {
                     <button className="btn ghost" onClick={closeEmail}>
                       <BackIcon />
                       {t(view === 'calendar' ? 'backToCalendar'
+                        : view === 'recap' ? 'backToRecap'
                         : view === 'priority' ? 'backToChecklist' : 'backToList')}
                     </button>
                     <span className="detail-back-hint"><kbd>esc</kbd></span>
@@ -1133,8 +1167,10 @@ export default function App() {
                       comes first: not "what should I do" but "what is in
                       there". It disappears once dismissed and stays gone for
                       the floor window. */}
-                  <Recap card={recap} selectedId={selectedId}
-                         onOpen={openEmail} onDismiss={dismissRecap} />
+                  {view !== 'recap' && (
+                    <Recap card={recap} selectedId={selectedId}
+                           onOpen={openEmail} onDismiss={dismissRecap} />
+                  )}
                   <Digest
                     digest={digest} loading={digestLoading} onRefresh={refreshDigest}
                     selectedId={selectedId} checkedIds={doneIds}
@@ -1196,7 +1232,7 @@ function Titlebar({ title, sub, right }) {
   );
 }
 
-function Rail({ view, setView, counts, logoOpen, onLogo, t, putAwayOpen, setPutAwayOpen }) {
+function Rail({ view, setView, counts, recapCount, logoOpen, onLogo, t, putAwayOpen, setPutAwayOpen }) {
   return (
     <nav className="rail">
       <img className={`logo brand-mark ${logoOpen ? 'open' : ''}`} src="./logo.png"
@@ -1214,6 +1250,7 @@ function Rail({ view, setView, counts, logoOpen, onLogo, t, putAwayOpen, setPutA
           <span className="rail-glyph">
             <Icon />
             {id === 'priority' && counts.action ? <span className="badge" /> : null}
+            {id === 'recap' && recapCount ? <span className="badge" /> : null}
           </span>
           <span className="rail-label">{t(short)}</span>
         </button>

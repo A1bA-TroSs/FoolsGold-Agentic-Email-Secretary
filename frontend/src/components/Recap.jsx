@@ -120,7 +120,17 @@ export default function Recap({ card, onOpen, onDismiss, selectedId }) {
      to say, and the difference matters: a card that reappears empty two minutes
      after it was dismissed is how a summary teaches you to ignore it. */
   if (!card || card.too_soon) return null;
-  if (!card.sections.length && !card.bulk) return null;
+  /* An empty pile is worth saying out loud in the view the user navigated to,
+     and worth saying nothing at all when the card would be volunteering it.
+     Same component, and the difference is whether anyone asked. */
+  if (!card.sections.length && !card.bulk) {
+    return onDismiss ? null : (
+      <div className="recap">
+        <div className="recap-head"><h3>{t('recapTitle')}</h3></div>
+        <p className="digest-empty">{t('recapNothing')}</p>
+      </div>
+    );
+  }
 
   const since = card.since ? new Date(card.since) : null;
   const sinceLabel = since
@@ -140,10 +150,17 @@ export default function Recap({ card, onOpen, onDismiss, selectedId }) {
         </span>
         {/* The only control in the app that moves the window. Not rendering the
             card, not opening mail from it -- dismissing it. Opening one thing
-            to check it must not spend the summary. */}
-        <button className="btn ghost recap-seen" onClick={onDismiss}>
-          {t('recapDismiss')}
-        </button>
+            to check it must not spend the summary.
+
+            Absent in the rail view, and that is the point: "mark as seen"
+            answers a card that volunteered itself. A card you navigated to has
+            already been seen by definition, and a button that closed the window
+            there would punish you for looking. */}
+        {onDismiss && (
+          <button className="btn ghost recap-seen" onClick={onDismiss}>
+            {t('recapDismiss')}
+          </button>
+        )}
       </div>
 
       {card.sections.map((section) => (
