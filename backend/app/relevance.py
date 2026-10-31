@@ -69,6 +69,30 @@ PRIOR_BIAS = -0.40           # an unmatched email is not noise, it is just not u
 PRIOR_TOPIC = 2.20           # a full priority-list match dominates
 PRIOR_STRUCTURAL_NOISE = -2.00
 
+# Who sent it, and to whom. Research on what users act on puts these above
+# topic: past interaction with the sender carried most of the predictive power
+# in enterprise reply prediction (Yang et al., SIGIR 2017), and mail sent to
+# you rather than to a list is far likelier to need you (Karagiannis &
+# Vojnovic, WWW 2009). Before these priors existed the features were computed
+# and shown in `explain`, but on day one they moved nothing: relevance was
+# topic and the bulk-sender penalty alone, so a known correspondent and a
+# stranger's newsletter differed only by the noise regex.
+#
+# Sized so that a highlighted sender beats the bulk-sender penalty ("always
+# show my advisor") and a frequent correspondent addressed directly sits
+# clearly above theta_rel, while neither outweighs a full topic match.
+PRIOR_DIRECT = 0.60          # To: me, not Cc and not a list
+PRIOR_AFFINITY = 1.20        # scaled by affinity in [0, 1]; 1.0 = five+ past exchanges
+PRIOR_HIGHLIGHTED = 2.50     # the user marked this sender to stand out
+
+PRIORS = {
+    "topic_match": PRIOR_TOPIC,
+    "structural_noise": PRIOR_STRUCTURAL_NOISE,
+    "direct_address": PRIOR_DIRECT,
+    "affinity": PRIOR_AFFINITY,
+    "highlighted": PRIOR_HIGHLIGHTED,
+}
+
 # Actionability is deliberately a FIXED formula. It describes the text, and the
 # text does not change when the user changes. Nothing below learns.
 ACT_BIAS = -1.30
@@ -226,6 +250,21 @@ _NOISE_SUBJECT = re.compile(
     r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
     r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
 )
+# Official machine mail. A school's LMS, registrar and portal, and a
+# government office, send from exactly the addresses _NOISE_SENDER catches
+# (notifications@instructure.com, no-reply@university.ac.kr), and that mail is
+# what students rate most important (Waterloo 2019: professor 87%, registrar
+# 79%). Two universities told students to switch Outlook's Focused Inbox off
+# because such mail landed in "Other". So a no-reply ADDRESS from these
+# domains is not by itself evidence of noise. A newsletter SUBJECT still is.
+_OFFICIAL_DOMAIN = re.compile(
+    r"@(?:[\w-]+\.)*(?:"
+    r"edu|edu\.[a-z]{2}|ac\.[a-z]{2}|gov|gov\.[a-z]{2}|go\.kr|mil|"
+    r"instructure\.com|canvaslms\.com|blackboard\.com|moodle\w*\.\w+|"
+    r"brightspace\.com|d2l\.com|gradescope\.com|piazza\.com|edstem\.org"
+    r")>?$",
+    re.I,
+)
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 
@@ -319,12 +358,42 @@ def _text_of(email: dict[str, Any]) -> str:
     )
 
 
+def is_official_sender(address: str) -> bool:
+    """A school, LMS or government sender, whose automated mail is not bulk."""
+    return bool(_OFFICIAL_DOMAIN.search((address or "").strip()))
+
+
 def structural_noise(email: dict[str, Any]) -> float:
     sender = email.get("from_address") or ""
     subject = email.get("subject") or ""
-    if _NOISE_SENDER.search(sender) or _NOISE_SUBJECT.search(subject):
+    if _NOISE_SUBJECT.search(subject):
+        return 1.0
+    if _NOISE_SENDER.search(sender) and not is_official_sender(sender):
         return 1.0
     return 0.0
+
+
+def noise_overruled(
+    email: dict[str, Any],
+    model_bucket: str | None,
+    deadline: str | None,
+    task_count: int,
+) -> bool:
+    """True when the bulk-sender penalty should not apply to this email.
+
+    The penalty is a guess from the address alone. When the model read the
+    text and said "action", AND something concrete backs it (a deadline, or
+    to-dos the extractor found), the guess loses. Hiding a mail the user had to
+    act on costs far more than showing one they did not need: spam-filter work
+    weighs a lost legitimate mail 9 to 999 times a let-through
+    (Androutsopoulos et al. 2000), and a hidden mail is never corrected because
+    it is never seen. A newsletter-style subject keeps the penalty either way.
+    """
+    if model_bucket != "action":
+        return False
+    if not (deadline or task_count > 0):
+        return False
+    return not _NOISE_SUBJECT.search(email.get("subject") or "")
 
 
 def actionability(
@@ -396,8 +465,8 @@ def relevance(features: dict[str, float], weights: dict[str, float] | None = Non
     """
     w = weights or {}
     z = PRIOR_BIAS
-    z += PRIOR_TOPIC * features.get("topic_match", 0.0)
-    z += PRIOR_STRUCTURAL_NOISE * features.get("structural_noise", 0.0)
+    for name, prior in PRIORS.items():
+        z += prior * features.get(name, 0.0)
     for name, value in features.items():
         z += float(w.get(name, 0.0)) * float(value)
     return round(sigmoid(z), 4)
@@ -417,6 +486,8 @@ def axes_for(
     weights: dict[str, float] | None = None,
 ) -> Axes:
     feats = features_for(email, topic_match, addressed_directly, affinity, highlighted, category)
+    if feats["structural_noise"] and noise_overruled(email, model_bucket, deadline, task_count):
+        feats["structural_noise"] = 0.0
     return Axes(
         actionability=actionability(email, model_bucket, deadline, task_count, addressed_directly),
         relevance=relevance(feats, weights),
@@ -494,11 +565,7 @@ def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None
     w = weights or {}
     contributions = {"bias": round(PRIOR_BIAS, 4)}
     for name, value in axes.features.items():
-        prior = 0.0
-        if name == "topic_match":
-            prior = PRIOR_TOPIC
-        elif name == "structural_noise":
-            prior = PRIOR_STRUCTURAL_NOISE
+        prior = PRIORS.get(name, 0.0)
         total = (prior + float(w.get(name, 0.0))) * float(value)
         if abs(total) > 1e-9:
             contributions[name] = round(total, 4)
