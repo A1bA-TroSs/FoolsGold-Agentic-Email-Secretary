@@ -36,10 +36,11 @@ from typing import Any
 # confirmation, not a request, so the bare nouns refuse to match before one.
 _DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|되셨|하였|했|하신|처리되))"
 KO_ACTION = re.compile(
-    r"(마감" + _DONE + r"|제출" + _DONE + r"|기한|회신(?!\s*(?:불필요|필요\s*없|하지\s*않))|"
+    r"(마감" + _DONE + r"|제출" + _DONE + r"|(?<!유통)(?<!사용)기한|"
+    r"회신\s*(?:부탁|요망|바랍니다|요청|주시|해\s*주|기한)|"
     r"답장\s*(?:부탁|요망|바랍니다)|확인\s*(?:요청|부탁|바랍니다|해\s*주)|"
     r"승인\s*(?:요청|부탁|바랍니다)|서명\s*(?:요청|부탁|해\s*주|바랍니다|필요)|"
-    r"신청\s*(?:기간|마감|바랍니다)|필수|긴급|"
+    r"신청\s*(?:기간|마감|바랍니다)|필수\s*(?:제출|참석|확인|이수|서류|응답)|[\(\[]\s*필수\s*[\)\]]|긴급|"
     r"요청\s*(?:드립니다|드려요|드리오니|합니다|하오니|바랍니다)|"
     r"(?:자료|검토|확인|회신|제출|참석|서명|승인)\s*요청|독촉|리마인드|"
     r"참석\s*여부|미납|납부\s*(?:기한|마감|안내)|까지\s*(?:제출|회신|신청|납부)|"
@@ -117,7 +118,7 @@ DATED_ASK_SUBJECT = re.compile(
     r"approval|sign(?:ature)? required|overdue|final notice)\b|"
     r"마감" + _DONE + r"|제출" + _DONE + r"|기한|회신\s*요청|미납|납부\s*(?:기한|안내)|서명\s*요청|"
     r"신청\s*(?:기간|마감|안내)|이의\s*신청|접수\s*(?:기간|마감)|(?:철회|변경|정정)\s*기간|"
-    r"과제|\bassignment\b|까지)",
+    r"과제|\bassignment\b|수강\s*(?:신청|철회|정정))",
     re.I,
 )
 
@@ -156,8 +157,9 @@ _KO_SHORT = re.compile(
 # "마감 11/20 23:59", "기한: 11.20" -- a short date right after a deadline word.
 # Slash only: "기한 2.5배" and "3.5 million" are numbers, not dates.
 _KO_AFTER_WORD = re.compile(
-    r"(?:마감|기한)\s*(?:일|일시)?\s*[:：]?\s*(\d{1,2})\s*/\s*(\d{1,2})(?![\d/.])"
+    r"(?:마감|기한|제출일)\s*(?:일|일시)?\s*[:：]?\s*(\d{1,2})\s*(?:/|\.(?=\s*\d{1,2}(?!\s*(?:배|%|만|억|천|원|점)|\d|\.\d)))\s*(\d{1,2})(?![\d/]|\.\d)"
 )
+_KO_THIS_MONTH_END = re.compile(r"(?:이번\s*달|이달|금월)\s*말\s*까지")
 # "26.11.20" -- a two-digit year, trusted only with a weekday or 까지 after it.
 _KO_YY_DOTTED = re.compile(
     r"(?<![\d.])(\d{2})\.(\d{1,2})\.(\d{1,2})\.?\s*(?:\(\s*[월화수목금토일]\s*\)|까지)"
@@ -270,6 +272,7 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
     first(_KO_DAY_ONLY, lambda m: None if _SPAN_BEFORE.search(text[max(0, m.start() - 4):m.start() + 1])
           else _day_of_month(int(m.group(1)), today))
     first(_KO_MONTH_END, lambda m: _month_end(int(m.group(1)), today))
+    first(_KO_THIS_MONTH_END, lambda m: _month_end(today.month, today))
     first(_KO_RELATIVE, lambda m: today + timedelta(days=_KO_RELATIVE_DAYS[m.group(1)]))
 
     def weekday(m):
