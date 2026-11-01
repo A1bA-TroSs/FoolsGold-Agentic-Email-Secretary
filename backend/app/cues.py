@@ -229,7 +229,7 @@ def is_marketing_mail(email: dict[str, Any]) -> bool:
 
 _KO_YMD = re.compile(r"(20\d{2})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 _DOTTED = re.compile(r"(?<![\d.])(20\d{2})\s*[.]\s*(\d{1,2})\s*[.]\s*(\d{1,2})(?![\d])")
-_KO_MD = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+_KO_MD = re.compile(r"(?<!\d)(?<!년)(?<!년\s)(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 # 11/3(월), 11. 20.(금), 11/20까지 -- a month/day with no year is only trusted
 # with a weekday or 까지 beside it, which is how Korean mail writes deadlines;
 # a bare 1/2 or 2.5 is too often a fraction, a score or a version.

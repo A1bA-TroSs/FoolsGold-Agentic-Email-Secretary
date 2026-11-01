@@ -678,3 +678,7 @@ def test_numbers_and_closure_ranges_are_not_deadlines(text):
 
 def test_short_date_with_until_still_works():
     assert cues.korean_deadline("과제는 11/20까지", date(2026, 11, 1))[1] == date(2026, 11, 20)
+
+
+def test_past_full_year_date_is_not_rolled_forward():
+    assert cues.korean_deadline("2025년 3월 2일 작성", date(2026, 11, 1)) is None
