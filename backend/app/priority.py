@@ -147,7 +147,7 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
 
     marketing = cues.is_marketing(subject)
     asks = bool(_ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body)
-                or cues.KO_ACTION.search(subject) or cues.asks_ko(body))
+                or cues.ko_action(subject) or cues.asks_ko(body))
     if marketing:
         return "noise"
     if _NOISE_SENDER.search(sender):

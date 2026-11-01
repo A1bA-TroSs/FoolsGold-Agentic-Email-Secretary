@@ -36,7 +36,8 @@ from typing import Any
 # confirmation, not a request, so the bare nouns refuse to match before one.
 _DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|된|돼|되셨|하였|했|하신|해\s*주신|해\s*주셔서|감사|처리되|지난|지나|끝))"
 KO_ACTION = re.compile(
-    r"(마감(?!재)" + _DONE + r"|제출(?!물|\s*서류)" + _DONE + r"|(?<!유통)(?<!사용)기한(?!\s*연장)" + _DONE + r"|"
+    r"(마감" + _DONE + r"(?=\s*(?:일|기한|시간|일시|안내|임박|까지|전|:|：|\d|\())|"
+    r"제출" + _DONE + r"(?=\s*(?:기한|마감|일|요청|바랍|부탁|하세요|하시기|해\s*주|까지|방법|안내|:|：))|(?<!유통)(?<!사용)기한(?!\s*연장)" + _DONE + r"|"
     r"회신\s*(?:부탁|요망|바랍니다|요청|주시|해\s*주|기한)|"
     r"답장\s*(?:부탁|요망|바랍니다)|확인\s*(?:요청|부탁|바랍니다|해\s*주)|"
     r"승인\s*(?:요청|부탁|바랍니다)|서명\s*(?:요청|부탁|해\s*주|바랍니다|필요)|"
@@ -125,9 +126,19 @@ DATED_ASK_SUBJECT = re.compile(
 )
 
 
+# "참여해 주셔서 감사합니다", "확인해 주신 분께" -- thanks for something done.
+_THANKS_AFTER = re.compile(r"[^.\n]{0,12}?(?:주셔서|주신|감사)")
+
+
+def ko_action(text: str) -> bool:
+    """A Korean request in `text`: a KO_ACTION match not followed by thanks."""
+    text = text or ""
+    return any(not _THANKS_AFTER.match(text, m.end()) for m in KO_ACTION.finditer(text))
+
+
 def asks_ko(text: str) -> bool:
     """A Korean request in `text`, reading only the new part of a reply."""
-    return bool(KO_ACTION.search(strip_quoted(text or "")))
+    return ko_action(strip_quoted(text or ""))
 
 
 _KO_SELLING = re.compile(r"(특가|쿠폰|할인|최저가|무료\s*(?:체험|증정|제공)|[\[\(]\s*이벤트\s*[\]\)])")
@@ -349,6 +360,13 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
         after = [f for f in found if f[0] == join.end() and f[1] >= d]
         if after:
             pos, d = after[0][0], after[0][1]
+        else:
+            # "11월 10일(화)~14일(토)": the end keeps the start's month.
+            day = re.match(r"(\d{1,2})\s*일", text[join.end():])
+            if day:
+                end_d = _safe(d.year, d.month, int(day.group(1)))
+                if end_d and end_d >= d:
+                    pos, d = join.end(), end_d
     return pos, d
 
 
