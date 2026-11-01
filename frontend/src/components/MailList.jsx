@@ -103,6 +103,12 @@ export function whyLabel(t, m) {
     if (days < 0) return t('whyDeadlineOver', { arg: String(-days) });
     return t('whyDeadline', { arg: String(days) });
   }
+  if (code === 'mustSee') {
+    // exam / payment / ticket / invite: kinds of mail that are never hidden.
+    const key = 'whyMustSee' + arg.charAt(0).toUpperCase() + arg.slice(1);
+    const text = t(key);
+    return text === key ? '' : text;
+  }
   const key = 'why' + code.charAt(0).toUpperCase() + code.slice(1);
   const text = t(key, { arg });
   return text === key ? '' : text;
