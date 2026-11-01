@@ -345,27 +345,9 @@ DATED_ASK_GRACE_DAYS = 2
 
 
 def dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = None) -> bool:
-    """The mail asks for something by a date it names, and is not marketing.
-
-    This is what the measured Canvas notice ("과제 제출 마감 안내: 11월 3일까지"
-    from notifications@) is: not one of the four must-see kinds, but a dated
-    request. Relevance on day one cannot see it (R = 0.08), so it is a second
-    floor rather than a weight.
-    """
-    if not deadline or cues.is_marketing_mail(email):
-        return False
-    try:
-        due = date.fromisoformat(str(deadline)[:10])
-    except (TypeError, ValueError):
-        return False
-    if due < (today or date.today()) - timedelta(days=DATED_ASK_GRACE_DAYS):
-        return False
-    # From a system sender, the same proof the must-see floor asks for: a
-    # school, LMS or calendar address, or a booking reference. Otherwise
-    # "이벤트 응모 마감 안내" from a shop's no-reply would be lifted too.
-    if cues.NOISE_SENDER.search(email.get("from_address") or "") and not cues.has_evidence(email):
-        return False
-    return bool(cues.DATED_ASK_SUBJECT.search(email.get("subject") or ""))
+    """See `cues.is_dated_ask`. A second floor rather than a weight, because
+    day-one relevance cannot see a dated request (R = 0.08 for the Canvas notice)."""
+    return cues.is_dated_ask(email, deadline, today, DATED_ASK_GRACE_DAYS)
 
 
 def actionability(
@@ -532,7 +514,8 @@ def reason_for(
     return "none", ""
 
 
-def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None = None) -> dict[str, Any]:
+def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None = None,
+            floor: bool = True) -> dict[str, Any]:
     """Why this email landed where it did, decomposed.
 
     `Provenance As Precondition`: a derived belief that cannot name what
@@ -551,7 +534,7 @@ def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None
         if abs(total) > 1e-9:
             contributions[name] = round(total, 4)
     return {
-        "bucket": axes.bucket(thresholds),
+        "bucket": axes.bucket(thresholds, floor=floor),
         "must_see": axes.must_see,
         "actionability": axes.actionability,
         "relevance": axes.relevance,
