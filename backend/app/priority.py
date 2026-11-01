@@ -47,10 +47,6 @@ _NOISE_SENDER = re.compile(
     r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
     r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
 )
-_NOISE_SUBJECT = re.compile(
-    r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
-    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
-)
 _ACTION_SUBJECT = re.compile(
     r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
     r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
@@ -156,11 +152,20 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
     sender = email.get("from_address") or ""
     body = (email.get("body_text") or email.get("body_preview") or "")[:2000]
 
-    marketing = bool(_NOISE_SUBJECT.search(subject) or cues.KO_NOISE_SUBJECT.search(subject))
-    if (_NOISE_SENDER.search(sender) or marketing) and not cues.always_important(email, marketing):
+    marketing = cues.is_marketing(subject)
+    asks = bool(_ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body)
+                or cues.KO_ACTION.search(subject) or cues.KO_ACTION.search(body))
+    if marketing:
         return "noise"
-    if (_ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body)
-            or cues.KO_ACTION.search(subject) or cues.KO_ACTION.search(body)):
+    if _NOISE_SENDER.search(sender):
+        # A system sender (LMS, registrar, airline) is noise unless the mail
+        # is a must-see kind, or it asks for something by a date it names.
+        if cues.always_important(email, False):
+            return "action" if asks else "fyi"
+        if asks and extract_deadline(f"{subject}\n{body}"):
+            return "action"
+        return "noise"
+    if asks:
         return "action"
     if user_address and _addressed_directly(email, user_address) and "?" in subject:
         return "action"
