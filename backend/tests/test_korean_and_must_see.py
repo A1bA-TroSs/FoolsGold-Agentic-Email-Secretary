@@ -626,3 +626,35 @@ def test_rescued_ticket_is_named_by_kind_even_with_a_date():
                  body_text="예약번호: ABC123 / 출발 11월 20일")
     code, arg = R.reason_for(R.axes_for(email, deadline="2026-11-20"), deadline_days=5)
     assert (code, arg) == ("mustSee", "ticket")
+
+
+@pytest.mark.parametrize("body", [
+    "이번 학기 특강을 안내드립니다. 많은 참여 부탁드립니다.",
+    "도서관 운영 시간이 변경됩니다. 자세한 내용은 홈페이지에서 확인 부탁드립니다.",
+    "학과 행사 안내입니다. 여러분의 적극적인 참여 바랍니다.",
+])
+def test_announcement_closings_are_not_requests(body):
+    assert not cues.asks_ko(body)
+    assert priority.structural_bucket(mail(subject="학과 공지", body_text=body)) == "fyi"
+
+
+@pytest.mark.parametrize("body", [
+    "첨부 파일 확인 부탁드립니다.", "설문 참여 부탁드립니다.", "보고서 검토 부탁드립니다.",
+])
+def test_direct_asks_still_count(body):
+    assert cues.asks_ko(body)
+
+
+def test_opt_out_footer_body_does_not_raise_action():
+    assert not cues.asks_ko("지금 바로 신청하세요!\n\n수신거부를 원하시면 여기를 누르세요")
+
+
+@pytest.mark.parametrize("text", [
+    "도서관은 다음 주 금요일까지 휴관합니다.", "11월 7일까지는 임시 휴무입니다.", "11월 20일까지 시스템 점검",
+])
+def test_closure_until_a_date_is_not_a_deadline(text):
+    assert cues.korean_deadline(text, date(2026, 11, 1)) is None
+
+
+def test_real_deadline_beside_closure_word_survives():
+    assert cues.korean_deadline("신청은 11월 7일까지 진행됩니다.", date(2026, 11, 1))[1] == date(2026, 11, 7)
