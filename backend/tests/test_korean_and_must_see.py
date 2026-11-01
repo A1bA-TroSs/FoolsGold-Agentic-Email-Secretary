@@ -349,3 +349,50 @@ def test_reasons_match_the_bucket(store):
     ], muted=["no-reply@school.ac.kr"])
     assert out["far"]["bucket"] != "noise" and out["far"]["reason_code"] != "noise"
     assert out["mut"]["bucket"] == "noise" and out["mut"]["reason_code"] != "mustSee"
+
+
+# --------------------------------------------------------------------------
+# round 4: promotions from no-reply senders, number-like dates, past dates
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("subject,sender", [
+    ("Exam season: get 3 months free", "no-reply@quizlet.com"),
+    ("Invitation: exclusive launch event", "noreply@brand.com"),
+    ("기말고사 대비 족보 무료 제공", "noreply@studyapp.com"),
+    ("Cheap flights! E-ticket deals", "no-reply@travel.com"),
+    ("[이벤트] 기말고사 응원 선물", "no-reply@shop.kr"),
+    ("항공권 최저가 알림", "no-reply@air.kr"),
+])
+def test_promotions_from_noreply_senders_are_not_must_see(subject, sender):
+    assert R.must_see(mail(subject=subject, from_address=sender)) is None
+
+
+def test_noreply_must_see_needs_evidence():
+    # School / LMS / calendar sender, or a booking reference in the body.
+    assert R.must_see(mail(subject="기말고사 고사실 안내", from_address="no-reply@snu.ac.kr")) == "exam"
+    assert R.must_see(mail(subject="Midterm grades", from_address="notifications@instructure.com")) == "exam"
+    assert R.must_see(mail(subject="Invitation: Lab sync @ Tue",
+                           from_address="calendar-notification@google.com")) == "invite"
+    assert R.must_see(mail(subject="[대한항공] 전자 항공권 발행 안내", from_address="no-reply@koreanair.com",
+                           body_text="예약번호: ABC123 / 편명 KE017")) == "ticket"
+    assert R.must_see(mail(subject="[대한항공] 전자 항공권 발행 안내",
+                           from_address="no-reply@koreanair.com")) is None
+
+
+def test_numbers_after_deadline_words_are_not_dates():
+    wed = date(2026, 11, 4)
+    for text in ["Payment due 3.5 million won", "Version due 2.1", "기한 2.5배 연장"]:
+        assert priority.extract_deadline(text, wed) is None, text
+
+
+def test_past_tense_dates_are_not_deadlines():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("1/3 (월) 진행된 회의록 공유", wed) is None
+    assert priority.extract_deadline("2026년 10월 1일에 보낸 메일 확인 부탁드립니다", wed) is None
+
+
+def test_more_admin_kinds_and_dated_asks():
+    assert cues.always_important(mail(subject="KTX 승차권 발권 안내", from_address="info@letskorail.com")) == "ticket"
+    assert cues.always_important(mail(subject="카드 결제 예정 금액 안내", from_address="card@bank.kr")) == "payment"
+    assert cues.DATED_ASK_SUBJECT.search("2학기 장학금 신청 기간 안내")
+    assert cues.DATED_ASK_SUBJECT.search("성적 이의신청 안내")

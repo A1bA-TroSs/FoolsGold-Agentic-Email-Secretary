@@ -43,10 +43,7 @@ _STOPWORDS = {
     "team", "notification", "no", "reply", "noreply", "do", "not", "com", "org",
 }
 
-_NOISE_SENDER = re.compile(
-    r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
-    r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
-)
+_NOISE_SENDER = cues.NOISE_SENDER
 _ACTION_SUBJECT = re.compile(
     r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
     r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
