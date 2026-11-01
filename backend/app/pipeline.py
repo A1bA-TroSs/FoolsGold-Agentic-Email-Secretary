@@ -185,7 +185,8 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
             weights=weights,
             centroids=centroids,
         )
-        bucket = axes.bucket(thresholds)
+        bucket = axes.bucket(
+            thresholds, floor=(email.get("from_address") or "").lower() not in muted)
 
         # A muted sender is a standing decision, and exploration must not
         # quietly overturn it -- "I do not want to see this" is a promise, not
@@ -466,7 +467,8 @@ def rescore_all() -> int:
                 weights=weights,
                 centroids=centroids,
             )
-            bucket = axes.bucket(thresholds)
+            bucket = axes.bucket(
+            thresholds, floor=(email.get("from_address") or "").lower() not in muted)
             if bucket == "noise" and (email.get("from_address") or "").lower() not in muted:
                 explorable.append(email["id"])
 

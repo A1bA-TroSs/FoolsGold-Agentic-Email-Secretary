@@ -172,3 +172,111 @@ def test_reason_names_the_kind():
     email = mail(subject="Invitation: Lab meeting", from_address="calendar-notification@google.com")
     code, arg = R.reason_for(R.axes_for(email))
     assert (code, arg) == ("mustSee", "invite")
+
+
+# --------------------------------------------------------------------------
+# round 2: the stored bucket, precision, and the muted-sender rule
+# --------------------------------------------------------------------------
+
+import pytest
+
+from app import db, pipeline
+from datetime import timedelta
+
+
+def _row(i, subject, sender, body=""):
+    return dict(id=i, conversation_id=None, subject=subject, from_name="", from_address=sender,
+                to_recipients="[]", cc_recipients="[]", received_at=db.now_iso(),
+                is_read=0, is_answered=0, is_flagged=0, has_attachments=0, importance="normal",
+                web_link="", folder="INBOX", body_preview=body[:200], body_text=body,
+                body_html="", synced_at=db.now_iso())
+
+
+@pytest.fixture()
+def store(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "t.db")
+    db.init_db()
+    return tmp_path
+
+
+def _persist(rows, muted=()):
+    db.upsert_emails(rows)
+    for address in muted:
+        db.mute_sender(address)
+    classes = pipeline._structural_classifications([dict(r) for r in rows], "")
+    pipeline._persist(classes, {r["id"]: r for r in rows}, "structural", "")
+    with db.connect() as conn:
+        return {r["email_id"]: dict(r) for r in conn.execute(
+            "SELECT email_id, bucket, deadline, reason_code, reason_arg FROM classifications")}
+
+
+def test_measured_canvas_notice_is_stored_outside_noise(store):
+    """The 2026-10-31 failure end to end: Korean LMS notice from notifications@,
+    no priorities, no learning. It must be stored with its date and not as noise."""
+    due = date.today() + timedelta(days=3)
+    subject = f"과제 제출 마감 안내: {due.month}월 {due.day}일까지"
+    out = _persist([_row("k1", subject, "notifications@instructure.com",
+                         f"CS101 과제 3 제출 기한은 {due.month}월 {due.day}일 23:59입니다.")])
+    assert out["k1"]["deadline"] == due.isoformat()
+    assert out["k1"]["bucket"] != "noise"
+
+
+def test_muted_sender_is_not_rescued_by_the_floor(store):
+    out = _persist([_row("m", "2학기 등록금 납부 안내", "billing@school.ac.kr")],
+                   muted=["billing@school.ac.kr"])
+    assert out["m"]["bucket"] == "noise"
+
+
+def test_newsletter_mentioning_an_exam_stays_noise(store):
+    out = _persist([_row("n", "학과 소식지 11월호", "no-reply@dept.ac.kr",
+                         "이번 호: 기말고사 일정, 장학금 소식")])
+    assert out["n"]["bucket"] == "noise"
+
+
+def test_past_dated_noreply_notice_is_not_kept_by_the_date():
+    old = mail(subject="과제 제출 마감 안내", from_address="notifications@lms.com")
+    assert not R.dated_ask(old, (date.today() - timedelta(days=10)).isoformat())
+    assert R.dated_ask(old, (date.today() + timedelta(days=1)).isoformat())
+
+
+def test_body_words_alone_do_not_make_must_see():
+    assert cues.always_important(mail(subject="Catching up", body_text="I'm overdue on laundry")) is None
+    assert cues.always_important(mail(subject="근황", body_text="다음 주에 시험이 있어서요")) is None
+
+
+def test_ad_marker_at_the_end_is_marketing():
+    assert R.must_see(mail(subject="시험 대비 특강 안내 (광고)")) is None
+
+
+def test_bare_invite_word_is_not_a_calendar_invite():
+    assert cues.always_important(mail(subject="신제품 런칭 행사에 초대합니다")) is None
+    assert cues.always_important(mail(subject="초대: 연구실 회의 @ 11월 5일 (목) 오후 3시")) == "invite"
+    assert cues.always_important(mail(subject="회의 초대 - 졸업 논문 심사")) == "invite"
+
+
+def test_completed_submission_is_not_a_request():
+    email = mail(subject="과제 제출 완료되었습니다", body_text="제출이 정상적으로 처리되었습니다.")
+    assert priority.structural_bucket(email) == "fyi"
+
+
+def test_ordinary_korean_requests_are_action():
+    assert priority.structural_bucket(mail(subject="초안 검토 부탁드립니다")) == "action"
+    assert priority.structural_bucket(mail(subject="발표 자료", body_text="금요일 전까지 올려주세요")) == "action"
+
+
+def test_more_korean_date_forms():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("신청: 11. 20.(금) 까지", wed) == "2026-11-20"
+    assert priority.extract_deadline("11/20까지 제출", wed) == "2026-11-20"
+    assert priority.extract_deadline("내일 오전 10시까지 회신 바랍니다", wed) == "2026-11-05"
+    assert priority.extract_deadline("11월 말까지 정리해 주세요", wed) == "2026-11-30"
+
+
+def test_past_week_is_not_a_deadline():
+    assert priority.extract_deadline("지난주 금요일까지 받았습니다", date(2026, 11, 4)) is None
+
+
+def test_quoted_reply_dates_are_ignored():
+    text = "네 알겠습니다.\n\n2026년 10월 2일 (금) 오후 3:00, 김교수 님이 작성:\n> 2026년 10월 9일까지 보내주세요"
+    assert priority.extract_deadline(text, date(2026, 11, 4)) is None
