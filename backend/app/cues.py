@@ -36,7 +36,7 @@ from typing import Any
 # confirmation, not a request, so the bare nouns refuse to match before one.
 _DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|된|돼|되셨|하였|했|하신|해\s*주신|해\s*주셔서|감사|처리되|지난|지나|끝))"
 KO_ACTION = re.compile(
-    r"(마감(?!재)" + _DONE + r"|제출(?!물|\s*서류)" + _DONE + r"|(?<!유통)(?<!사용)기한" + _DONE + r"|"
+    r"(마감(?!재)" + _DONE + r"|제출(?!물|\s*서류)" + _DONE + r"|(?<!유통)(?<!사용)기한(?!\s*연장)" + _DONE + r"|"
     r"회신\s*(?:부탁|요망|바랍니다|요청|주시|해\s*주|기한)|"
     r"답장\s*(?:부탁|요망|바랍니다)|확인\s*(?:요청|부탁|바랍니다|해\s*주)|"
     r"승인\s*(?:요청|부탁|바랍니다)|서명\s*(?:요청|부탁|해\s*주|바랍니다|필요)|"
@@ -47,8 +47,8 @@ KO_ACTION = re.compile(
     r"(?:검토|작성|업로드|수정|회신|확인|제출)\s*(?:을|를)?\s*"
     r"(?:부탁\s*드|부탁해|해\s*주시기|하여\s*주시기|해\s*주세요|해주세요|바랍니다)|"
     r"올려\s*주(?:세요|시기)|보내\s*주(?:세요|시기)|신청\s*하(?:세요|시기)|답변\s*요청|"
-    r"(?:납부|참석|답변|결재|회신|제출|신청|확인|서명|검토)\s*(?:하여|해)?\s*(?:주시기|하시기)?\s*"
-    r"(?:바랍니다|부탁\s*드립니다|부탁드려요)|"
+    r"(?:납부|참석|답변|결재|회신|제출|신청|확인|서명|검토|송부|전달|입금|의견|이수)\s*(?:하여|해)?\s*(?:주시기|하시기)?\s*"
+    r"(?:바랍니다|부탁\s*드립니다|부탁드려요)|알려\s*주(?:세요|시기)|(?:신청|입금|송부)\s*해\s*주(?:세요|시기)|"
     r"(?:참여|응답|작성)\s*(?:부탁|바랍니다|해\s*주))"
 )
 
@@ -120,7 +120,7 @@ DATED_ASK_SUBJECT = re.compile(
     r"approval|sign(?:ature)? required|overdue|final notice)\b|"
     r"마감" + _DONE + r"|제출" + _DONE + r"|기한|회신\s*요청|미납|납부\s*(?:기한|안내)|서명\s*요청|"
     r"신청\s*(?:기간|마감|안내)|이의\s*신청|접수\s*(?:기간|마감)|(?:철회|변경|정정)\s*기간|"
-    r"과제|\bassignment\b|수강\s*(?:신청|철회|정정))",
+    r"과제|\bassignment\b|수강\s*(?:신청|철회|정정)|[\(\[]\s*필수\s*[\)\]]|이수\s*안내)",
     re.I,
 )
 
@@ -193,7 +193,7 @@ _KO_MD = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 # a bare 1/2 or 2.5 is too often a fraction, a score or a version.
 _KO_SHORT = re.compile(
     r"(?<![\d/.])(\d{1,2})\s*[/.]\s*(\d{1,2})\.?\s*"
-    r"(?:\(\s*[월화수목금토일]\s*\)|까지|\s*마감)"
+    r"(?:\(\s*[월화수목금토일]\s*\)|까지|\s*마감|\s*\d{1,2}\s*시\s*까지)"
 )
 # "마감 11/20 23:59", "기한: 11.20" -- a short date right after a deadline word.
 # Slash only: "기한 2.5배" and "3.5 million" are numbers, not dates.
@@ -209,7 +209,7 @@ _KO_YY_DOTTED = re.compile(
 # so "2026-11-20까지" found nothing.
 _ISO_KO = re.compile(r"(?<!\d)(20\d{2})[-/](\d{1,2})[-/](\d{1,2})(?!\d)")
 # "5일까지" -- a bare day of this month, or next month if it has passed.
-_KO_DAY_ONLY = re.compile(r"(?<![\d월/.\s])\s*(?<!\d)(\d{1,2})\s*일\s*까지")
+_KO_DAY_ONLY = re.compile(r"(?<![\d월/.\s])\s*(?<!\d)(\d{1,2})\s*일\s*(?:\(\s*[월화수목금토일]\s*\)\s*)?까지")
 _KO_THIS_MONTH = re.compile(r"(?:이번\s*달|이달|금월)\s*(\d{1,2})\s*일")
 _KO_MONTH_END = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*말\s*까지")
 _TIME = r"(?:\s*(?:오전|오후|낮|밤|저녁|아침)?\s*(?:\d{1,2}\s*시(?:\s*\d{1,2}\s*분|\s*반)?|\d{1,2}:\d{2}|자정|정오))?"
@@ -335,6 +335,9 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
         return today + timedelta(days=(target - today.weekday()) % 7)
     first(_KO_WEEKDAY, weekday)
 
+    # A date already past with no deadline word beside it is a reference to
+    # something that happened ("10/30(금) 강의 녹화본"), not an overdue task.
+    found = [f for f in found if f[2] or f[1] >= today]
     if not found:
         return None
     # A date with a deadline word beside it beats one without; then the
@@ -361,7 +364,7 @@ ALWAYS_IMPORTANT = {
         r"시험(?!\s*(?:발송|메일|용|전송|삼아))|중간고사|기말고사)", re.I),
     "payment": re.compile(
         r"(\btuition\b(?![- ]free)|\bpayment (?:due|deadline|reminder|overdue)\b|\bfees? (?:are )?due\b|"
-        r"등록금|수강료|납부|미납|고지서|상환|청구|요금|대금|결제\s*(?:예정|기한|예정일))", re.I),
+        r"등록금|수강료|납부|미납|고지서|상환|청구\s*(?:서|금액|안내|예정)|요금|대금|결제\s*(?:예정|기한|예정일))", re.I),
     "ticket": re.compile(
         r"(\bboarding pass\b|\be-?ticket\b|\bitinerary\b|\bbooking confirm|"
         r"\breservation confirm|\bflight (?:confirm|change|cancel)|"
