@@ -298,7 +298,9 @@ def explain_email(email_id: str) -> dict[str, Any] | None:
         user_address=db.get_setting("user_address", ""),
         highlights=db.sender_highlights(),
     )
-    out = relevance.explain(axes, load_thresholds(), db.ranking_weights())
+    # The same muted rule the list used, so the "why" view cannot contradict it.
+    muted = (email.get("from_address") or "").lower() in db.muted_senders()
+    out = relevance.explain(axes, load_thresholds(), db.ranking_weights(), floor=not muted)
     out["email_id"] = email_id
     out["matched_topics"] = matched
     out["explored"] = bool(email.get("explored"))
