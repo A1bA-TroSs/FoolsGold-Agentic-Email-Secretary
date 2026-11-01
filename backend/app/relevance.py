@@ -215,11 +215,7 @@ FEATURE_NAMES = (
     "structural_noise",
 )
 
-_ACTION_CUE = re.compile(
-    r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
-    r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
-    r"overdue|final notice|last chance to)\b", re.I
-)
+_ACTION_CUE = cues.EN_ACTION
 _NOISE_SENDER = cues.NOISE_SENDER
 # Latin words and Hangul runs. The old `[a-z0-9]+` dropped every Korean
 # character, so a Korean email embedded to an all-zero vector and topic
