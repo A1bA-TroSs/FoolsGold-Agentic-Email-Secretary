@@ -55,10 +55,17 @@ KO_ACTION = re.compile(
 _AD_MARK = r"[\(\[（【<〈［]\s*(?:광\s*고|AD)\s*[\)\]）】>〉］]"
 KO_NOISE_SUBJECT = re.compile(
     r"(" + _AD_MARK + r"|수신\s*거부|뉴스레터|소식지|웹진|\d+\s*월호|주간\s*소식|"
-    r"특가|쿠폰|할인|영수증|결제\s*완료|주문\s*(?:확인|완료)|배송\s*(?:시작|완료|안내)|"
-    r"마감\s*임박|선착순|얼리\s*버드|무료\s*(?:특강|체험|증정|세미나|제공)|웨비나|"
-    r"[\[\(]\s*이벤트\s*[\]\)]|최저가)",
+    r"영수증|결제\s*완료|주문\s*(?:확인|완료)|배송\s*(?:시작|완료|안내))",
     re.I,
+)
+
+# Korean promotional words. Like PROMO_SUBJECT, read only by the floors:
+# "등록금 납부 마감 임박 안내" and "선착순 기숙사 신청" are real school mail, so
+# these words must never put mail INTO noise, only keep an advert from being
+# lifted out of it.
+KO_PROMO_SUBJECT = re.compile(
+    r"(특가|쿠폰|할인|마감\s*임박|선착순|얼리\s*버드|무료\s*(?:특강|체험|증정|세미나|제공)|"
+    r"웨비나|[\[\(]\s*이벤트\s*[\]\)]|최저가)"
 )
 
 # English marketing and bulk subjects, exactly as develop had them in both
@@ -127,6 +134,7 @@ def is_marketing_mail(email: dict[str, Any]) -> bool:
     subject = email.get("subject") or ""
     body = email.get("body_text") or email.get("body_preview") or ""
     return (is_marketing(subject) or bool(PROMO_SUBJECT.search(subject))
+            or bool(KO_PROMO_SUBJECT.search(subject))
             or bool(MARKETING_SENDER.search(email.get("from_address") or ""))
             or bool(re.search(r"수신\s*거부", body)))
 
@@ -143,7 +151,7 @@ _KO_MD = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*(\d{1,2})\s*일")
 # a bare 1/2 or 2.5 is too often a fraction, a score or a version.
 _KO_SHORT = re.compile(
     r"(?<![\d/.])(\d{1,2})\s*[/.]\s*(\d{1,2})\.?\s*"
-    r"(?:\(\s*[월화수목금토일]\s*\)|까지)"
+    r"(?:\(\s*[월화수목금토일]\s*\)|까지|\s*마감)"
 )
 # "마감 11/20 23:59", "기한: 11.20" -- a short date right after a deadline word.
 # Slash only: "기한 2.5배" and "3.5 million" are numbers, not dates.
@@ -156,7 +164,7 @@ _KO_YY_DOTTED = re.compile(
 )
 # develop's ISO pattern ends in \\b, which a Hangul letter does not provide,
 # so "2026-11-20까지" found nothing.
-_ISO_KO = re.compile(r"(?<!\d)(20\d{2})-(\d{1,2})-(\d{1,2})(?!\d)")
+_ISO_KO = re.compile(r"(?<!\d)(20\d{2})[-/](\d{1,2})[-/](\d{1,2})(?!\d)")
 # "5일까지" -- a bare day of this month, or next month if it has passed.
 _KO_DAY_ONLY = re.compile(r"(?<![\d월/.\s])\s*(?<!\d)(\d{1,2})\s*일\s*까지")
 _KO_THIS_MONTH = re.compile(r"(?:이번\s*달|이달|금월)\s*(\d{1,2})\s*일")
@@ -213,6 +221,10 @@ def _anchored(text: str, m: re.Match) -> bool:
                 or _DEADLINE_WORD.search(before))
 
 
+# "최대 5일까지", "총 3일까지" -- a number of days, not a day of the month.
+_SPAN_BEFORE = re.compile(r"(최대|총|최장|약|최소|길게)\s*$")
+
+
 def _day_of_month(day: int, today: date) -> date | None:
     d = _safe(today.year, today.month, day)
     if d and d >= today:
@@ -255,7 +267,8 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
     first(_KO_YY_DOTTED, lambda m: _safe(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3))))
     first(_KO_THIS_MONTH, lambda m: _safe(today.year, today.month, int(m.group(1))))
     first(_ISO_KO, lambda m: _safe(int(m.group(1)), int(m.group(2)), int(m.group(3))))
-    first(_KO_DAY_ONLY, lambda m: _day_of_month(int(m.group(1)), today))
+    first(_KO_DAY_ONLY, lambda m: None if _SPAN_BEFORE.search(text[max(0, m.start() - 4):m.start() + 1])
+          else _day_of_month(int(m.group(1)), today))
     first(_KO_MONTH_END, lambda m: _month_end(int(m.group(1)), today))
     first(_KO_RELATIVE, lambda m: today + timedelta(days=_KO_RELATIVE_DAYS[m.group(1)]))
 
