@@ -482,3 +482,37 @@ def test_slash_year_and_trailing_deadline_word():
 def test_friend_mentioning_an_exam_gets_no_exam_label():
     code, _ = R.reason_for(R.axes_for(mail(subject="기말고사 끝나고 회식?", from_address="friend@gmail.com")))
     assert code != "mustSee"
+
+
+# --------------------------------------------------------------------------
+# round 7: shop notices with 까지, word-internal cues
+# --------------------------------------------------------------------------
+
+def test_shop_notices_with_until_stay_noise(store):
+    soon = date.today() + timedelta(days=3)
+    out = _persist([
+        _row("s1", f"포인트 소멸 예정 안내 ({soon.month}/{soon.day}까지)", "no-reply@shop.kr"),
+        _row("s2", f"택배 도착 예정: {soon.month}월 {soon.day}일까지", "no-reply@parcel.kr"),
+        _row("s3", f"이용권 만료 예정 ({soon.month}월 {soon.day}일까지)", "no-reply@ott.kr"),
+    ])
+    assert {k: v["bucket"] for k, v in out.items()} == {"s1": "noise", "s2": "noise", "s3": "noise"}
+
+
+@pytest.mark.parametrize("subject", ["회신 드립니다", "유통기한 안내", "가을 필수템 모음"])
+def test_word_internal_cues_are_not_action(subject):
+    assert priority.structural_bucket(mail(subject=subject)) == "fyi"
+
+
+def test_course_registration_notice_is_kept(store):
+    soon = date.today() + timedelta(days=4)
+    out = _persist([_row("c", "[공지] 수강신청 일정 안내", "noreply@snu.ac.kr",
+                         f"수강신청 기간: {soon.month}월 {soon.day}일까지")])
+    assert out["c"]["bucket"] != "noise"
+
+
+def test_deadline_word_forms_round_7():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("제출 기한: 11.15", wed) == "2026-11-15"
+    assert priority.extract_deadline("제출일: 12/1", wed) == "2026-12-01"
+    assert priority.extract_deadline("이번 달 말까지 제출", wed) == "2026-11-30"
+    assert priority.extract_deadline("기한: 3.5만원", wed) is None
