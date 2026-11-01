@@ -18,7 +18,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from . import db
+from . import cues, db
 
 BUCKET_WEIGHT = {"action": 45.0, "fyi": 15.0, "noise": 0.0}
 
@@ -125,6 +125,10 @@ def extract_deadline(text: str, today: date | None = None) -> str | None:
         ahead = (target - today.weekday()) % 7 or 7
         return (today + timedelta(days=ahead)).isoformat()
 
+    korean = cues.korean_deadline(window, today)
+    if korean:
+        return korean[1].isoformat()
+
     return None
 
 
@@ -152,9 +156,11 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
     sender = email.get("from_address") or ""
     body = (email.get("body_text") or email.get("body_preview") or "")[:2000]
 
-    if _NOISE_SENDER.search(sender) or _NOISE_SUBJECT.search(subject):
+    marketing = bool(_NOISE_SUBJECT.search(subject) or cues.KO_NOISE_SUBJECT.search(subject))
+    if (_NOISE_SENDER.search(sender) or marketing) and not cues.always_important(email, marketing):
         return "noise"
-    if _ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body):
+    if (_ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body)
+            or cues.KO_ACTION.search(subject) or cues.KO_ACTION.search(body)):
         return "action"
     if user_address and _addressed_directly(email, user_address) and "?" in subject:
         return "action"

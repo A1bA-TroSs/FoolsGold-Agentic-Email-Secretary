@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
+from . import cues
+
 # --------------------------------------------------------------------------
 # declared priors -- NOT learned
 # --------------------------------------------------------------------------
@@ -226,7 +228,11 @@ _NOISE_SUBJECT = re.compile(
     r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
     r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
 )
-_TOKEN = re.compile(r"[a-z0-9]+")
+# Latin words and Hangul runs. The old `[a-z0-9]+` dropped every Korean
+# character, so a Korean email embedded to an all-zero vector and topic
+# centroids and Rocchio learning saw nothing in Korean mail at all.
+_TOKEN = re.compile(r"[a-z0-9]+|[\uac00-\ud7a3]+")
+_HANGUL = re.compile(r"[\uac00-\ud7a3]")
 
 
 def sigmoid(x: float) -> float:
@@ -273,9 +279,12 @@ class Axes:
     actionability: float
     relevance: float
     features: dict[str, float] = field(default_factory=dict)
+    # Set for exam, payment, ticket and invitation mail (`cues.ALWAYS_IMPORTANT`).
+    # A floor, not a weight: relevance can still order it, but never hide it.
+    must_see: str | None = None
 
     def bucket(self, thresholds: Thresholds) -> str:
-        if self.relevance < thresholds.relevance:
+        if self.relevance < thresholds.relevance and not self.must_see:
             return "noise"
         return "action" if self.actionability >= thresholds.action else "fyi"
 
@@ -322,9 +331,19 @@ def _text_of(email: dict[str, Any]) -> str:
 def structural_noise(email: dict[str, Any]) -> float:
     sender = email.get("from_address") or ""
     subject = email.get("subject") or ""
-    if _NOISE_SENDER.search(sender) or _NOISE_SUBJECT.search(subject):
+    if _NOISE_SENDER.search(sender) or is_marketing(subject):
         return 1.0
     return 0.0
+
+
+def is_marketing(subject: str) -> bool:
+    return bool(_NOISE_SUBJECT.search(subject or "") or cues.KO_NOISE_SUBJECT.search(subject or ""))
+
+
+def must_see(email: dict[str, Any]) -> str | None:
+    """The always-important kind of this email (exam, payment, ticket, invite),
+    or None. See `cues` for why this is a floor and not a feature."""
+    return cues.always_important(email, is_marketing(email.get("subject") or ""))
 
 
 def actionability(
@@ -350,9 +369,9 @@ def actionability(
         z += ACT_MODEL_ACTION
     elif hint == "noise":
         z += ACT_MODEL_NOISE
-    if _ACTION_CUE.search(subject):
+    if _ACTION_CUE.search(subject) or cues.KO_ACTION.search(subject):
         z += ACT_SUBJECT_CUE
-    if _ACTION_CUE.search(body):
+    if _ACTION_CUE.search(body) or cues.KO_ACTION.search(body):
         z += ACT_BODY_CUE
     if deadline:
         z += ACT_HAS_DEADLINE
@@ -421,6 +440,7 @@ def axes_for(
         actionability=actionability(email, model_bucket, deadline, task_count, addressed_directly),
         relevance=relevance(feats, weights),
         features=feats,
+        must_see=must_see(email),
     )
 
 
@@ -432,7 +452,7 @@ def derive_bucket(axes: Axes, thresholds: Thresholds | None = None) -> str:
 # translates. Ranked by how much a user could act on it: what you declared beats
 # what the app inferred, and an inference you can name beats a number.
 REASON_ORDER = (
-    "pinned", "explored", "topic", "deadline", "flagged",
+    "pinned", "explored", "topic", "deadline", "mustSee", "flagged",
     "direct", "affinity", "answered", "noise", "none",
 )
 
@@ -471,6 +491,8 @@ def reason_for(
         return "topic", topics[0]
     if deadline_days is not None:
         return "deadline", str(deadline_days)
+    if axes.must_see:
+        return "mustSee", axes.must_see
     if axes.features.get("flagged"):
         return "flagged", ""
     if axes.features.get("direct_address"):
@@ -504,6 +526,7 @@ def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None
             contributions[name] = round(total, 4)
     return {
         "bucket": axes.bucket(thresholds),
+        "must_see": axes.must_see,
         "actionability": axes.actionability,
         "relevance": axes.relevance,
         "theta_relevance": round(thresholds.relevance, 4),
@@ -835,13 +858,29 @@ def hashing_embed(text: str, dims: int = 256) -> list[float]:
     yet would have made none of it testable.
     """
     vec = [0.0] * dims
-    for token in _TOKEN.findall((text or "").lower()):
-        if len(token) < 3:
-            continue
+    for token in _embed_tokens(text):
         h = hashlib.blake2b(token.encode("utf-8"), digest_size=4).digest()
         idx = int.from_bytes(h, "big") % dims
         vec[idx] += 1.0
     return normalise(vec)
+
+
+def _embed_tokens(text: str) -> list[str]:
+    """Latin words of 3+ letters, and Hangul as character bigrams.
+
+    Bigrams because Korean glues particles onto words: `과제를`, `과제는` and
+    `과제` must land on the same dimension, and with no morphological analyser
+    the shared bigram `과제` is what they have in common.
+    """
+    out: list[str] = []
+    for token in _TOKEN.findall((text or "").lower()):
+        if _HANGUL.match(token):
+            if len(token) == 1:
+                continue
+            out.extend(token[i:i + 2] for i in range(len(token) - 1))
+        elif len(token) >= 3:
+            out.append(token)
+    return out
 
 
 _embedder: Callable[[str], list[float]] = hashing_embed

@@ -319,7 +319,9 @@ def seed_centroids(priorities: list[dict[str, Any]] | None = None) -> int:
     seeded = 0
     for prio in priorities:
         topic = (prio.get("topic") or "").strip()
-        if not topic or topic in existing:
+        # An all-zero centroid is a Korean topic seeded before the embedder
+        # could read Hangul. It holds nothing learned, so it is seeded again.
+        if not topic or (topic in existing and any(existing[topic])):
             continue
         db.save_priority_centroid(topic, relevance.embed(topic), EMBEDDER_NAME)
         seeded += 1
