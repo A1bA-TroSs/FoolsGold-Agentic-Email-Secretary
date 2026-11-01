@@ -360,6 +360,11 @@ def dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = 
         return False
     if due < (today or date.today()) - timedelta(days=DATED_ASK_GRACE_DAYS):
         return False
+    # From a system sender, the same proof the must-see floor asks for: a
+    # school, LMS or calendar address, or a booking reference. Otherwise
+    # "이벤트 응모 마감 안내" from a shop's no-reply would be lifted too.
+    if cues.NOISE_SENDER.search(email.get("from_address") or "") and not cues.has_evidence(email):
+        return False
     return bool(cues.DATED_ASK_SUBJECT.search(email.get("subject") or ""))
 
 
@@ -388,7 +393,7 @@ def actionability(
         z += ACT_MODEL_NOISE
     if _ACTION_CUE.search(subject) or cues.KO_ACTION.search(subject):
         z += ACT_SUBJECT_CUE
-    if _ACTION_CUE.search(body) or cues.KO_ACTION.search(body):
+    if _ACTION_CUE.search(body) or cues.asks_ko(body):
         z += ACT_BODY_CUE
     if deadline:
         z += ACT_HAS_DEADLINE

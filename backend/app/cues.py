@@ -34,9 +34,9 @@ from typing import Any
 
 # A completed or past-tense form ("제출 완료되었습니다", "조기 마감되어") is a
 # confirmation, not a request, so the bare nouns refuse to match before one.
-_DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|되셨|하였|했|하신|처리되))"
+_DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|된|돼|되셨|하였|했|하신|처리되|지난|지나))"
 KO_ACTION = re.compile(
-    r"(마감" + _DONE + r"|제출" + _DONE + r"|(?<!유통)(?<!사용)기한|"
+    r"(마감(?!재)" + _DONE + r"|제출" + _DONE + r"|(?<!유통)(?<!사용)기한" + _DONE + r"|"
     r"회신\s*(?:부탁|요망|바랍니다|요청|주시|해\s*주|기한)|"
     r"답장\s*(?:부탁|요망|바랍니다)|확인\s*(?:요청|부탁|바랍니다|해\s*주)|"
     r"승인\s*(?:요청|부탁|바랍니다)|서명\s*(?:요청|부탁|해\s*주|바랍니다|필요)|"
@@ -47,6 +47,8 @@ KO_ACTION = re.compile(
     r"(?:검토|작성|업로드|수정|회신|확인|제출)\s*(?:을|를)?\s*"
     r"(?:부탁\s*드|부탁해|해\s*주시기|하여\s*주시기|해\s*주세요|해주세요|바랍니다)|"
     r"올려\s*주(?:세요|시기)|보내\s*주(?:세요|시기)|신청\s*하(?:세요|시기)|답변\s*요청|"
+    r"(?:납부|참석|답변|결재|회신|제출|신청|확인|서명|검토)\s*(?:하여|해)?\s*(?:주시기|하시기)?\s*"
+    r"(?:바랍니다|부탁\s*드립니다|부탁드려요)|"
     r"(?:참여|응답|작성)\s*(?:부탁|바랍니다|해\s*주))"
 )
 
@@ -121,6 +123,11 @@ DATED_ASK_SUBJECT = re.compile(
     r"과제|\bassignment\b|수강\s*(?:신청|철회|정정))",
     re.I,
 )
+
+
+def asks_ko(text: str) -> bool:
+    """A Korean request in `text`, reading only the new part of a reply."""
+    return bool(KO_ACTION.search(strip_quoted(text or "")))
 
 
 def is_marketing(subject: str) -> bool:
@@ -343,7 +350,7 @@ TRANSACTION_REF = re.compile(
 )
 
 
-def _has_evidence(email: dict[str, Any]) -> bool:
+def has_evidence(email: dict[str, Any]) -> bool:
     sender = email.get("from_address") or ""
     if INSTITUTIONAL_SENDER.search(sender):
         return True
@@ -368,7 +375,7 @@ def always_important(email: dict[str, Any], is_marketing_mail_: bool | None = No
     # From a no-reply or notification address the kind word alone is how
     # promotions talk ("Exam season: 3 months free" from no-reply@quizlet), so
     # such mail also needs a school or calendar sender or a booking reference.
-    if NOISE_SENDER.search(email.get("from_address") or "") and not _has_evidence(email):
+    if NOISE_SENDER.search(email.get("from_address") or "") and not has_evidence(email):
         return None
     for kind, pattern in ALWAYS_IMPORTANT.items():
         if pattern.search(subject):
