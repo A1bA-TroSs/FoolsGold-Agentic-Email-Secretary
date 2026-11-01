@@ -658,3 +658,23 @@ def test_closure_until_a_date_is_not_a_deadline(text):
 
 def test_real_deadline_beside_closure_word_survives():
     assert cues.korean_deadline("신청은 11월 7일까지 진행됩니다.", date(2026, 11, 1))[1] == date(2026, 11, 7)
+
+
+@pytest.mark.parametrize("body", [
+    "보고서를 금요일까지 제출해 주시면 감사하겠습니다.", "회신 주시면 감사하겠습니다.",
+    "기간 내 응시하시기 바랍니다.", "서류를 제출하여 주십시오.", "자료 공유해 주세요.",
+])
+def test_polite_request_endings_count(body):
+    assert cues.asks_ko(body)
+
+
+@pytest.mark.parametrize("text", [
+    "Python 3.10까지 지원합니다", "평점 3.5까지 인정", "교재 1/2까지 읽어 오세요", "주 3일까지 근무 가능",
+    "11월 3일부터 11월 7일까지 휴관합니다",
+])
+def test_numbers_and_closure_ranges_are_not_deadlines(text):
+    assert cues.korean_deadline(text, date(2026, 11, 1)) is None
+
+
+def test_short_date_with_until_still_works():
+    assert cues.korean_deadline("과제는 11/20까지", date(2026, 11, 1))[1] == date(2026, 11, 20)
