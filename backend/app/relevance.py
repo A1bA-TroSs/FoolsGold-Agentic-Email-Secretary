@@ -359,7 +359,7 @@ def dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = 
     request. Relevance on day one cannot see it (R = 0.08), so it is a second
     floor rather than a weight.
     """
-    if not deadline or is_marketing(email.get("subject") or ""):
+    if not deadline or cues.is_marketing_mail(email):
         return False
     try:
         due = date.fromisoformat(str(deadline)[:10])
@@ -367,10 +367,7 @@ def dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = 
         return False
     if due < (today or date.today()) - timedelta(days=DATED_ASK_GRACE_DAYS):
         return False
-    subject = email.get("subject") or ""
-    body = (email.get("body_text") or email.get("body_preview") or "")[:2000]
-    return bool(_ACTION_CUE.search(subject) or cues.KO_ACTION.search(subject)
-                or _ACTION_CUE.search(body) or cues.KO_ACTION.search(body))
+    return bool(cues.DATED_ASK_SUBJECT.search(email.get("subject") or ""))
 
 
 def actionability(
@@ -492,6 +489,7 @@ def reason_for(
     deadline_days: int | None = None,
     pinned: bool = False,
     explored: bool = False,
+    muted: bool = False,
 ) -> tuple[str, str]:
     """Why this email is ranked where it is, in one code and one argument.
 
@@ -519,7 +517,7 @@ def reason_for(
         return "topic", topics[0]
     if deadline_days is not None:
         return "deadline", str(deadline_days)
-    if axes.must_see:
+    if axes.must_see and not muted:
         return "mustSee", axes.must_see
     if axes.features.get("flagged"):
         return "flagged", ""
@@ -529,7 +527,7 @@ def reason_for(
         return "affinity", ""
     if axes.features.get("answered"):
         return "answered", ""
-    if axes.features.get("structural_noise"):
+    if axes.features.get("structural_noise") and not (axes.dated_ask and not muted):
         return "noise", ""
     return "none", ""
 

@@ -254,6 +254,7 @@ def reason_for_email(
     verdict: str | None = None,
     explored: bool = False,
     today: date | None = None,
+    muted: bool = False,
 ) -> tuple[str, str]:
     """The stored one-line reason. Days-to-deadline is resolved here because the
     pure layer has no clock and should not acquire one."""
@@ -273,6 +274,7 @@ def reason_for_email(
         deadline_days=days,
         pinned=(verdict == "pinned"),
         explored=explored,
+        muted=muted,
     )
 
 
