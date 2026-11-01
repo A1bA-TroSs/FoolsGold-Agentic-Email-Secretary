@@ -45,7 +45,8 @@ KO_ACTION = re.compile(
     r"참석\s*여부|미납|납부\s*(?:기한|마감|안내)|까지\s*(?:제출|회신|신청|납부)|"
     r"(?:검토|작성|업로드|수정|회신|확인|제출)\s*(?:을|를)?\s*"
     r"(?:부탁\s*드|부탁해|해\s*주시기|하여\s*주시기|해\s*주세요|해주세요|바랍니다)|"
-    r"올려\s*주(?:세요|시기)|보내\s*주(?:세요|시기))"
+    r"올려\s*주(?:세요|시기)|보내\s*주(?:세요|시기)|신청\s*하(?:세요|시기)|답변\s*요청|"
+    r"(?:참여|응답|작성)\s*(?:부탁|바랍니다|해\s*주))"
 )
 
 # The legally required advertising marker in Korea (정보통신망법 제50조) is
@@ -60,11 +61,28 @@ KO_NOISE_SUBJECT = re.compile(
     re.I,
 )
 
-# English marketing and bulk subjects. One copy, read by priority and relevance.
+# English marketing and bulk subjects, exactly as develop had them in both
+# priority.py and relevance.py. One copy now; the words are unchanged, so the
+# English noise bucket is unchanged.
 EN_NOISE_SUBJECT = re.compile(
-    r"\b(unsubscribe|newsletters?|webinars?|sales?|% ?off|deals?|promos?|promotions?|digest|"
-    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship)|free trial|"
-    r"\d+ months? free|limited[- ]time|save \d|discount|coupon)\b", re.I
+    r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
+    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
+)
+
+# English action cues, likewise moved here unchanged from develop's two copies.
+EN_ACTION = re.compile(
+    r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
+    r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
+    r"overdue|final notice|last chance to)\b", re.I
+)
+
+# Wider promotional vocabulary. Read ONLY by the must-see floors, never by the
+# noise bucket: "Q3 sales numbers" must stay where develop put it, but an
+# "Exam season: 3 months free" offer must not be lifted out of noise.
+PROMO_SUBJECT = re.compile(
+    r"(\b(?:newsletters|webinars|sales|deals|promos?|promotions?|free trial|"
+    r"\d+ months? free|limited[- ]time|discount|coupons?)\b|\bsave \d+\s*%?|\d+\s*% off)",
+    re.I,
 )
 
 # System senders: no-reply, notification and bulk addresses. Mail from them is
@@ -91,7 +109,8 @@ DATED_ASK_SUBJECT = re.compile(
     r"(\b(?:due|deadline|submit|submission|action required|respond|rsvp|approve|"
     r"approval|sign(?:ature)? required|overdue|final notice)\b|"
     r"마감" + _DONE + r"|제출" + _DONE + r"|기한|회신\s*요청|미납|납부\s*(?:기한|안내)|서명\s*요청|"
-    r"신청\s*(?:기간|마감|안내)|이의\s*신청|접수\s*(?:기간|마감))",
+    r"신청\s*(?:기간|마감|안내)|이의\s*신청|접수\s*(?:기간|마감)|(?:철회|변경|정정)\s*기간|"
+    r"과제|\bassignment\b|까지)",
     re.I,
 )
 
@@ -102,9 +121,14 @@ def is_marketing(subject: str) -> bool:
 
 
 def is_marketing_mail(email: dict[str, Any]) -> bool:
-    """Marketing by its subject or by a broadcast sender address."""
-    return (is_marketing(email.get("subject") or "")
-            or bool(MARKETING_SENDER.search(email.get("from_address") or "")))
+    """Marketing for the floors' purposes: by subject (including the wider
+    promo words), by a broadcast sender, or by the Korean opt-out footer
+    (수신거부) that the law requires in every advertising mail."""
+    subject = email.get("subject") or ""
+    body = email.get("body_text") or email.get("body_preview") or ""
+    return (is_marketing(subject) or bool(PROMO_SUBJECT.search(subject))
+            or bool(MARKETING_SENDER.search(email.get("from_address") or ""))
+            or bool(re.search(r"수신\s*거부", body)))
 
 
 # --------------------------------------------------------------------------
@@ -130,6 +154,11 @@ _KO_AFTER_WORD = re.compile(
 _KO_YY_DOTTED = re.compile(
     r"(?<![\d.])(\d{2})\.(\d{1,2})\.(\d{1,2})\.?\s*(?:\(\s*[월화수목금토일]\s*\)|까지)"
 )
+# develop's ISO pattern ends in \\b, which a Hangul letter does not provide,
+# so "2026-11-20까지" found nothing.
+_ISO_KO = re.compile(r"(?<!\d)(20\d{2})-(\d{1,2})-(\d{1,2})(?!\d)")
+# "5일까지" -- a bare day of this month, or next month if it has passed.
+_KO_DAY_ONLY = re.compile(r"(?<![\d월/.\s])\s*(?<!\d)(\d{1,2})\s*일\s*까지")
 _KO_THIS_MONTH = re.compile(r"(?:이번\s*달|이달|금월)\s*(\d{1,2})\s*일")
 _KO_MONTH_END = re.compile(r"(?<!\d)(\d{1,2})\s*월\s*말\s*까지")
 _TIME = r"(?:\s*(?:오전|오후|낮|밤|저녁|아침)?\s*(?:\d{1,2}\s*시(?:\s*\d{1,2}\s*분|\s*반)?|\d{1,2}:\d{2}|자정|정오))?"
@@ -184,6 +213,14 @@ def _anchored(text: str, m: re.Match) -> bool:
                 or _DEADLINE_WORD.search(before))
 
 
+def _day_of_month(day: int, today: date) -> date | None:
+    d = _safe(today.year, today.month, day)
+    if d and d >= today:
+        return d
+    y, mo = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+    return _safe(y, mo, day)
+
+
 def _month_end(month: int, today: date) -> date | None:
     first = _next_occurrence(month, 1, today)
     if not first:
@@ -217,6 +254,8 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
     first(_KO_AFTER_WORD, lambda m: _next_occurrence(int(m.group(1)), int(m.group(2)), today))
     first(_KO_YY_DOTTED, lambda m: _safe(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3))))
     first(_KO_THIS_MONTH, lambda m: _safe(today.year, today.month, int(m.group(1))))
+    first(_ISO_KO, lambda m: _safe(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+    first(_KO_DAY_ONLY, lambda m: _day_of_month(int(m.group(1)), today))
     first(_KO_MONTH_END, lambda m: _month_end(int(m.group(1)), today))
     first(_KO_RELATIVE, lambda m: today + timedelta(days=_KO_RELATIVE_DAYS[m.group(1)]))
 
@@ -249,9 +288,9 @@ ALWAYS_IMPORTANT = {
     # common case. 시험 발송 / 시험 메일 is a test send, not an exam.
     "exam": re.compile(
         r"(\bmid-?terms?\b|\bfinal exams?\b|\bexams?\b|\bquiz\s*\d|"
-        r"시험(?!\s*(?:발송|메일|용|전송))|중간고사|기말고사)", re.I),
+        r"시험(?!\s*(?:발송|메일|용|전송|삼아))|중간고사|기말고사)", re.I),
     "payment": re.compile(
-        r"(\btuition\b|\bpayment (?:due|deadline|reminder|overdue)\b|\bfees? (?:are )?due\b|"
+        r"(\btuition\b(?![- ]free)|\bpayment (?:due|deadline|reminder|overdue)\b|\bfees? (?:are )?due\b|"
         r"등록금|수강료|납부|미납|고지서|결제\s*(?:예정|기한|예정일))", re.I),
     "ticket": re.compile(
         r"(\bboarding pass\b|\be-?ticket\b|\bitinerary\b|\bbooking confirm|"

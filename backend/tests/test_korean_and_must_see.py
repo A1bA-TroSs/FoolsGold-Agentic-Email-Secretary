@@ -396,3 +396,55 @@ def test_more_admin_kinds_and_dated_asks():
     assert cues.always_important(mail(subject="카드 결제 예정 금액 안내", from_address="card@bank.kr")) == "payment"
     assert cues.DATED_ASK_SUBJECT.search("2학기 장학금 신청 기간 안내")
     assert cues.DATED_ASK_SUBJECT.search("성적 이의신청 안내")
+
+
+# --------------------------------------------------------------------------
+# round 5: English noise bucket pinned to develop; more Korean admin forms
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("subject", [
+    "Q3 sales numbers - please review", "Deals pipeline review", "Weekly digest", "Spring sale: 20% off",
+])
+def test_english_noise_words_match_develop(subject):
+    """The English lists are develop's, moved, not changed."""
+    import re as _re
+    develop = _re.compile(
+        r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
+        r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", _re.I)
+    assert bool(cues.EN_NOISE_SUBJECT.search(subject)) == bool(develop.search(subject))
+    assert cues.EN_NOISE_SUBJECT.pattern == develop.pattern
+
+
+def test_tuition_discount_notice_is_not_noise():
+    email = mail(subject="Tuition discount application deadline Nov 20", from_address="bursar@uni.edu")
+    assert priority.structural_bucket(email) == "action"
+    assert R.axes_for(email).bucket(Thresholds()) != "noise"
+
+
+def test_promos_with_kind_words_are_blocked_from_the_floor():
+    assert R.must_see(mail(subject="Exam prep course: save 30% this week", from_address="no-reply@uni.edu")) is None
+    assert cues.always_important(mail(subject="Tuition-free MBA info session")) is None
+    assert cues.always_important(mail(subject="시험 삼아 보내봅니다")) is None
+    assert cues.always_important(mail(subject="등록금 분납 안내", body_text="... 수신거부 ...")) is None
+
+
+def test_lms_notices_without_deadline_words_are_kept(store):
+    due = date.today() + timedelta(days=5)
+    out = _persist([
+        _row("a", f"과제 공지 ({due.month}/{due.day}까지)", "no-reply@lms.ac.kr"),
+        _row("b", "새 과제가 등록되었습니다", "notifications@instructure.com",
+             f"제출 기한: {due.month}월 {due.day}일"),
+    ])
+    assert out["a"]["bucket"] != "noise"
+    assert out["b"]["bucket"] != "noise"
+
+
+def test_iso_date_before_hangul_and_bare_day():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("2026-11-20까지 제출", wed) == "2026-11-20"
+    assert priority.extract_deadline("5일까지 회신 바랍니다", wed) == "2026-11-05"
+
+
+def test_more_korean_requests():
+    for subject in ["장학금 신청하세요", "설문 참여 부탁드립니다", "질의 답변 요청"]:
+        assert priority.structural_bucket(mail(subject=subject)) == "action", subject
