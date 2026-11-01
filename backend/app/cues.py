@@ -268,7 +268,7 @@ _PAST_AFTER = re.compile(
 # "지난 11월 2일", "저번 3일" -- a date introduced as the past.
 _PAST_BEFORE = re.compile(r"(지난|저번|작년|전날)\s*$")
 # Two dates joined as a period: "11월 1일부터 12월 15일까지", "11. 10.(화) ~ 11. 14.(토)".
-_RANGE_JOIN = re.compile(r"\s*(?:부터|~|～|〜|–|-)\s*")
+_RANGE_JOIN = re.compile(r"\s*(?:\(\s*[월화수목금토일]\s*\)\s*)?(?:부터|~|～|〜|–|-)\s*")
 _DEADLINE_WORD = re.compile(r"(까지|마감|기한|내로|이내|due|by)", re.I)
 
 
