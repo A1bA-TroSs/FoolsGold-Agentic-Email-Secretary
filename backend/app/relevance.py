@@ -224,10 +224,6 @@ _NOISE_SENDER = re.compile(
     r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
     r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
 )
-_NOISE_SUBJECT = re.compile(
-    r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
-    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
-)
 # Latin words and Hangul runs. The old `[a-z0-9]+` dropped every Korean
 # character, so a Korean email embedded to an all-zero vector and topic
 # centroids and Rocchio learning saw nothing in Korean mail at all.
@@ -282,9 +278,14 @@ class Axes:
     # Set for exam, payment, ticket and invitation mail (`cues.ALWAYS_IMPORTANT`).
     # A floor, not a weight: relevance can still order it, but never hide it.
     must_see: str | None = None
+    # The mail asks for something by a date it names (`dated_ask`). Same floor.
+    dated_ask: bool = False
 
-    def bucket(self, thresholds: Thresholds) -> str:
-        if self.relevance < thresholds.relevance and not self.must_see:
+    def bucket(self, thresholds: Thresholds, floor: bool = True) -> str:
+        """`floor=False` for a muted sender: muting is a standing decision, and
+        the must-see floor must not overturn it."""
+        kept = floor and (self.must_see or self.dated_ask)
+        if self.relevance < thresholds.relevance and not kept:
             return "noise"
         return "action" if self.actionability >= thresholds.action else "fyi"
 
@@ -336,14 +337,40 @@ def structural_noise(email: dict[str, Any]) -> float:
     return 0.0
 
 
-def is_marketing(subject: str) -> bool:
-    return bool(_NOISE_SUBJECT.search(subject or "") or cues.KO_NOISE_SUBJECT.search(subject or ""))
+is_marketing = cues.is_marketing
 
 
 def must_see(email: dict[str, Any]) -> str | None:
     """The always-important kind of this email (exam, payment, ticket, invite),
     or None. See `cues` for why this is a floor and not a feature."""
-    return cues.always_important(email, is_marketing(email.get("subject") or ""))
+    return cues.always_important(email)
+
+
+# How far back a named deadline still counts as a reason to keep mail out of
+# noise. A notice whose date passed last week is history.
+DATED_ASK_GRACE_DAYS = 2
+
+
+def dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = None) -> bool:
+    """The mail asks for something by a date it names, and is not marketing.
+
+    This is what the measured Canvas notice ("과제 제출 마감 안내: 11월 3일까지"
+    from notifications@) is: not one of the four must-see kinds, but a dated
+    request. Relevance on day one cannot see it (R = 0.08), so it is a second
+    floor rather than a weight.
+    """
+    if not deadline or is_marketing(email.get("subject") or ""):
+        return False
+    try:
+        due = date.fromisoformat(str(deadline)[:10])
+    except (TypeError, ValueError):
+        return False
+    if due < (today or date.today()) - timedelta(days=DATED_ASK_GRACE_DAYS):
+        return False
+    subject = email.get("subject") or ""
+    body = (email.get("body_text") or email.get("body_preview") or "")[:2000]
+    return bool(_ACTION_CUE.search(subject) or cues.KO_ACTION.search(subject)
+                or _ACTION_CUE.search(body) or cues.KO_ACTION.search(body))
 
 
 def actionability(
@@ -441,6 +468,7 @@ def axes_for(
         relevance=relevance(feats, weights),
         features=feats,
         must_see=must_see(email),
+        dated_ask=dated_ask(email, deadline),
     )
 
 
