@@ -234,6 +234,7 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
         # must not need one API call per row to say why a row is there.
         reason_code, reason_arg = learning.reason_for_email(
             axes, matched or axis_topics, deadline, verdict=verdict, today=today,
+            muted=(email.get("from_address") or "").lower() in muted,
         )
         db.save_classification({
             "email_id": c.email_id,
@@ -468,7 +469,7 @@ def rescore_all() -> int:
                 centroids=centroids,
             )
             bucket = axes.bucket(
-            thresholds, floor=(email.get("from_address") or "").lower() not in muted)
+                thresholds, floor=(email.get("from_address") or "").lower() not in muted)
             if bucket == "noise" and (email.get("from_address") or "").lower() not in muted:
                 explorable.append(email["id"])
 
@@ -483,6 +484,7 @@ def rescore_all() -> int:
             reason_code, reason_arg = learning.reason_for_email(
                 axes, matched or axis_topics, email.get("deadline"),
                 verdict=verdict, today=today,
+                muted=(email.get("from_address") or "").lower() in muted,
             )
             conn.execute(
                 "UPDATE classifications SET score = ?, matched = ?, bucket = ?, "

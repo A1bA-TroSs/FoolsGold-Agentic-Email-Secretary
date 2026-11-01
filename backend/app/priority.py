@@ -160,9 +160,10 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
     if _NOISE_SENDER.search(sender):
         # A system sender (LMS, registrar, airline) is noise unless the mail
         # is a must-see kind, or it asks for something by a date it names.
-        if cues.always_important(email, False):
+        if cues.always_important(email):
             return "action" if asks else "fyi"
-        if asks and extract_deadline(f"{subject}\n{body}"):
+        if (cues.DATED_ASK_SUBJECT.search(subject) and not cues.is_marketing_mail(email)
+                and extract_deadline(f"{subject}\n{body}")):
             return "action"
         return "noise"
     if asks:
