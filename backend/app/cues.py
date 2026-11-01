@@ -34,13 +34,13 @@ from typing import Any
 
 # A completed or past-tense form ("제출 완료되었습니다", "조기 마감되어") is a
 # confirmation, not a request, so the bare nouns refuse to match before one.
-_DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|된|돼|되셨|하였|했|하신|처리되|지난|지나))"
+_DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|된|돼|되셨|하였|했|하신|해\s*주신|해\s*주셔서|감사|처리되|지난|지나|끝))"
 KO_ACTION = re.compile(
-    r"(마감(?!재)" + _DONE + r"|제출" + _DONE + r"|(?<!유통)(?<!사용)기한" + _DONE + r"|"
+    r"(마감(?!재)" + _DONE + r"|제출(?!물|\s*서류)" + _DONE + r"|(?<!유통)(?<!사용)기한" + _DONE + r"|"
     r"회신\s*(?:부탁|요망|바랍니다|요청|주시|해\s*주|기한)|"
     r"답장\s*(?:부탁|요망|바랍니다)|확인\s*(?:요청|부탁|바랍니다|해\s*주)|"
     r"승인\s*(?:요청|부탁|바랍니다)|서명\s*(?:요청|부탁|해\s*주|바랍니다|필요)|"
-    r"신청\s*(?:기간|마감|바랍니다)|필수\s*(?:제출|참석|확인|이수|서류|응답)|[\(\[]\s*필수\s*[\)\]]|긴급|"
+    r"신청\s*(?:기간|마감|바랍니다)" + _DONE + r"|필수\s*(?:제출|참석|확인|이수|서류|응답)|[\(\[]\s*필수\s*[\)\]]|긴급|"
     r"요청\s*(?:드립니다|드려요|드리오니|합니다|하오니|바랍니다)|"
     r"(?:자료|검토|확인|회신|제출|참석|서명|승인)\s*요청|독촉|리마인드|"
     r"참석\s*여부|미납|납부\s*(?:기한|마감|안내)|까지\s*(?:제출|회신|신청|납부)|"
@@ -130,6 +130,32 @@ def asks_ko(text: str) -> bool:
     return bool(KO_ACTION.search(strip_quoted(text or "")))
 
 
+_KO_SELLING = re.compile(r"(특가|쿠폰|할인|최저가|무료\s*(?:체험|증정|제공)|[\[\(]\s*이벤트\s*[\]\)])")
+
+
+def is_dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = None,
+                 grace_days: int = 2) -> bool:
+    """The mail asks for something by a date it names, and is not marketing.
+
+    One predicate for both callers (`priority.structural_bucket` and
+    `relevance.dated_ask`). The measured Canvas notice ("과제 제출 마감 안내:
+    11월 3일까지" from notifications@instructure.com) is this: not one of the
+    must-see kinds, but a dated request. From a system sender it needs the
+    same proof as the must-see floor.
+    """
+    if not deadline or is_marketing_mail(email):
+        return False
+    try:
+        due = date.fromisoformat(str(deadline)[:10])
+    except (TypeError, ValueError):
+        return False
+    if due < (today or date.today()) - timedelta(days=grace_days):
+        return False
+    if NOISE_SENDER.search(email.get("from_address") or "") and not has_evidence(email):
+        return False
+    return bool(DATED_ASK_SUBJECT.search(email.get("subject") or ""))
+
+
 def is_marketing(subject: str) -> bool:
     subject = subject or ""
     return bool(EN_NOISE_SUBJECT.search(subject) or KO_NOISE_SUBJECT.search(subject))
@@ -141,8 +167,16 @@ def is_marketing_mail(email: dict[str, Any]) -> bool:
     (수신거부) that the law requires in every advertising mail."""
     subject = email.get("subject") or ""
     body = email.get("body_text") or email.get("body_preview") or ""
-    return (is_marketing(subject) or bool(PROMO_SUBJECT.search(subject))
-            or bool(KO_PROMO_SUBJECT.search(subject))
+    # Promo vocabulary blocks the floor only for senders that are not a
+    # school, government or LMS: "[마감임박] 등록금 분할납부 신청" from
+    # no-reply@snu.ac.kr is a real deadline. The (광고) marker and the
+    # 수신거부 footer block every sender.
+    institutional = bool(INSTITUTIONAL_SENDER.search(email.get("from_address") or ""))
+    promo = bool(PROMO_SUBJECT.search(subject) or KO_PROMO_SUBJECT.search(subject))
+    selling = bool(PROMO_SUBJECT.search(subject) or _KO_SELLING.search(subject))
+    # Urgency words (마감 임박, 선착순) are how schools write too; selling words
+    # (할인, 특가, save 30%) are not, so those still block a school sender.
+    return (is_marketing(subject) or (promo and not institutional) or selling
             or bool(MARKETING_SENDER.search(email.get("from_address") or ""))
             or bool(re.search(r"수신\s*거부", body)))
 
@@ -217,8 +251,13 @@ def _next_occurrence(month: int, day: int, today: date) -> date | None:
 
 # A date followed by a past-tense phrase describes what happened, not a due date.
 _PAST_AFTER = re.compile(
-    r"[^.\n]{0,6}?(?:진행된|진행했|진행되었|있었|보낸|보내드린|했던|열린|열렸|개최된|발송된|공지한|공지된|받은|드린)"
+    r"[^.\n]{0,8}?(?:진행된|진행했|진행되었|있었|보낸|보내드린|했던|열린|열렸|개최된|발송된|공지한|공지된|받은|드린|"
+    r"했습니다|였습니다|었습니다|했어요|감사했)"
 )
+# "지난 11월 2일", "저번 3일" -- a date introduced as the past.
+_PAST_BEFORE = re.compile(r"(지난|저번|작년|전날)\s*$")
+# Two dates joined as a period: "11월 1일부터 12월 15일까지", "11. 10.(화) ~ 11. 14.(토)".
+_RANGE_JOIN = re.compile(r"\s*(?:부터|~|～|〜|–|-)\s*")
 _DEADLINE_WORD = re.compile(r"(까지|마감|기한|내로|이내|due|by)", re.I)
 
 
@@ -256,7 +295,7 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
     Quoted earlier messages are cut off first. Returns (position, date).
     """
     text = strip_quoted(text)
-    found: list[tuple[int, date, bool]] = []
+    found: list[tuple[int, date, bool, int]] = []
 
     def first(pattern, build):
         # Every match, not only the first: "11월 1일 공지한 과제는 11월 7일까지"
@@ -264,9 +303,11 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
         for m in pattern.finditer(text):
             if _PAST_AFTER.match(text, m.end()):
                 continue  # "1/3(월) 진행된 회의록", "10월 1일에 보낸 메일"
+            if _PAST_BEFORE.search(text[max(0, m.start() - 6):m.start()]):
+                continue
             d = build(m)
             if d:
-                found.append((m.start(), d, _anchored(text, m)))
+                found.append((m.start(), d, _anchored(text, m), m.end()))
 
     first(_KO_YMD, lambda m: _safe(int(m.group(1)), int(m.group(2)), int(m.group(3))))
     first(_DOTTED, lambda m: _safe(int(m.group(1)), int(m.group(2)), int(m.group(3))))
@@ -298,7 +339,13 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
         return None
     # A date with a deadline word beside it beats one without; then the
     # earliest in the text; on a tie the more specific pattern (added first).
-    pos, d, _ = min(found, key=lambda item: (not item[2], item[0]))
+    pos, d, _, end = min(found, key=lambda item: (not item[2], item[0]))
+    # A period's deadline is its end: follow "부터" / "~" to the second date.
+    join = _RANGE_JOIN.match(text, end)
+    if join:
+        after = [f for f in found if f[0] == join.end() and f[1] >= d]
+        if after:
+            pos, d = after[0][0], after[0][1]
     return pos, d
 
 
@@ -314,7 +361,7 @@ ALWAYS_IMPORTANT = {
         r"시험(?!\s*(?:발송|메일|용|전송|삼아))|중간고사|기말고사)", re.I),
     "payment": re.compile(
         r"(\btuition\b(?![- ]free)|\bpayment (?:due|deadline|reminder|overdue)\b|\bfees? (?:are )?due\b|"
-        r"등록금|수강료|납부|미납|고지서|결제\s*(?:예정|기한|예정일))", re.I),
+        r"등록금|수강료|납부|미납|고지서|상환|청구|요금|대금|결제\s*(?:예정|기한|예정일))", re.I),
     "ticket": re.compile(
         r"(\bboarding pass\b|\be-?ticket\b|\bitinerary\b|\bbooking confirm|"
         r"\breservation confirm|\bflight (?:confirm|change|cancel)|"
