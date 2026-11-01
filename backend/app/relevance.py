@@ -220,10 +220,7 @@ _ACTION_CUE = re.compile(
     r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
     r"overdue|final notice|last chance to)\b", re.I
 )
-_NOISE_SENDER = re.compile(
-    r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
-    r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
-)
+_NOISE_SENDER = cues.NOISE_SENDER
 # Latin words and Hangul runs. The old `[a-z0-9]+` dropped every Korean
 # character, so a Korean email embedded to an all-zero vector and topic
 # centroids and Rocchio learning saw nothing in Korean mail at all.
