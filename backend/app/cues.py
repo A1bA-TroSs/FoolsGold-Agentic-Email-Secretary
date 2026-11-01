@@ -55,14 +55,23 @@ _AD_MARK = r"[\(\[（【<〈［]\s*(?:광\s*고|AD)\s*[\)\]）】>〉］]"
 KO_NOISE_SUBJECT = re.compile(
     r"(" + _AD_MARK + r"|수신\s*거부|뉴스레터|소식지|웹진|\d+\s*월호|주간\s*소식|"
     r"특가|쿠폰|할인|영수증|결제\s*완료|주문\s*(?:확인|완료)|배송\s*(?:시작|완료|안내)|"
-    r"마감\s*임박|선착순|얼리\s*버드|무료\s*(?:특강|체험|증정|세미나))",
+    r"마감\s*임박|선착순|얼리\s*버드|무료\s*(?:특강|체험|증정|세미나|제공)|웨비나|"
+    r"[\[\(]\s*이벤트\s*[\]\)]|최저가)",
     re.I,
 )
 
 # English marketing and bulk subjects. One copy, read by priority and relevance.
 EN_NOISE_SUBJECT = re.compile(
-    r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
-    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
+    r"\b(unsubscribe|newsletters?|webinars?|sales?|% ?off|deals?|promos?|promotions?|digest|"
+    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship)|free trial|"
+    r"\d+ months? free|limited[- ]time|save \d|discount|coupon)\b", re.I
+)
+
+# System senders: no-reply, notification and bulk addresses. Mail from them is
+# noise by default; the floors below are what may lift it.
+NOISE_SENDER = re.compile(
+    r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
+    r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
 )
 
 # Senders whose job is to sell or broadcast. The must-see floors never apply
@@ -81,7 +90,8 @@ MARKETING_SENDER = re.compile(
 DATED_ASK_SUBJECT = re.compile(
     r"(\b(?:due|deadline|submit|submission|action required|respond|rsvp|approve|"
     r"approval|sign(?:ature)? required|overdue|final notice)\b|"
-    r"마감" + _DONE + r"|제출" + _DONE + r"|기한|회신\s*요청|미납|납부\s*(?:기한|안내)|서명\s*요청)",
+    r"마감" + _DONE + r"|제출" + _DONE + r"|기한|회신\s*요청|미납|납부\s*(?:기한|안내)|서명\s*요청|"
+    r"신청\s*(?:기간|마감|안내)|이의\s*신청|접수\s*(?:기간|마감))",
     re.I,
 )
 
@@ -112,8 +122,9 @@ _KO_SHORT = re.compile(
     r"(?:\(\s*[월화수목금토일]\s*\)|까지)"
 )
 # "마감 11/20 23:59", "기한: 11.20" -- a short date right after a deadline word.
+# Slash only: "기한 2.5배" and "3.5 million" are numbers, not dates.
 _KO_AFTER_WORD = re.compile(
-    r"(?:마감|기한|까지|due)\s*(?:일|일시)?\s*[:：]?\s*(\d{1,2})\s*[/.]\s*(\d{1,2})(?![\d/.])", re.I
+    r"(?:마감|기한)\s*(?:일|일시)?\s*[:：]?\s*(\d{1,2})\s*/\s*(\d{1,2})(?![\d/.])"
 )
 # "26.11.20" -- a two-digit year, trusted only with a weekday or 까지 after it.
 _KO_YY_DOTTED = re.compile(
@@ -158,6 +169,10 @@ def _next_occurrence(month: int, day: int, today: date) -> date | None:
     return candidate
 
 
+# A date followed by a past-tense phrase describes what happened, not a due date.
+_PAST_AFTER = re.compile(
+    r"[^.\n]{0,6}?(?:진행된|진행했|진행되었|있었|보낸|보내드린|했던|열린|열렸|개최된|발송된|공지한|공지된|받은|드린)"
+)
 _DEADLINE_WORD = re.compile(r"(까지|마감|기한|내로|이내|due|by)", re.I)
 
 
@@ -189,6 +204,8 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
         # Every match, not only the first: "11월 1일 공지한 과제는 11월 7일까지"
         # names two dates and the deadline is the one with 까지 beside it.
         for m in pattern.finditer(text):
+            if _PAST_AFTER.match(text, m.end()):
+                continue  # "1/3(월) 진행된 회의록", "10월 1일에 보낸 메일"
             d = build(m)
             if d:
                 found.append((m.start(), d, _anchored(text, m)))
@@ -235,11 +252,11 @@ ALWAYS_IMPORTANT = {
         r"시험(?!\s*(?:발송|메일|용|전송))|중간고사|기말고사)", re.I),
     "payment": re.compile(
         r"(\btuition\b|\bpayment (?:due|deadline|reminder|overdue)\b|\bfees? (?:are )?due\b|"
-        r"등록금|수강료|납부|미납|고지서)", re.I),
+        r"등록금|수강료|납부|미납|고지서|결제\s*(?:예정|기한|예정일))", re.I),
     "ticket": re.compile(
         r"(\bboarding pass\b|\be-?ticket\b|\bitinerary\b|\bbooking confirm|"
         r"\breservation confirm|\bflight (?:confirm|change|cancel)|"
-        r"탑승권|항공권|전자\s*티켓|예매\s*(?:완료|확인)|예약\s*(?:확정|완료|확인))", re.I),
+        r"탑승권|항공권|승차권|전자\s*티켓|예매\s*(?:완료|확인)|예약\s*(?:확정|완료|확인))", re.I),
     # Calendar invitations as Google and Outlook title them. The bare word
     # 초대 is not enough: product launches and LinkedIn use it too.
     "invite": re.compile(
@@ -251,6 +268,33 @@ ALWAYS_IMPORTANT = {
 _SETTLED = re.compile(
     r"(완료|되었습니다|처리\s*안내|received|thank you for your payment|paid\b|results?\b)", re.I
 )
+
+
+# Positive evidence that a system sender's must-see mail is real: a school,
+# government or LMS domain, a calendar service, or a booking reference.
+INSTITUTIONAL_SENDER = re.compile(
+    r"@(?:[\w.-]+\.)?(?:ac\.[a-z]{2}|edu(?:\.[a-z]{2})?|go\.kr|gov(?:\.[a-z]{2})?|mil|"
+    r"instructure\.com|blackboard\.com|moodle[\w.-]*|brightspace\.com|d2l\.com|"
+    r"gradescope\.com|piazza\.com|edstem\.org)$|"
+    r"^calendar[-_.]?notification@|@(?:calendar|resource\.calendar)\.google\.com$",
+    re.I,
+)
+TRANSACTION_REF = re.compile(
+    r"(예약\s*번호|예매\s*번호|승차권\s*번호|탑승\s*(?:게이트|시간)|편명|좌석\s*(?:번호|배정)|"
+    r"\b(?:booking|reservation|confirmation|ticket|e-?ticket)\s*(?:ref(?:erence)?|number|no\.?|code|#)|"
+    r"\bPNR\b|\bgate\s+[A-Z]?\d|\bflight\s+[A-Z]{2}\s?\d{2,4}\b|\b[A-Z]{2}\s?\d{3,4}\b.{0,20}\b(?:depart|dep\.?)|"
+    r"\.ics\b|BEGIN:VCALENDAR)",
+    re.I,
+)
+
+
+def _has_evidence(email: dict[str, Any]) -> bool:
+    sender = email.get("from_address") or ""
+    if INSTITUTIONAL_SENDER.search(sender):
+        return True
+    text = "%s\n%s" % (email.get("subject") or "",
+                        (email.get("body_text") or email.get("body_preview") or "")[:3000])
+    return bool(TRANSACTION_REF.search(text))
 
 
 def always_important(email: dict[str, Any], is_marketing_mail_: bool | None = None) -> str | None:
@@ -265,6 +309,11 @@ def always_important(email: dict[str, Any], is_marketing_mail_: bool | None = No
     subject = email.get("subject") or ""
     marketing = is_marketing_mail_ if is_marketing_mail_ is not None else is_marketing_mail(email)
     if marketing:
+        return None
+    # From a no-reply or notification address the kind word alone is how
+    # promotions talk ("Exam season: 3 months free" from no-reply@quizlet), so
+    # such mail also needs a school or calendar sender or a booking reference.
+    if NOISE_SENDER.search(email.get("from_address") or "") and not _has_evidence(email):
         return None
     for kind, pattern in ALWAYS_IMPORTANT.items():
         if pattern.search(subject):
