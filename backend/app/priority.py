@@ -44,11 +44,7 @@ _STOPWORDS = {
 }
 
 _NOISE_SENDER = cues.NOISE_SENDER
-_ACTION_SUBJECT = re.compile(
-    r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
-    r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
-    r"overdue|final notice|last chance to)\b", re.I
-)
+_ACTION_SUBJECT = cues.EN_ACTION
 
 # Deadline phrasings we can resolve without a model.
 _ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
