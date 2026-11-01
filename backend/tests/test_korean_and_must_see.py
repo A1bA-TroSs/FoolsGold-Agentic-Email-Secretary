@@ -607,3 +607,22 @@ def test_explain_email_respects_mute(store):
     _persist([_row("mx", "기말고사 고사실 안내", "no-reply@snu.ac.kr")], muted=["no-reply@snu.ac.kr"])
     out = learning.explain_email("mx")
     assert out["bucket"] == out["stored_bucket"] == "noise"
+
+
+@pytest.mark.parametrize("subject", [
+    "설문에 참여해 주셔서 감사합니다", "응답해 주셔서 감사합니다", "확인해 주셔서 감사합니다",
+    "회신해 주셔서 감사합니다", "오늘 업무 마감하고 연락드릴게요", "마감 소식 공유",
+])
+def test_thanks_and_chat_are_not_action(subject):
+    assert priority.structural_bucket(mail(subject=subject)) == "fyi"
+
+
+def test_range_end_without_month():
+    assert priority.extract_deadline("접수: 11월 10일(화)~14일(토)", date(2026, 11, 4)) == "2026-11-14"
+
+
+def test_rescued_ticket_is_named_by_kind_even_with_a_date():
+    email = mail(subject="[대한항공] 전자 항공권 발행 안내", from_address="no-reply@koreanair.com",
+                 body_text="예약번호: ABC123 / 출발 11월 20일")
+    code, arg = R.reason_for(R.axes_for(email, deadline="2026-11-20"), deadline_days=5)
+    assert (code, arg) == ("mustSee", "ticket")

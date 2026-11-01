@@ -373,7 +373,7 @@ def actionability(
         z += ACT_MODEL_ACTION
     elif hint == "noise":
         z += ACT_MODEL_NOISE
-    if _ACTION_CUE.search(subject) or cues.KO_ACTION.search(subject):
+    if _ACTION_CUE.search(subject) or cues.ko_action(subject):
         z += ACT_SUBJECT_CUE
     if _ACTION_CUE.search(body) or cues.asks_ko(body):
         z += ACT_BODY_CUE
@@ -495,6 +495,10 @@ def reason_for(
     topics = [t for t in matched_topics if t]
     if topics and axes.features.get("topic_match", 0.0) > 0.5:
         return "topic", topics[0]
+    # A rescued ticket or invitation is better named by its kind than by its date.
+    if (axes.must_see in ("ticket", "invite") and not muted
+            and axes.features.get("structural_noise")):
+        return "mustSee", axes.must_see
     if deadline_days is not None:
         return "deadline", str(deadline_days)
     # Named only where the floor is what kept the mail visible (a system
