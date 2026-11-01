@@ -235,7 +235,7 @@ def test_newsletter_mentioning_an_exam_stays_noise(store):
 
 
 def test_past_dated_noreply_notice_is_not_kept_by_the_date():
-    old = mail(subject="과제 제출 마감 안내", from_address="notifications@lms.com")
+    old = mail(subject="과제 제출 마감 안내", from_address="notifications@lms.ac.kr")
     assert not R.dated_ask(old, (date.today() - timedelta(days=10)).isoformat())
     assert R.dated_ask(old, (date.today() + timedelta(days=1)).isoformat())
 
@@ -344,7 +344,7 @@ def test_this_month_two_digit_year_and_after_deadline_word():
 def test_reasons_match_the_bucket(store):
     far = date.today() + timedelta(days=30)
     out = _persist([
-        _row("far", f"과제 제출 마감 안내: {far.month}월 {far.day}일까지", "notifications@lms.com"),
+        _row("far", f"과제 제출 마감 안내: {far.month}월 {far.day}일까지", "notifications@lms.ac.kr"),
         _row("mut", "기말고사 고사실 안내", "no-reply@school.ac.kr"),
     ], muted=["no-reply@school.ac.kr"])
     assert out["far"]["bucket"] != "noise" and out["far"]["reason_code"] != "noise"
@@ -516,3 +516,32 @@ def test_deadline_word_forms_round_7():
     assert priority.extract_deadline("제출일: 12/1", wed) == "2026-12-01"
     assert priority.extract_deadline("이번 달 말까지 제출", wed) == "2026-11-30"
     assert priority.extract_deadline("기한: 3.5만원", wed) is None
+
+
+# --------------------------------------------------------------------------
+# round 8: word-internal 제출/마감/기한, commercial dated notices, quoted asks
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("subject", ["제출된 과제는 모두 채점했습니다", "마감재 샘플 보내드려요", "기한이 지난 쿠폰 안내"])
+def test_past_or_compound_forms_are_not_action(subject):
+    assert priority.structural_bucket(mail(subject=subject)) == "fyi"
+
+
+def test_commercial_dated_notices_need_evidence(store):
+    soon = date.today() + timedelta(days=3)
+    out = _persist([
+        _row("e1", f"이벤트 응모 마감 안내 ({soon.month}월 {soon.day}일)", "no-reply@shop.kr"),
+        _row("e2", f"포인트 소멸 기한 안내: {soon.month}월 {soon.day}일", "no-reply@card.kr"),
+        _row("e3", f"Deadline extended: Early bird ends {soon.strftime('%b')} {soon.day}", "no-reply@conf.com"),
+    ])
+    assert {k: v["bucket"] for k, v in out.items()} == {"e1": "noise", "e2": "noise", "e3": "noise"}
+
+
+@pytest.mark.parametrize("subject", ["관리비 납부하시기 바랍니다", "총회 참석 바랍니다", "질문에 답변 부탁드립니다", "품의서 결재 부탁드립니다"])
+def test_formal_request_endings_are_action(subject):
+    assert priority.structural_bucket(mail(subject=subject)) == "action"
+
+
+def test_quoted_request_does_not_make_a_thank_you_an_action():
+    email = mail(subject="Re: 자료", body_text="감사합니다, 잘 받았습니다.\n\n2026년 11월 1일 김조교 님이 작성:\n> 보고서 제출 부탁드립니다")
+    assert priority.structural_bucket(email) == "fyi"
