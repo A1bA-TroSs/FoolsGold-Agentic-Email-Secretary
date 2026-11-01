@@ -155,8 +155,7 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
         # is a must-see kind, or it asks for something by a date it names.
         if cues.always_important(email):
             return "action" if asks else "fyi"
-        if (cues.DATED_ASK_SUBJECT.search(subject) and not cues.is_marketing_mail(email)
-                and cues.has_evidence(email) and extract_deadline(f"{subject}\n{body}")):
+        if cues.is_dated_ask(email, extract_deadline(f"{subject}\n{body}")):
             return "action"
         return "noise"
     if asks:

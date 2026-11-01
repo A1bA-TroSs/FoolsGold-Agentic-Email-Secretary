@@ -545,3 +545,43 @@ def test_formal_request_endings_are_action(subject):
 def test_quoted_request_does_not_make_a_thank_you_an_action():
     email = mail(subject="Re: 자료", body_text="감사합니다, 잘 받았습니다.\n\n2026년 11월 1일 김조교 님이 작성:\n> 보고서 제출 부탁드립니다")
     assert priority.structural_bucket(email) == "fyi"
+
+
+# --------------------------------------------------------------------------
+# follow-up run: closures, ranges, school urgency words, repayment, past dates
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("subject", [
+    "과제 제출해주셔서 감사합니다", "모집 마감되었습니다", "제출물 피드백 드립니다", "수강 신청 마감되었습니다 (결과 안내)",
+])
+def test_thanks_and_closures_are_not_action(subject):
+    assert priority.structural_bucket(mail(subject=subject)) == "fyi"
+
+
+def test_a_period_ends_on_its_second_date():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("신청 기간: 11월 1일부터 12월 15일까지", wed) == "2026-12-15"
+    assert priority.extract_deadline("접수: 11. 10.(화) ~ 11. 14.(토)", wed) == "2026-11-14"
+
+
+def test_school_urgency_words_do_not_block_the_floor():
+    m = mail(subject="[마감임박] 등록금 분할납부 신청 안내", from_address="no-reply@snu.ac.kr")
+    assert R.must_see(m) == "payment"
+    assert R.axes_for(m).bucket(Thresholds()) != "noise"
+    assert R.must_see(mail(subject="(광고) 등록금 납부 카드 혜택", from_address="no-reply@snu.ac.kr")) is None
+
+
+def test_repayment_is_a_payment():
+    assert R.must_see(mail(subject="학자금 대출 상환 안내", from_address="no-reply@kosaf.go.kr")) == "payment"
+
+
+def test_dates_introduced_or_told_as_past():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("지난 11월 2일 회의 감사했습니다", wed) is None
+    assert priority.extract_deadline("11월 2일에 발표했습니다", wed) is None
+
+
+def test_explain_respects_the_muted_floor():
+    axes = R.axes_for(mail(subject="기말고사 안내", from_address="no-reply@snu.ac.kr"))
+    assert R.explain(axes, Thresholds(), floor=False)["bucket"] == "noise"
+    assert R.explain(axes, Thresholds())["bucket"] != "noise"
