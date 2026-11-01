@@ -585,3 +585,25 @@ def test_explain_respects_the_muted_floor():
     axes = R.axes_for(mail(subject="기말고사 안내", from_address="no-reply@snu.ac.kr"))
     assert R.explain(axes, Thresholds(), floor=False)["bucket"] == "noise"
     assert R.explain(axes, Thresholds())["bucket"] != "noise"
+
+
+def test_followup_round_2_cases(store):
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("11/6 18시까지 제출", wed) == "2026-11-06"
+    assert priority.extract_deadline("6일(금)까지 회신", wed) == "2026-11-06"
+    assert priority.extract_deadline("10/30(금) 강의 녹화본 공유", wed) is None
+    assert priority.structural_bucket(mail(subject="기한 연장 안내")) == "fyi"
+    for subject in ["자료 송부 부탁드립니다", "일정 알려주세요", "의견 부탁드립니다", "참가비 입금해 주세요"]:
+        assert priority.structural_bucket(mail(subject=subject)) == "action", subject
+    assert R.must_see(mail(subject="정보공개 청구 결과 안내", from_address="no-reply@open.go.kr")) is None
+    soon = date.today() + timedelta(days=5)
+    out = _persist([_row("t", "[필수] 연구실 안전교육 이수 안내", "no-reply@snu.ac.kr",
+                         f"{soon.month}월 {soon.day}일까지 이수해 주시기 바랍니다.")])
+    assert out["t"]["bucket"] != "noise"
+
+
+def test_explain_email_respects_mute(store):
+    from app import learning
+    _persist([_row("mx", "기말고사 고사실 안내", "no-reply@snu.ac.kr")], muted=["no-reply@snu.ac.kr"])
+    out = learning.explain_email("mx")
+    assert out["bucket"] == out["stored_bucket"] == "noise"
