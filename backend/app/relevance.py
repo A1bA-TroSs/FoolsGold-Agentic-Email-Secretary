@@ -510,7 +510,9 @@ def reason_for(
         return "topic", topics[0]
     if deadline_days is not None:
         return "deadline", str(deadline_days)
-    if axes.must_see and not muted:
+    # Named only where the floor is what kept the mail visible (a system
+    # sender); a friend's "기말고사 끝나고 회식?" is not an exam notice.
+    if axes.must_see and not muted and axes.features.get("structural_noise"):
         return "mustSee", axes.must_see
     if axes.features.get("flagged"):
         return "flagged", ""
