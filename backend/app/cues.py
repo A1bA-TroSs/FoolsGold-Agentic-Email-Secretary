@@ -34,7 +34,7 @@ from typing import Any
 
 # A completed or past-tense form ("제출 완료되었습니다", "조기 마감되어") is a
 # confirmation, not a request, so the bare nouns refuse to match before one.
-_DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|된|돼|되셨|하였|했|하신|해\s*주신|해\s*주셔서|감사|처리되|지난|지나|끝))"
+_DONE = r"(?![^.\n]{0,10}?(?:완료|되었|됐|되어|됨|된|돼|되셨|하였|했|하신|해\s*주신|해\s*주셔서|(?<!면)(?<!면\s)감사|처리되|지난|지나|끝))"
 KO_ACTION = re.compile(
     r"(마감" + _DONE + r"(?=\s*(?:일|기한|시간|일시|안내|임박|까지|전|:|：|\d|\())|"
     r"제출" + _DONE + r"(?=\s*(?:기한|마감|일|요청|바랍|부탁|하세요|하시기|해\s*주|까지|방법|안내|:|：))|(?<!유통)(?<!사용)기한(?!\s*연장)" + _DONE + r"|"
@@ -50,7 +50,9 @@ KO_ACTION = re.compile(
     r"올려\s*주(?:세요|시기)|보내\s*주(?:세요|시기)|신청\s*하(?:세요|시기)|답변\s*요청|"
     r"(?:납부|참석|답변|결재|회신|제출|신청|확인|서명|검토|송부|전달|입금|의견|이수)\s*(?:하여|해)?\s*(?:주시기|하시기)?\s*"
     r"(?:바랍니다|부탁\s*드립니다|부탁드려요)|알려\s*주(?:세요|시기)|(?:신청|입금|송부)\s*해\s*주(?:세요|시기)|"
-    r"(?:참여|응답|작성)\s*(?:부탁|바랍니다|해\s*주))"
+    r"(?:참여|응답|작성)\s*(?:부탁|바랍니다|해\s*주)|"
+    r"(?:응시|등록|출석|참석|제출|신청|이수|작성|완료|납부)\s*하시기\s*바랍니다|"
+    r"(?:하여|해)\s*주십시오|(?:공유|완료|출석|응시|등록|작성|제출|참석|납부)\s*해\s*주(?:세요|십시오))"
 )
 
 # The legally required advertising marker in Korea (정보통신망법 제50조) is
@@ -128,6 +130,9 @@ DATED_ASK_SUBJECT = re.compile(
 
 # "참여해 주셔서 감사합니다", "확인해 주신 분께" -- thanks for something done.
 _THANKS_AFTER = re.compile(r"[^.\n]{0,12}?(?:주셔서|주신|감사)")
+# "제출해 주시면 감사하겠습니다" -- grateful IF you do it: the commonest polite
+# request ending, not thanks for something done.
+_GRATEFUL_IF = re.compile(r"[^.\n]{0,12}?면\s*(?:정말\s*|대단히\s*|매우\s*)?감사(?:하겠|드리겠)")
 
 
 # Announcement closings: "많은 참여 부탁드립니다", "자세한 내용은 홈페이지에서
@@ -151,7 +156,8 @@ def ko_action(text: str) -> bool:
     """A Korean request in `text`: a KO_ACTION match not followed by thanks
     and not an announcement's courtesy closing."""
     text = text or ""
-    return any(not _THANKS_AFTER.match(text, m.end()) and not _courtesy(text, m)
+    return any((_GRATEFUL_IF.match(text, m.end()) or not _THANKS_AFTER.match(text, m.end()))
+               and not _courtesy(text, m)
                for m in KO_ACTION.finditer(text))
 
 
@@ -295,6 +301,12 @@ _PAST_AFTER = re.compile(
 _NOT_A_DUE = re.compile(
     r"[^.\n]{0,4}?(?:까지)?\s*(?:는|만|동안)?\s*(?:\S{1,4}\s*)?(?:휴관|휴무|휴강|휴진|휴업|휴교|공사|점검|운영|영업|전시|할인|세일|이벤트)"
 )
+_NOT_A_DUE_RANGE = re.compile(
+    r"\s*(?:\(\s*[월화수목금토일]\s*\)\s*)?(?:부터|~|～|〜|–|-)[^.\n]{1,16}?까지\s*(?:는|만|동안)?\s*"
+    r"(?:\S{1,4}\s*)?(?:휴관|휴무|휴강|휴진|휴업|휴교|공사|점검|운영|영업|전시|할인|세일|이벤트)"
+)
+# "Python 3.10까지", "평점 3.5까지", "교재 1/2까지": a version, score or share.
+_NOT_A_DATE_BEFORE = re.compile(r"([A-Za-z]|평점|학점|성적|버전|교재|분량|진도|점수)\s*$")
 # "지난 11월 2일", "저번 3일" -- a date introduced as the past.
 _PAST_BEFORE = re.compile(r"(지난|저번|작년|전날)\s*$")
 # Two dates joined as a period: "11월 1일부터 12월 15일까지", "11. 10.(화) ~ 11. 14.(토)".
@@ -311,7 +323,7 @@ def _anchored(text: str, m: re.Match) -> bool:
 
 
 # "최대 5일까지", "총 3일까지" -- a number of days, not a day of the month.
-_SPAN_BEFORE = re.compile(r"(최대|총|최장|약|최소|길게)\s*$")
+_SPAN_BEFORE = re.compile(r"(최대|총|최장|약|최소|길게|주|하루|한\s*달)\s*$")
 
 
 def _day_of_month(day: int, today: date) -> date | None:
@@ -346,7 +358,7 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
                 continue  # "1/3(월) 진행된 회의록", "10월 1일에 보낸 메일"
             if _PAST_BEFORE.search(text[max(0, m.start() - 6):m.start()]):
                 continue
-            if _NOT_A_DUE.match(text, m.end()):
+            if _NOT_A_DUE.match(text, m.end()) or _NOT_A_DUE_RANGE.match(text, m.end()):
                 continue  # "다음 주 금요일까지 휴관합니다": how long, not by when
             d = build(m)
             if d:
@@ -355,7 +367,8 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
     first(_KO_YMD, lambda m: _safe(int(m.group(1)), int(m.group(2)), int(m.group(3))))
     first(_DOTTED, lambda m: _safe(int(m.group(1)), int(m.group(2)), int(m.group(3))))
     first(_KO_MD, lambda m: _next_occurrence(int(m.group(1)), int(m.group(2)), today))
-    first(_KO_SHORT, lambda m: _next_occurrence(int(m.group(1)), int(m.group(2)), today))
+    first(_KO_SHORT, lambda m: None if _NOT_A_DATE_BEFORE.search(text[max(0, m.start() - 8):m.start()])
+          else _next_occurrence(int(m.group(1)), int(m.group(2)), today))
     first(_KO_AFTER_WORD, lambda m: _next_occurrence(int(m.group(1)), int(m.group(2)), today))
     first(_KO_YY_DOTTED, lambda m: _safe(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3))))
     first(_KO_THIS_MONTH, lambda m: _safe(today.year, today.month, int(m.group(1))))
