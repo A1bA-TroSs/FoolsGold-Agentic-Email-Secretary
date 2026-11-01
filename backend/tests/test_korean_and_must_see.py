@@ -280,3 +280,72 @@ def test_past_week_is_not_a_deadline():
 def test_quoted_reply_dates_are_ignored():
     text = "네 알겠습니다.\n\n2026년 10월 2일 (금) 오후 3:00, 김교수 님이 작성:\n> 2026년 10월 9일까지 보내주세요"
     assert priority.extract_deadline(text, date(2026, 11, 4)) is None
+
+
+# --------------------------------------------------------------------------
+# round 3: marketing never rescued, stricter kinds and requests, reasons
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("subject,sender", [
+    ("(광 고) 중간고사 족보 판매", "marketing@shop.kr"),
+    ("（광고）기말고사 대비 특강", "shop@x.kr"),
+    ("【광고】 시험 대비반", "shop@x.kr"),
+    ("<광고> 등록금 대출 안내", "shop@x.kr"),
+    ("[AD] Final exam prep", "shop@x.com"),
+    ("Exam week survival guide", "newsletter@campus.com"),
+    ("Invitation: Free AI summit", "events@vendor.com"),
+    ("Ace your final exam with us", "promotions@kaplan.com"),
+])
+def test_marketing_is_never_must_see_by_marker_or_sender(subject, sender):
+    assert R.must_see(mail(subject=subject, from_address=sender)) is None
+
+
+def test_marketing_sender_with_dated_ask_stays_noise(store):
+    out = _persist([
+        _row("p1", "Last chance to register by Nov 30", "marketing@vendor.com"),
+        _row("p2", "마감 임박! 11/7(토)까지 신청하세요", "edu@academy.kr"),
+        _row("p3", "Product update", "updates@saas.com",
+             f"Please confirm your email by {(date.today() + timedelta(days=3)).isoformat()}."),
+    ])
+    assert {k: v["bucket"] for k, v in out.items()} == {"p1": "noise", "p2": "noise", "p3": "noise"}
+
+
+def test_quiz_and_test_send_are_not_exams():
+    assert cues.always_important(mail(subject="Quiz: which Pokemon are you?")) is None
+    assert cues.always_important(mail(subject="[시험 발송] 템플릿 확인")) is None
+    assert cues.always_important(mail(subject="CS101 Quiz 3 moved to Friday")) == "exam"
+
+
+def test_settled_payment_is_not_must_see():
+    assert cues.always_important(mail(subject="등록금 납부 완료 안내")) is None
+    assert cues.always_important(mail(subject="Your exam results are available")) is None
+
+
+@pytest.mark.parametrize("subject", [
+    "요청하신 자료 보내드립니다", "회의록 공유 (회신 불필요)", "조기 마감되어 안내드립니다", "이메일 서명 변경",
+])
+def test_bare_request_words_are_not_action(subject):
+    assert priority.structural_bucket(mail(subject=subject)) == "fyi"
+
+
+def test_deadline_beside_its_word_beats_an_earlier_date():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("11월 1일 공지한 과제는 11월 7일까지 제출", wed) == "2026-11-07"
+
+
+def test_this_month_two_digit_year_and_after_deadline_word():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("이번 달 20일까지 회신", wed) == "2026-11-20"
+    assert priority.extract_deadline("신청: 26.11.20(금)까지", wed) == "2026-11-20"
+    assert priority.extract_deadline("마감 11/20 23:59", wed) == "2026-11-20"
+    assert priority.extract_deadline("macOS 10.15.7 지원 종료", wed) is None
+
+
+def test_reasons_match_the_bucket(store):
+    far = date.today() + timedelta(days=30)
+    out = _persist([
+        _row("far", f"과제 제출 마감 안내: {far.month}월 {far.day}일까지", "notifications@lms.com"),
+        _row("mut", "기말고사 고사실 안내", "no-reply@school.ac.kr"),
+    ], muted=["no-reply@school.ac.kr"])
+    assert out["far"]["bucket"] != "noise" and out["far"]["reason_code"] != "noise"
+    assert out["mut"]["bucket"] == "noise" and out["mut"]["reason_code"] != "mustSee"
