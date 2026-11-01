@@ -130,15 +130,40 @@ DATED_ASK_SUBJECT = re.compile(
 _THANKS_AFTER = re.compile(r"[^.\n]{0,12}?(?:주셔서|주신|감사)")
 
 
+# Announcement closings: "많은 참여 부탁드립니다", "자세한 내용은 홈페이지에서
+# 확인 부탁드립니다". Every notice ends this way and develop kept them in fyi,
+# so a participation or look-it-up ask in such a sentence is not a request.
+_COURTESY_VERB = re.compile(r"(참여|응답|확인|참고|이용|방문|관심)")
+_COURTESY_CONTEXT = re.compile(
+    r"(많은|적극적?인?|여러분의|관심과|성원|자세한\s*(?:내용|사항|안내)|자세히|세부\s*(?:내용|사항)|"
+    r"홈\s*페이지|웹\s*사이트|누리집|공지\s*사항|게시판)"
+)
+
+
+def _courtesy(text: str, m: re.Match) -> bool:
+    if not _COURTESY_VERB.match(m.group(0)):
+        return False
+    start = max(text.rfind(c, 0, m.start()) for c in ".\n!?")
+    return bool(_COURTESY_CONTEXT.search(text[start + 1:m.start()]))
+
+
 def ko_action(text: str) -> bool:
-    """A Korean request in `text`: a KO_ACTION match not followed by thanks."""
+    """A Korean request in `text`: a KO_ACTION match not followed by thanks
+    and not an announcement's courtesy closing."""
     text = text or ""
-    return any(not _THANKS_AFTER.match(text, m.end()) for m in KO_ACTION.finditer(text))
+    return any(not _THANKS_AFTER.match(text, m.end()) and not _courtesy(text, m)
+               for m in KO_ACTION.finditer(text))
 
 
 def asks_ko(text: str) -> bool:
-    """A Korean request in `text`, reading only the new part of a reply."""
-    return ko_action(strip_quoted(text or ""))
+    """A Korean request in `text`, reading only the new part of a reply.
+
+    A body with the legal opt-out footer (수신거부) is advertising, and its
+    "지금 신청하세요" is a sales line, not a request."""
+    text = strip_quoted(text or "")
+    if re.search(r"수신\s*거부", text):
+        return False
+    return ko_action(text)
 
 
 _KO_SELLING = re.compile(r"(특가|쿠폰|할인|최저가|무료\s*(?:체험|증정|제공)|[\[\(]\s*이벤트\s*[\]\)])")
@@ -265,6 +290,11 @@ _PAST_AFTER = re.compile(
     r"[^.\n]{0,8}?(?:진행된|진행했|진행되었|있었|보낸|보내드린|했던|열린|열렸|개최된|발송된|공지한|공지된|받은|드린|"
     r"했습니다|였습니다|었습니다|했어요|감사했)"
 )
+# "까지 휴관/휴무/점검/할인": a closure or offer lasting until a date. Nothing
+# is asked of the reader by then.
+_NOT_A_DUE = re.compile(
+    r"[^.\n]{0,4}?(?:까지)?\s*(?:는|만|동안)?\s*(?:\S{1,4}\s*)?(?:휴관|휴무|휴강|휴진|휴업|휴교|공사|점검|운영|영업|전시|할인|세일|이벤트)"
+)
 # "지난 11월 2일", "저번 3일" -- a date introduced as the past.
 _PAST_BEFORE = re.compile(r"(지난|저번|작년|전날)\s*$")
 # Two dates joined as a period: "11월 1일부터 12월 15일까지", "11. 10.(화) ~ 11. 14.(토)".
@@ -316,6 +346,8 @@ def korean_deadline(text: str, today: date) -> tuple[int, date] | None:
                 continue  # "1/3(월) 진행된 회의록", "10월 1일에 보낸 메일"
             if _PAST_BEFORE.search(text[max(0, m.start() - 6):m.start()]):
                 continue
+            if _NOT_A_DUE.match(text, m.end()):
+                continue  # "다음 주 금요일까지 휴관합니다": how long, not by when
             d = build(m)
             if d:
                 found.append((m.start(), d, _anchored(text, m), m.end()))
