@@ -303,7 +303,7 @@ def test_marketing_is_never_must_see_by_marker_or_sender(subject, sender):
 def test_marketing_sender_with_dated_ask_stays_noise(store):
     out = _persist([
         _row("p1", "Last chance to register by Nov 30", "marketing@vendor.com"),
-        _row("p2", "마감 임박! 11/7(토)까지 신청하세요", "edu@academy.kr"),
+        _row("p2", "마감 임박! 11/7(토)까지 신청하세요", "no-reply@academy.kr"),
         _row("p3", "Product update", "updates@saas.com",
              f"Please confirm your email by {(date.today() + timedelta(days=3)).isoformat()}."),
     ])
@@ -448,3 +448,37 @@ def test_iso_date_before_hangul_and_bare_day():
 def test_more_korean_requests():
     for subject in ["장학금 신청하세요", "설문 참여 부탁드립니다", "질의 답변 요청"]:
         assert priority.structural_bucket(mail(subject=subject)) == "action", subject
+
+
+# --------------------------------------------------------------------------
+# round 6: promo words never put real school mail into noise
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("subject", [
+    "등록금 납부 마감 임박 안내", "장학금 신청 마감 임박", "선착순 기숙사 신청 안내", "수강료 할인 안내",
+])
+def test_school_mail_with_promo_words_is_not_noise(subject):
+    email = mail(subject=subject, from_address="bursar@uni.ac.kr")
+    assert R.structural_noise(email) == 0.0
+    assert R.axes_for(email).bucket(Thresholds()) != "noise"
+
+
+def test_promo_words_still_block_the_floor():
+    assert R.must_see(mail(subject="기말고사 족보 할인", from_address="no-reply@uni.ac.kr")) is None
+
+
+def test_day_spans_are_not_dates():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("최대 5일까지 연장 가능", wed) is None
+    assert priority.extract_deadline("총 3일까지 사용할 수 있습니다", wed) is None
+
+
+def test_slash_year_and_trailing_deadline_word():
+    wed = date(2026, 11, 4)
+    assert priority.extract_deadline("2026/11/20까지 제출", wed) == "2026-11-20"
+    assert priority.extract_deadline("보고서 11/20 마감", wed) == "2026-11-20"
+
+
+def test_friend_mentioning_an_exam_gets_no_exam_label():
+    code, _ = R.reason_for(R.axes_for(mail(subject="기말고사 끝나고 회식?", from_address="friend@gmail.com")))
+    assert code != "mustSee"
