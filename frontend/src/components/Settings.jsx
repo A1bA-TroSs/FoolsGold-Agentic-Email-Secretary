@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { LANGUAGES, useT } from '../lib/i18n.js';
+import OllamaDownload from './OllamaDownload.jsx';
 import './Compose.css';
 
 const SOURCE_KEYS = ['user_address', 'user_role', 'applemail_root', 'applemail_inbox_only'];
@@ -570,9 +571,6 @@ export default function Settings({
                 <input className="input" value={value('ollama_model')}
                        onChange={(e) => edit('ollama_model', e.target.value)}
                        placeholder="qwen3.5:9b" />
-                <p className="hint" style={{ marginTop: 6 }}>
-                  {t('localPull', { model: value('ollama_model') || 'qwen3.5:9b' })}
-                </p>
               </div>
 
               {/* What this Mac actually has.
@@ -611,6 +609,11 @@ export default function Settings({
                   </>
                 )}
               </div>
+              <OllamaDownload models={models} typed={value('ollama_model')} onDone={loadModels} />
+              {/* The terminal route, kept only as a fallback line. */}
+              {models && models.reachable !== false && !models.matches && (
+                <p className="hint">{t('localPull', { model: value('ollama_model') || 'qwen3.5:9b' })}</p>
+              )}
               <div className="field">
                 <label>{t('ollamaHost')}</label>
                 <input className="input" value={value('ollama_host')}
