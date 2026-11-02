@@ -351,7 +351,7 @@ def _fmt_email(email: dict[str, Any], index: int, me: str = "",
     return (
         f"--- EMAIL {index} ---\n"
         f"id: {email['id']}\n"
-        f"from: {email.get('from_name','')} <{email.get('from_address','')}>\n"
+        f"from: {clean_name(email.get('from_name', ''))} <{email.get('from_address','')}>\n"
         f"to: {to}\ncc: {cc}\n"
         + (f"reaches the user: {how}\n" if how else "") +
         f"received: {email.get('received_at','')}\n"
