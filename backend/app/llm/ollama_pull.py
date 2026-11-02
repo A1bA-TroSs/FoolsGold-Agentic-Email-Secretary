@@ -25,11 +25,12 @@ from typing import Any
 
 import httpx
 
-from .ollama_provider import CONNECT_TIMEOUT, DEFAULT_HOST
+from .ollama_provider import CONNECT_TIMEOUT, DEFAULT_HOST, OllamaProvider
 
 # Ollama model names: an optional namespace path, a name and a tag, made of
-# lower-case letters, digits and . _ - (the registry's own alphabet).
-_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*(:[a-z0-9][a-z0-9._-]*)?$")
+# letters, digits and . _ - (the registry's alphabet; Ollama ignores case,
+# and Hugging Face names such as hf.co/Org/Repo:Q4_K_M use capitals).
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*(:[A-Za-z0-9][A-Za-z0-9._-]*)?$")
 MAX_NAME = 120
 
 # The two sizes offered (Danny, 2026-11-02: "Two sizes, suggest by Mac
@@ -101,7 +102,8 @@ def running() -> bool:
 
 
 async def _run(host: str, model: str) -> None:
-    url = f"{(host or DEFAULT_HOST).rstrip('/')}/api/pull"
+    url = f"{OllamaProvider(host=host).host}/api/pull"
+    layers: dict[str, tuple[int, int]] = {}
     # No read timeout: a multi-gigabyte layer can go quiet while Ollama
     # verifies it. The connect timeout still catches a missing server.
     timeout = httpx.Timeout(None, connect=CONNECT_TIMEOUT)
@@ -125,8 +127,13 @@ async def _run(host: str, model: str) -> None:
                     status = str(msg.get("status") or "")
                     _state["status"] = status
                     if msg.get("total"):
-                        _state["total"] = int(msg["total"])
-                        _state["completed"] = int(msg.get("completed") or 0)
+                        # A model is several layers, each reported on its
+                        # own. Sum them so the bar runs once from 0 to 100
+                        # instead of restarting for every small layer.
+                        key = str(msg.get("digest") or status)
+                        layers[key] = (int(msg.get("completed") or 0), int(msg["total"]))
+                        _state["completed"] = sum(c for c, _ in layers.values())
+                        _state["total"] = sum(t for _, t in layers.values())
                     if status == "success":
                         if _state["total"]:
                             _state["completed"] = _state["total"]

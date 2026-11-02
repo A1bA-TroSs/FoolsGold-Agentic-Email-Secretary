@@ -165,7 +165,7 @@ export default function Settings({
      render: it talks to Ollama, and a settings screen must not poll a model
      server in the background. */
   const loadModels = useCallback(async () => {
-    try { setModels(await api.ollamaModels()); } catch { setModels({ installed: [], matches: false }); }
+    try { setModels(await api.ollamaModels()); } catch { setModels({ installed: [], matches: false, reachable: null }); }
   }, []);
   useEffect(() => {
     if (provider === 'ollama' && models === null) loadModels();
@@ -591,7 +591,9 @@ export default function Settings({
                   <button className="btn ghost" style={{ padding: '2px 8px' }}
                           onClick={loadModels}>{t('refreshModels')}</button>
                 ) : models.installed.length === 0 ? (
-                  <p className="hint">{t('noModelsInstalled')}</p>
+                  // Not when Ollama did not answer: the panel below says so,
+                  // and "Pull one" would contradict it.
+                  models.reachable === false ? null : <p className="hint">{t('noModelsInstalled')}</p>
                 ) : (
                   <>
                     <div className="lang-grid">

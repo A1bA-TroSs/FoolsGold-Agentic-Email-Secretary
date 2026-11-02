@@ -172,7 +172,7 @@ def test_an_unreachable_host_ends_as_no_server(client, fake):
 
 @pytest.mark.parametrize("name", [
     "", "   ", "qwen 3.5", "qwen;rm -rf /", "$(id)", "../../etc/passwd",
-    "a/../b", "Qwen", "x" * 121, "qwen:", "/qwen",
+    "a/../b", "x" * 121, "qwen:", "/qwen",
 ])
 def test_bad_names_are_refused_before_any_request(client, fake, name):
     r = client.post("/api/ollama/pull", json={"model": name})
@@ -181,7 +181,7 @@ def test_bad_names_are_refused_before_any_request(client, fake, name):
     assert client.get("/api/ollama/pull").json()["running"] is False
 
 
-@pytest.mark.parametrize("name", ["qwen3.5:4b", "llama3.2", "library/qwen3.5:9b", "hf.co/user/model-gguf:q4_k_m"])
+@pytest.mark.parametrize("name", ["qwen3.5:4b", "llama3.2", "library/qwen3.5:9b", "Qwen3:4B", "hf.co/Org/Repo-GGUF:Q4_K_M"])
 def test_ordinary_names_are_accepted(name):
     assert ollama_pull.valid_name(name)
 
@@ -210,3 +210,19 @@ def test_models_endpoint_says_when_ollama_is_not_answering(client, fake):
     fake.close()
     m = client.get("/api/ollama/models").json()
     assert m["reachable"] is False and m["installed"] == []
+
+
+def test_progress_runs_once_across_layers(client, fake):
+    """A model is several layers. The bar must not hit 100% after the big
+    one and restart for the small ones that follow."""
+    fake.script = [
+        {"status": "pulling manifest"},
+        {"status": "pulling big", "digest": "sha256:big", "total": 900, "completed": 900},
+        {"status": "pulling small", "digest": "sha256:small", "total": 100, "completed": 0},
+    ]
+    fake.gate = None
+    client.post("/api/ollama/pull", json={"model": "qwen3.5:4b"})
+    s = wait_until_stopped(client)
+    # The stream ended without "success", so it is an error; the totals still
+    # show 900 of 1000 rather than 0 of 100.
+    assert s["total"] == 1000 and s["completed"] == 900

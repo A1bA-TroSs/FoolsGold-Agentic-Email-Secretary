@@ -50,7 +50,9 @@ export default function OllamaDownload({ models, typed, onDone }) {
     }
   }
 
-  if (models === null) return null;
+  // Unknown (the model list itself could not be read): offer nothing
+  // rather than a download that may have nowhere to go.
+  if (models === null || models.reachable == null) return null;
 
   if (models.reachable === false) {
     return (
@@ -73,8 +75,8 @@ export default function OllamaDownload({ models, typed, onDone }) {
 
   // The model in the box is installed and nothing is downloading: nothing
   // to offer.
-  if (models.matches && !running && !pull?.error && !startError) return null;
-  if (!running && !offered.length && !typedOffered && !pull?.error && !startError) return null;
+  if (models.matches && !running && !pull?.error && !startError && !pull?.done) return null;
+  if (!running && !offered.length && !typedOffered && !pull?.error && !startError && !pull?.done) return null;
 
   const pct = pull?.total ? Math.floor((pull.completed / pull.total) * 100) : null;
   const errorText = pull?.error
