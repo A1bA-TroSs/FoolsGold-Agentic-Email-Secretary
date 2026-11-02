@@ -47,6 +47,7 @@ from .base import (
     CheckResult,
     LLMProvider,
     ProviderUnavailable,
+    UserContext,
     build_classify_prompt,
     build_digest_prompt,
     parse_agenda,
@@ -271,13 +272,18 @@ class OllamaProvider(LLMProvider):
     # the two real jobs, each with its schema
     # ------------------------------------------------------------------
 
+    # The model runs on this machine: the only provider that may see the
+    # user's top correspondents (Danny, 2026-11-02).
+    local = True
+
     async def classify_batch(
-        self, emails: list[dict[str, Any]], priorities: list[str]
+        self, emails: list[dict[str, Any]], priorities: list[str],
+        context: UserContext | None = None,
     ) -> list[Classification]:
         if not emails:
             return []
         raw = await self._chat(
-            CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities), CLASSIFY_SCHEMA
+            CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities, context), CLASSIFY_SCHEMA
         )
         # The schema wraps the list in an object because Ollama constrains to a
         # schema with a named root far more reliably than to a bare array. The

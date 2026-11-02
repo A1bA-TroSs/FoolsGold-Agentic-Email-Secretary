@@ -13,7 +13,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from . import db, dedup, learning, priority
+from . import cues, db, dedup, learning, priority
 from .llm.base import Classification, ProviderUnavailable
 from .llm.registry import get_provider
 
@@ -41,6 +41,33 @@ def _mark_ai(available: bool, detail: str = "", off: bool = False,
     _ai_status["detail"] = detail
     _ai_status["detail_key"] = key
     _ai_status["detail_vars"] = vars or {}
+
+
+def user_context(provider: Any = None) -> "UserContext":
+    """Who the user is, for the classify prompt (roadmap F3).
+
+    Address and role go to every provider. The people the user writes to most
+    go only to a local model (`provider.local`, Ollama), and only while the
+    `share_correspondents` setting is on: Danny, 2026-11-02, "Only for Ollama
+    (local)". The user's own address and system senders are never listed."""
+    from .llm.base import MAX_CORRESPONDENTS, MAX_ROLE_CHARS, UserContext
+    me = user_address()
+    role = " ".join((db.get_setting("user_role", "") or "").split())[:MAX_ROLE_CHARS]
+    people: list[tuple[str, str]] = []
+    share = (db.get_setting("share_correspondents", "1") or "1").strip().lower() not in ("0", "false", "off", "no")
+    if share and getattr(provider, "local", False):
+        try:
+            from .sources.registry import get_source
+            counts = get_source().correspondents() or {}
+        except Exception:  # noqa: BLE001 - context is a nicety, never a blocker
+            counts = {}
+        ranked = sorted(((n, (a or "").strip().lower()) for a, n in counts.items()),
+                        key=lambda item: (-item[0], item[1]))
+        addresses = [a for n, a in ranked
+                     if n > 0 and a and a != me and not cues.NOISE_SENDER.search(a)][:MAX_CORRESPONDENTS]
+        names = db.display_names(addresses) if addresses else {}
+        people = [(names.get(a, ""), a) for a in addresses]
+    return UserContext(address=me, role=role, correspondents=people)
 
 
 def _ranking_context() -> tuple[dict[str, int], dict[str, dict[str, Any]], set[str]]:
@@ -298,6 +325,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
 
         try:
             provider = get_provider()
+            context = user_context(provider)
         except ProviderUnavailable as exc:
             turned_off = (db.get_setting("llm_provider", "copilot") or "").lower() == "none"
             _mark_ai(False, "" if turned_off else str(exc), off=turned_off,
@@ -313,7 +341,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
         for start in range(0, len(emails), batch_size):
             batch = emails[start : start + batch_size]
             try:
-                results = await provider.classify_batch(batch, topics)
+                results = await provider.classify_batch(batch, topics, context)
                 _persist(results, emails_by_id, "llm", f"{provider.name}:{provider.model}")
                 done += len(results)
                 # Anything the model skipped still needs a row, or we re-ask forever.
@@ -364,7 +392,7 @@ async def _upgrade_structural(provider, me: str, topics: list[str],
         return 0
     by_id = {e["id"]: e for e in emails}
     try:
-        results = await provider.classify_batch(emails, topics)
+        results = await provider.classify_batch(emails, topics, user_context(provider))
     except Exception as exc:  # noqa: BLE001 - the upgrade is best-effort
         _mark_ai(False, str(exc), key=getattr(exc, "key", None),
                  vars=getattr(exc, "vars", None))

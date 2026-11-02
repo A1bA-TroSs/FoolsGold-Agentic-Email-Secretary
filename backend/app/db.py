@@ -834,6 +834,19 @@ def muted_sender_rows() -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def display_names(addresses: list[str]) -> dict[str, str]:
+    """The most recent non-empty From name seen for each address."""
+    out: dict[str, str] = {}
+    with connect() as conn:
+        for address in addresses:
+            row = conn.execute(
+                "SELECT from_name FROM emails WHERE from_address = ? AND from_name != '' "
+                "ORDER BY received_at DESC LIMIT 1", (address,)).fetchone()
+            if row:
+                out[address] = row["from_name"]
+    return out
+
+
 def count_from_sender(address: str) -> int:
     with connect() as conn:
         row = conn.execute(
