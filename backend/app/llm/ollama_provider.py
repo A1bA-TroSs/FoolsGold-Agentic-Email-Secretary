@@ -352,13 +352,18 @@ class OllamaProvider(LLMProvider):
                            vars={"model": self.model, "host": self.host},
                            models=models)
 
-    async def available_models(self) -> list[str]:
+    async def installed(self) -> list[str] | None:
+        """The installed model names, or None when Ollama did not answer
+        (not running, not installed, wrong host)."""
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=CONNECT_TIMEOUT)) as client:
                 response = await client.get(f"{self.host}/api/tags")
             return [m.get("name", "") for m in (response.json().get("models") or [])]
-        except (httpx.HTTPError, ValueError):
-            return []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+
+    async def available_models(self) -> list[str]:
+        return await self.installed() or []
 
 
 def _unwrap(raw: str, key: str) -> str:
