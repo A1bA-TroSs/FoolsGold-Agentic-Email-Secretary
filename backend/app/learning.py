@@ -108,9 +108,10 @@ def epoch_start() -> str:
 def begin_epoch(at: str | None = None) -> str:
     """Draw the line: everything before this is invisible to learning.
 
-    Set by hand, never inferred. The app was clicked through for weeks to check
-    that the buttons worked, and those rows are indistinguishable from
-    preference -- so the default is that none of them count.
+    On an existing install it is set by hand, never inferred: the app was
+    clicked through for weeks to check that the buttons worked, and those rows
+    are indistinguishable from preference. A database created from scratch has
+    no such rows, so `db.init_db` sets it at creation (roadmap F4).
     """
     stamp = at or db.now_iso()
     db.set_setting("learning_epoch_start", stamp)

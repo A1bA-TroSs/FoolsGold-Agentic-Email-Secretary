@@ -507,11 +507,14 @@ def _collapse_duplicate_tasks(conn: sqlite3.Connection) -> None:
 
 def init_db() -> None:
     with connect() as conn:
+        # A database whose settings table does not exist yet is being created
+        # by this call: a new install. Any database that existed before --
+        # Danny's QA install, an older version, a restart, even one with an
+        # emptied settings table -- is left alone.
+        fresh = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'settings'"
+        ).fetchone()[0] == 0
         conn.executescript(SCHEMA)
-        # A database with no settings at all was created just now, by this
-        # call: a new install. Any row at all -- Danny's QA install, an older
-        # version, a restart -- means it existed before, and is left alone.
-        fresh = conn.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 0
         _migrate(conn)
         _collapse_duplicate_tasks(conn)
         for statement in LATE_INDEXES:
