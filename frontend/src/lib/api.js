@@ -100,6 +100,8 @@ export const api = {
   copilotStatus: () => request('/api/settings/copilot-status'),
   // What Ollama reports it has. Asked for by the Settings screen only.
   ollamaModels: () => request('/api/ollama/models'),
+  ollamaPull: (model) => request('/api/ollama/pull', { method: 'POST', body: JSON.stringify({ model }) }),
+  ollamaPullState: () => request('/api/ollama/pull'),
   // Cloud-AI permission. Granting happens only from the consent dialog.
   aiConsent: (provider) =>
     request(`/api/ai/consent${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),
