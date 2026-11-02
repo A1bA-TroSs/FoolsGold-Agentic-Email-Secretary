@@ -22,6 +22,7 @@ import Login from './Login.jsx';
 export default function Connect({ source, settings, onSettings, onReady, onOpenSettings, lang, onLanguage }) {
   const t = useT();
   const [address, setAddress] = useState(settings?.user_address || '');
+  const [role, setRole] = useState(settings?.user_role || '');
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
@@ -36,7 +37,7 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
     setSaving(true);
     setError('');
     try {
-      onSettings(await api.patchSettings({ user_address: address.trim() }));
+      onSettings(await api.patchSettings({ user_address: address.trim(), user_role: role.trim() }));
       await recheck();
     } catch (e) {
       setError(e.message);
@@ -156,6 +157,14 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
           <input id="addr" className="input" type="email" placeholder="you@outlook.com"
                  value={address} onChange={(e) => setAddress(e.target.value)}
                  onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
+        </div>
+
+        <div className="field">
+          <label htmlFor="role">{t('yourRole')}</label>
+          <input id="role" className="input" maxLength={120} placeholder={t('yourRolePlaceholder')}
+                 value={role} onChange={(e) => setRole(e.target.value)}
+                 onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
+          <p className="hint" style={{ marginTop: 4 }}>{t('yourRoleHelp')}</p>
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
