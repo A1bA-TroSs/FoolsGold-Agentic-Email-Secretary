@@ -2,7 +2,7 @@
   "name": "foolsgold",
   "productName": "Fools Gold",
   "version": "1.2.7",
-  "description": "Agentic email secretary for Outlook — local-first, read-only.",
+  "description": "A macOS email secretary that ranks your inbox and pulls out deadlines, with AI optional.",
   "main": "electron/main.js",
   "scripts": {
     "postinstall": "cd frontend && npm install",
