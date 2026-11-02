@@ -375,8 +375,10 @@ def test_noreply_must_see_needs_evidence():
                            from_address="calendar-notification@google.com")) == "invite"
     assert R.must_see(mail(subject="[대한항공] 전자 항공권 발행 안내", from_address="no-reply@koreanair.com",
                            body_text="예약번호: ABC123 / 편명 KE017")) == "ticket"
-    assert R.must_see(mail(subject="[대한항공] 전자 항공권 발행 안내",
-                           from_address="no-reply@koreanair.com")) is None
+    # An unknown sender still needs a booking reference (known carriers are
+    # proof on their own since Danny's 2026-11-02 decision).
+    assert R.must_see(mail(subject="전자 항공권 발행 안내",
+                           from_address="no-reply@tickets-example.kr")) is None
 
 
 def test_numbers_after_deadline_words_are_not_dates():
@@ -682,3 +684,27 @@ def test_short_date_with_until_still_works():
 
 def test_past_full_year_date_is_not_rolled_forward():
     assert cues.korean_deadline("2025년 3월 2일 작성", date(2026, 11, 1)) is None
+
+
+@pytest.mark.parametrize("subject,sender,kind", [
+    ("[신한카드] 11월 카드 청구서", "no-reply@shinhancard.com", "payment"),
+    ("SKT 요금 안내", "noreply@sktelecom.com", "payment"),
+    ("Your e-ticket confirmation", "noreply@united.com", "ticket"),
+    ("[대한항공] 전자 항공권 발행 안내", "no-reply@koreanair.com", "ticket"),
+    ("승차권 발권 안내", "noreply@letskorail.com", "ticket"),
+])
+def test_known_billers_and_carriers_count_as_proof(subject, sender, kind):
+    email = mail(subject=subject, from_address=sender, body_text="")
+    assert cues.always_important(email) == kind
+    assert priority.structural_bucket(email) != "noise"
+
+
+def test_known_biller_ad_stays_noise():
+    email = mail(subject="(광고) 신한카드 등록금 분할납부 혜택", from_address="no-reply@shinhancard.com")
+    assert cues.always_important(email) is None
+    assert priority.structural_bucket(email) == "noise"
+
+
+def test_unknown_lookalike_domain_is_not_proof():
+    email = mail(subject="카드 청구서 안내", from_address="no-reply@shinhancard.com.example.net")
+    assert not cues.has_evidence(email)

@@ -463,9 +463,32 @@ TRANSACTION_REF = re.compile(
 )
 
 
+# Known card issuers, telecoms, utilities, airlines, rail and bus operators
+# (Danny, 2026-11-02: "Trust known billers and carriers"). Their no-reply
+# bills and e-tickets count as proof on their own. Marketing checks still run
+# first, so a card company's (광고) or 수신거부 mail stays noise.
+KNOWN_BILLER_CARRIER = re.compile(
+    r"@(?:[\w.-]+\.)?(?:"
+    # Korean cards and telecoms
+    r"shinhancard\.com|samsungcard\.(?:com|co\.kr)|hyundaicard\.com|kbcard\.com|lottecard\.co\.kr|"
+    r"hanacard\.co\.kr|wooricard\.com|bccard\.com|nhcard\.co\.kr|"
+    r"sktelecom\.com|tworld\.co\.kr|kt\.com|uplus\.co\.kr|lguplus\.co\.kr|kepco\.co\.kr|"
+    # airlines
+    r"koreanair\.com|flyasiana\.com|jejuair\.net|jinair\.com|twayair\.com|airbusan\.com|airpremia\.com|"
+    r"united\.com|delta\.com|aa\.com|alaskaair\.com|southwest\.com|aircanada\.(?:com|ca)|"
+    r"britishairways\.com|lufthansa\.com|airfrance\.(?:com|fr)|klm\.com|emirates\.com|qatarairways\.com|"
+    r"singaporeair\.com|cathaypacific\.com|jal\.(?:com|co\.jp)|ana\.co\.jp|"
+    # rail and bus
+    r"letskorail\.com|korail\.com|srail\.(?:kr|or\.kr)|kobus\.co\.kr|amtrak\.com|"
+    r"jr-?east\.co\.jp|sncf(?:-connect)?\.com|bahn\.de|eurostar\.com|trainline\.com"
+    r")$",
+    re.I,
+)
+
+
 def has_evidence(email: dict[str, Any]) -> bool:
     sender = email.get("from_address") or ""
-    if INSTITUTIONAL_SENDER.search(sender):
+    if INSTITUTIONAL_SENDER.search(sender) or KNOWN_BILLER_CARRIER.search(sender):
         return True
     text = "%s\n%s" % (email.get("subject") or "",
                         (email.get("body_text") or email.get("body_preview") or "")[:3000])
