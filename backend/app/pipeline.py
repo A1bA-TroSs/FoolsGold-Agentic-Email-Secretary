@@ -55,7 +55,8 @@ def user_context(provider: Any = None) -> "UserContext":
     role = " ".join((db.get_setting("user_role", "") or "").split())[:MAX_ROLE_CHARS]
     people: list[tuple[str, str]] = []
     share = (db.get_setting("share_correspondents", "1") or "1").strip().lower() not in ("0", "false", "off", "no")
-    if share and getattr(provider, "local", False):
+    # Without the user's own address the list could name the user to themselves.
+    if share and me and getattr(provider, "local", False):
         try:
             from .sources.registry import get_source
             counts = get_source().correspondents() or {}
@@ -367,7 +368,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
         upgraded = 0
         if not used_fallback and done < limit:
             upgraded = await _upgrade_structural(provider, me, topics, batch_size,
-                                                 budget=limit - done)
+                                                 budget=limit - done, context=context)
 
         return {
             "classified": done,
@@ -379,7 +380,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
 
 
 async def _upgrade_structural(provider, me: str, topics: list[str],
-                              batch_size: int, budget: int) -> int:
+                              batch_size: int, budget: int, context: Any = None) -> int:
     """Re-ask the model about mail that only has a structural verdict.
 
     Bounded by the same limit as a normal pass, so a recovering key costs one
@@ -392,7 +393,8 @@ async def _upgrade_structural(provider, me: str, topics: list[str],
         return 0
     by_id = {e["id"]: e for e in emails}
     try:
-        results = await provider.classify_batch(emails, topics, user_context(provider))
+        results = await provider.classify_batch(
+            emails, topics, context if context is not None else user_context(provider))
     except Exception as exc:  # noqa: BLE001 - the upgrade is best-effort
         _mark_ai(False, str(exc), key=getattr(exc, "key", None),
                  vars=getattr(exc, "vars", None))

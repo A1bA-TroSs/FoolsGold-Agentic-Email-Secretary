@@ -254,8 +254,8 @@ When the prompt describes the user (their address, role, the people they write t
 most) and says how each email reached them, use it to judge whether the email is
 theirs to act on. These only lean the bucket; a stated deadline or a task for the
 user always counts:
-- Sent "to you" by someone the user writes to most, asking something or
-  continuing their thread: lean "action".
+- Sent "to you" by someone they write to often (the line says so), asking
+  something or continuing their thread: lean "action".
 - "not addressed to you" (a list or bcc): lean "fyi" or "noise", unless it states
   something this user must do.
 - "cc you": usually "fyi".
@@ -317,43 +317,37 @@ Reply with JSON and nothing else:
 {"headline": "<one sentence>", "items": [{"id": "<id>", "note": "<max 14 words>"}]}"""
 
 
-def _recipients(value: Any) -> set[str]:
-    items = json_list_safe(value)
-    out = set()
-    for item in items:
-        if isinstance(item, dict):
-            item = item.get("address") or item.get("emailAddress", {}).get("address") or ""
-        out.add(str(item).strip().lower())
-    return out
-
-
-def json_list_safe(value: Any) -> list:
-    if isinstance(value, list):
-        return value
-    try:
-        parsed = json.loads(value or "[]")
-    except (TypeError, ValueError):
-        return []
-    return parsed if isinstance(parsed, list) else []
-
-
 def reaches_user(email: dict[str, Any], me: str) -> str:
     """How the mail reached the user: "to you", "cc you", or not directly."""
+    from ..priority import _recipient_addresses
     me = (me or "").strip().lower()
     if not me:
         return ""
-    if me in _recipients(email.get("to_recipients")):
+    if me in _recipient_addresses(email.get("to_recipients")):
         return "to you"
-    if me in _recipients(email.get("cc_recipients")):
+    if me in _recipient_addresses(email.get("cc_recipients")):
         return "cc you"
     return "not addressed to you directly (list or bcc)"
 
 
-def _fmt_email(email: dict[str, Any], index: int, me: str = "") -> str:
+MAX_NAME_CHARS = 40
+
+
+def clean_name(name: str) -> str:
+    """A From display name made safe for one prompt line: no newlines or
+    brackets that could start a new instruction or fake an address, capped."""
+    name = re.sub(r"[<>\[\]{}\"`]", "", " ".join(str(name or "").split()))
+    return name[:MAX_NAME_CHARS].strip()
+
+
+def _fmt_email(email: dict[str, Any], index: int, me: str = "",
+               frequent: frozenset[str] = frozenset()) -> str:
     body = _body_for_prompt(email.get("body_text") or email.get("body_preview") or "")
     to = email.get("to_recipients") or "[]"
     cc = email.get("cc_recipients") or "[]"
     how = reaches_user(email, me)
+    if how and (email.get("from_address") or "").strip().lower() in frequent:
+        how += "; the sender is someone they write to often"
     return (
         f"--- EMAIL {index} ---\n"
         f"id: {email['id']}\n"
@@ -379,7 +373,7 @@ def _context_block(context: UserContext | None) -> str:
     people = context.correspondents[:MAX_CORRESPONDENTS]
     if people:
         lines.append("- people they write to most: " + "; ".join(
-            f"{name} <{addr}>" if name else addr for name, addr in people))
+            f"{clean_name(name)} <{addr}>" if clean_name(name) else addr for name, addr in people))
     return "\n".join(lines) + "\n\n"
 
 
@@ -387,7 +381,8 @@ def build_classify_prompt(emails: list[dict[str, Any]], priorities: list[str],
                           context: UserContext | None = None) -> str:
     prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
     me = context.address if context else ""
-    blocks = "\n".join(_fmt_email(e, i + 1, me) for i, e in enumerate(emails))
+    frequent = frozenset(a for _, a in context.correspondents[:MAX_CORRESPONDENTS]) if context else frozenset()
+    blocks = "\n".join(_fmt_email(e, i + 1, me, frequent) for i, e in enumerate(emails))
     return (
         f"Current date: {date.today().isoformat()}\n\n"
         f"{_context_block(context)}"
