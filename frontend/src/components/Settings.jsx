@@ -3,8 +3,8 @@ import { api } from '../lib/api.js';
 import { LANGUAGES, useT } from '../lib/i18n.js';
 import './Compose.css';
 
-const SOURCE_KEYS = ['user_address', 'applemail_root', 'applemail_inbox_only'];
-const AI_KEYS = ['llm_provider', 'ollama_model', 'ollama_host', 'copilot_model', 'anthropic_api_key',
+const SOURCE_KEYS = ['user_address', 'user_role', 'applemail_root', 'applemail_inbox_only'];
+const AI_KEYS = ['llm_provider', 'ollama_model', 'ollama_host', 'share_correspondents', 'copilot_model', 'anthropic_api_key',
                  'anthropic_model', 'openai_api_key', 'openai_model', 'openai_base_url'];
 const SYNC_KEYS = ['sync_days', 'sync_max_messages', 'classify_batch_size'];
 const NOTIFY_KEYS = ['notify_enabled', 'notify_morning', 'notify_evening'];
@@ -261,6 +261,13 @@ export default function Settings({
             <input className="input" type="email" placeholder="you@outlook.com"
                    value={value('user_address')} onChange={(e) => edit('user_address', e.target.value)} />
             <p className="hint" style={{ marginTop: 4 }}>{t('yourEmailHelp')}</p>
+          </div>
+
+          <div className="field">
+            <label>{t('yourRole')}</label>
+            <input className="input" maxLength={120} placeholder={t('yourRolePlaceholder')}
+                   value={value('user_role')} onChange={(e) => edit('user_role', e.target.value)} />
+            <p className="hint" style={{ marginTop: 4 }}>{t('yourRoleHelp')}</p>
           </div>
 
           {value('mail_source') === 'applemail' && (
@@ -670,6 +677,18 @@ export default function Settings({
                 <p className="hint" style={{ marginTop: 6 }}>{t('endpointHelp')}</p>
               </div>
             </>
+          )}
+
+          {value('llm_provider') === 'ollama' && (
+            <div className="field">
+              <label>
+                <input type="checkbox" style={{ marginRight: 6 }}
+                       checked={value('share_correspondents') !== '0'}
+                       onChange={(e) => edit('share_correspondents', e.target.checked ? '1' : '0')} />
+                {t('shareCorrespondents')}
+              </label>
+              <p className="hint" style={{ marginTop: 4 }}>{t('shareCorrespondentsHelp')}</p>
+            </div>
           )}
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
