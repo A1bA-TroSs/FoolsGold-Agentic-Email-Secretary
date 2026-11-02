@@ -508,6 +508,10 @@ def _collapse_duplicate_tasks(conn: sqlite3.Connection) -> None:
 def init_db() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
+        # A database with no settings at all was created just now, by this
+        # call: a new install. Any row at all -- Danny's QA install, an older
+        # version, a restart -- means it existed before, and is left alone.
+        fresh = conn.execute("SELECT COUNT(*) FROM settings").fetchone()[0] == 0
         _migrate(conn)
         _collapse_duplicate_tasks(conn)
         for statement in LATE_INDEXES:
@@ -517,6 +521,12 @@ def init_db() -> None:
                 "INSERT OR IGNORE INTO settings (key, value, encrypted) VALUES (?, ?, 0)",
                 (key, value),
             )
+        if fresh:
+            # Learning on from the first click for a new user (roadmap F4).
+            # There is no QA history to keep out, which was the only reason
+            # the epoch was manual; existing installs keep the manual switch.
+            conn.execute("UPDATE settings SET value = ? WHERE key = 'learning_epoch_start'",
+                         (now_iso(),))
         conn.commit()
 
 
