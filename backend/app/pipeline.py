@@ -64,8 +64,11 @@ def user_context(provider: Any = None) -> "UserContext":
             counts = {}
         ranked = sorted(((n, (a or "").strip().lower()) for a, n in counts.items()),
                         key=lambda item: (-item[0], item[1]))
+        # An address longer than 64 characters is a generated or tracking one,
+        # not a person; it also keeps the block near its size budget.
         addresses = [a for n, a in ranked
-                     if n > 0 and a and a != me and not cues.NOISE_SENDER.search(a)][:MAX_CORRESPONDENTS]
+                     if n > 0 and a and len(a) <= 64 and a != me
+                     and not cues.NOISE_SENDER.search(a)][:MAX_CORRESPONDENTS]
         names = db.display_names(addresses) if addresses else {}
         people = [(names.get(a, ""), a) for a in addresses]
     return UserContext(address=me, role=role, correspondents=people)

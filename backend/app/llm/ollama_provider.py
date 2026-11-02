@@ -272,9 +272,14 @@ class OllamaProvider(LLMProvider):
     # the two real jobs, each with its schema
     # ------------------------------------------------------------------
 
-    # The model runs on this machine: the only provider that may see the
-    # user's top correspondents (Danny, 2026-11-02).
-    local = True
+    # The only provider that may see the user's top correspondents (Danny,
+    # 2026-11-02: "Only for Ollama (local)") -- and only while the server is
+    # on this machine. An Ollama host on another computer is not local.
+    @property
+    def local(self) -> bool:  # type: ignore[override]
+        from urllib.parse import urlparse
+        host = (urlparse(self.host if "://" in self.host else f"http://{self.host}").hostname or "").lower()
+        return host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
 
     async def classify_batch(
         self, emails: list[dict[str, Any]], priorities: list[str],

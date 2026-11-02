@@ -129,7 +129,7 @@ def test_source_failure_does_not_break_context(store, monkeypatch):
 def test_ollama_is_the_only_local_provider():
     from app.llm.api_providers import AnthropicProvider, OpenAIProvider
     from app.llm.copilot_provider import CopilotProvider
-    assert OllamaProvider.local is True
+    assert OllamaProvider("m", "http://localhost:11434").local is True
     assert not any(cls.local for cls in (AnthropicProvider, OpenAIProvider, CopilotProvider))
 
 
@@ -193,3 +193,25 @@ def test_new_settings_are_accepted_by_the_api(store):
         r = client.patch("/api/settings", json={"values": {"user_role": "TA", "share_correspondents": "0"}})
     assert r.status_code == 200, r.text
     assert db.get_setting("user_role") == "TA" and db.get_setting("share_correspondents") == "0"
+
+
+@pytest.mark.parametrize("host,local", [
+    ("http://localhost:11434", True), ("http://127.0.0.1:11434", True), ("localhost:11434", True),
+    ("http://192.168.0.20:11434", False), ("https://ollama.example.com", False),
+])
+def test_ollama_counts_as_local_only_on_this_machine(host, local):
+    assert OllamaProvider("m", host).local is local
+
+
+def test_from_display_name_is_cleaned_in_each_email():
+    prompt = build_classify_prompt([mail(1, from_name='Kim <boss@x.com> "urgent"')], [], None)
+    assert "from: Kim boss@x.com urgent <kim@snu.ac.kr>" in prompt
+
+
+def test_overlong_addresses_are_not_listed(store, monkeypatch):
+    class Long:
+        def correspondents(self):
+            return {"a" * 70 + "@x.com": 99, "kim@snu.ac.kr": 3}
+    monkeypatch.setattr("app.sources.registry.get_source", lambda *a, **k: Long())
+    db.set_setting("user_address", ME)
+    assert [a for _, a in pipeline.user_context(Recorder(local=True)).correspondents] == ["kim@snu.ac.kr"]
