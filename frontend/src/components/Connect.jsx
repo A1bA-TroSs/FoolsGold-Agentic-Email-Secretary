@@ -47,6 +47,9 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
         await api.addPriority({ topic: topic.trim(), status: 'active', weight: 10 });
         setTopic('');
       }
+      if (skipTopic || topic.trim()) {
+        onSettings(await api.patchSettings({ setup_priority_asked: '1' }));
+      }
       await recheck();
     } catch (e) {
       setError(e.message);

@@ -4,6 +4,7 @@ import { useEvent } from './lib/useEvent.js';
 import { reuseUnchanged } from './lib/reconcile.js';
 import { I18nContext, translator } from './lib/i18n.js';
 import Connect from './components/Connect.jsx';
+import FirstPriority from './components/FirstPriority.jsx';
 import Digest from './components/Digest.jsx';
 import Recap from './components/Recap.jsx';
 import MailDetail from './components/MailDetail.jsx';
@@ -1071,6 +1072,7 @@ export default function App() {
                         were stacked in one column saying different things about
                         the same mail -- the exact confusion the removed Today
                         view was deleted for. */}
+                    {view === 'priority' && <FirstPriority settings={settings} onSettings={setSettings} />}
                     {view === 'recap' ? null : listLoading && !mail.length
                       ? <SkeletonList />
                       : <MailList items={visible} selectedId={selectedId} cursorId={cursorId}

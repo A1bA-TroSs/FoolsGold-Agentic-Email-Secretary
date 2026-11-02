@@ -80,3 +80,21 @@ def test_setup_priority_is_saved_as_an_active_priority(tmp_path, monkeypatch):
         assert r.status_code == 200, r.text
         assert client.get("/api/ranking").json()["learning"]["enabled"] is True
     assert priority.priority_topics() == ["COMP4332 final project"]
+
+
+def test_emptied_settings_table_is_not_a_new_install(tmp_path, monkeypatch):
+    point(tmp_path, monkeypatch)
+    old_db(tmp_path, [])
+    db.init_db()
+    assert learning.epoch_start() == ""
+
+
+def test_priority_question_flag_is_a_known_setting(tmp_path, monkeypatch):
+    from app.main import app
+    point(tmp_path, monkeypatch)
+    db.init_db()
+    assert db.get_setting("setup_priority_asked") == ""
+    with TestClient(app) as client:
+        r = client.patch("/api/settings", json={"values": {"setup_priority_asked": "1"}})
+    assert r.status_code == 200, r.text
+    assert db.get_setting("setup_priority_asked") == "1"

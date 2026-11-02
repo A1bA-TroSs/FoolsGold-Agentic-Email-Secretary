@@ -49,6 +49,9 @@ DEFAULT_SETTINGS = {
     # Whether the people the user writes to most go into the classify prompt.
     # Only ever sent to a local model (Ollama); cloud providers never get them.
     "share_correspondents": "1",
+    # "1" once the one-priority question (roadmap F4) was answered or skipped,
+    # at setup or on the main view; it is never asked again.
+    "setup_priority_asked": "",
     # No provider is preselected. The app must never reach for a credential the
     # user did not choose, and until they choose one it ranks mail on
     # structural signals -- which works, and says so.
