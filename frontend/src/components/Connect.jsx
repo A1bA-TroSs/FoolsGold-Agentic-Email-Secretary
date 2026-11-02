@@ -23,6 +23,11 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
   const t = useT();
   const [address, setAddress] = useState(settings?.user_address || '');
   const [role, setRole] = useState(settings?.user_role || '');
+  // One priority, asked once at setup and skippable (roadmap F4; Danny,
+  // 2026-11-02). Without one, topic match -- the largest day-one relevance
+  // term -- is zero for every email.
+  const [topic, setTopic] = useState('');
+  const [skipTopic, setSkipTopic] = useState(false);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
@@ -38,6 +43,10 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
     setError('');
     try {
       onSettings(await api.patchSettings({ user_address: address.trim(), user_role: role.trim() }));
+      if (!skipTopic && topic.trim()) {
+        await api.addPriority({ topic: topic.trim(), status: 'active', weight: 10 });
+        setTopic('');
+      }
       await recheck();
     } catch (e) {
       setError(e.message);
@@ -166,6 +175,21 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
                  onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
           <p className="hint" style={{ marginTop: 4 }}>{t('yourRoleHelp')}</p>
         </div>
+
+        {!skipTopic && (
+          <div className="field">
+            <label htmlFor="topic">{t('setupPriorityLabel')}</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input id="topic" className="input" style={{ flex: 1 }} maxLength={80}
+                     placeholder={t('addPriorityPlaceholder')}
+                     value={topic} onChange={(e) => setTopic(e.target.value)}
+                     onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
+              <button type="button" className="btn ghost"
+                      onClick={() => { setTopic(''); setSkipTopic(true); }}>{t('setupPrioritySkip')}</button>
+            </div>
+            <p className="hint" style={{ marginTop: 4 }}>{t('setupPriorityHelp')}</p>
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn primary" style={{ flex: 1 }}
