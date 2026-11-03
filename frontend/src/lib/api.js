@@ -68,7 +68,6 @@ export const api = {
     request(`/api/mail/${encodeURIComponent(id)}/feedback`, { method: 'DELETE' }),
   sync: () => request('/api/mail/sync', { method: 'POST' }),
   rescan: () => request('/api/mail/rescan', { method: 'POST' }),
-  digest: (force = false) => request(`/api/mail/digest/today?force=${force}`),
   /* The recap is a pure read: it marks nothing read and moves no window.
      `recapSeen` is the only call that closes the window, and it is wired
      to the dismiss button alone -- never to rendering, never to opening a

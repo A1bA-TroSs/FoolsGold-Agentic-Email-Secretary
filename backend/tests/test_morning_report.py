@@ -182,3 +182,35 @@ def test_open_rate_counts_days_not_clicks(client):
     assert report.open_rate()["opened_days"] == 2
     card = client.get("/api/quality/export").json()
     assert card["report"] == {"opened_days": 2, "active_days": 1}
+
+
+# Round 1 review.
+def test_missed_uses_the_same_must_see_rule_as_sync(client):
+    # An advert with an exam word in the subject and an opt-out footer is not must-see.
+    put("ad", bucket="fyi", hours=48, subject="토익 시험 특강 안내", frm="edu@academy.kr",
+        body="특강 신청하세요. 수신거부")
+    rows = client.get("/api/mail/report").json()["missed"]["items"]
+    assert "ad" not in [r["email_id"] for r in rows]
+
+
+def test_reply_rows_say_who_is_waiting_and_when_it_is_due(client):
+    put("q", to=f'["{ME}"]', body="Could you review this?", deadline=due(2), bucket="action")
+    row = client.get("/api/mail/report").json()["replies"]["items"][0]
+    assert row["email_id"] == "q" and row["sender"] == "S" and row["deadline"] == due(2)
+    assert row["reason"] == "question"
+
+
+def test_pile_total_counts_only_what_it_lists(client):
+    put("d", deadline=due(1), hours=2)
+    put("p1", hours=2)
+    put("p2", hours=3)
+    pile = client.get("/api/mail/report").json()["pile"]
+    listed = [l["email_id"] for s in pile["sections"] for l in s["lines"]]
+    assert "d" not in listed and pile["total"] == len(listed) == 2
+
+
+def test_the_card_stays_quiet_after_mark_as_seen(client):
+    client.post("/api/mail/recap/seen")
+    put("fresh", hours=0)
+    pile = client.get("/api/mail/report").json()["pile"]
+    assert pile["too_soon"] is True

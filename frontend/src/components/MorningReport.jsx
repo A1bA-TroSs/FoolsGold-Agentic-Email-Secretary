@@ -129,6 +129,15 @@ function Rows({ title, items, note, t, selectedId, checkedIds, onOpen, onDone })
   );
 }
 
+/* "Replies owed 3 · Due soon 2": label then number, so no plural forms are
+   needed in any language, and a part that is zero is left out. */
+const PARTS = ['replies', 'due', 'missed', 'new'];
+function headline(h, t) {
+  if (h.key !== 'reportHeadline') return t(h.key, h.vars);
+  return PARTS.filter((k) => h.vars?.[k])
+    .map((k) => t(`reportPart_${k}`, { n: String(h.vars[k]) })).join(' · ');
+}
+
 export default function MorningReport({ report, loading, onOpen, onDone, onDismiss, selectedId, checkedIds }) {
   const t = useT();
   if (loading && !report) {
@@ -143,19 +152,18 @@ export default function MorningReport({ report, loading, onOpen, onDone, onDismi
   return (
     <div className="digest report">
       <h3>{t('reportTitle')}</h3>
-      {report.headline && (
-        <p className="digest-headline">{t(report.headline.key, report.headline.vars)}</p>
-      )}
+      {report.headline && <p className="digest-headline">{headline(report.headline, t)}</p>}
       <Rows title={t('reportReplies')} items={replies}
             note={(it) => ({ note_key: `respondWhy_${it.reason}` })} {...shared} />
-      <Rows title={t('reportDue')} items={due}
-            note={(it) => ({ note_key: `reportWhen_${it.when}` })} {...shared} />
+      {/* No note on a deadline row: the due chip already says when. */}
+      <Rows title={t('reportDue')} items={due} note={() => ({})} {...shared} />
       <Rows title={t('reportMissed')} items={missed}
             note={() => ({ note_key: 'reportMissedNote' })} {...shared} />
       {/* The pile is the recap card, unchanged, minus the mail shown above.
           Its "mark as seen" still moves the window and nothing else does. */}
       {report.pile && (
-        <Recap card={report.pile} selectedId={selectedId} onOpen={onOpen} onDismiss={onDismiss} />
+        <Recap card={onDismiss ? report.pile : { ...report.pile, too_soon: false }}
+               selectedId={selectedId} onOpen={onOpen} onDismiss={onDismiss} />
       )}
     </div>
   );

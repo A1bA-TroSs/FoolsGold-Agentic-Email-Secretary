@@ -44,7 +44,10 @@ def _open_rows(where: str, params: tuple) -> list[dict[str, Any]]:
     snoozed into the future. The rest of the condition is the caller's."""
     with db.connect() as conn:
         rows = conn.execute(
+            # The body and recipients too: must_see() reads the opt-out footer
+            # and the booking-reference proof from them, as it does at sync.
             "SELECT e.id, e.subject, e.from_name, e.from_address, e.received_at, e.is_read, "
+            "       e.to_recipients, e.cc_recipients, e.body_text, e.body_preview, "
             "       c.bucket, c.deadline, f.verdict, f.snooze_until "
             "FROM emails e JOIN classifications c ON c.email_id = e.id "
             "LEFT JOIN feedback f ON f.email_id = e.id "
@@ -65,10 +68,11 @@ def _snoozed(row: dict[str, Any], now: datetime) -> bool:
 
 
 def _line(row: dict[str, Any], **extra: Any) -> dict[str, Any]:
-    return {"email_id": row["id"], "subject": row.get("subject") or "",
+    line = {"email_id": row["id"], "subject": row.get("subject") or "",
             "sender": row.get("from_name") or row.get("from_address") or "",
             "received_at": row.get("received_at"), "deadline": row.get("deadline"),
-            "bucket": row.get("bucket"), **extra}
+            "bucket": row.get("bucket")}
+    return {**line, **extra}
 
 
 def when(deadline: str, today: date) -> str:
@@ -112,7 +116,11 @@ def _pile(now: datetime, shown: set[str]) -> dict[str, Any]:
     """The recap, minus what the sections above already show. A line whose
     deduplicated group touches a shown email is dropped whole: the copy above
     stands for it."""
+    # Built in full for the rail view, which the user asked for; `too_soon`
+    # keeps the real window's answer so the card on top still stays quiet for
+    # two hours after "mark as seen", as the recap card did.
     card = recap.build(now=now, force=True)
+    card["too_soon"] = recap.window(now)["too_soon"]
 
     def keep(line: dict[str, Any]) -> bool:
         return not (set(line.get("email_ids") or [line["email_id"]]) & shown)
@@ -131,7 +139,23 @@ def _pile(now: datetime, shown: set[str]) -> dict[str, Any]:
                 senders.append({**s, "lines": lines, "count": len(lines)})
         bulk = {**bulk, "senders": senders, "count": sum(s["count"] for s in senders)} if senders else None
     lines = sum(s["count"] for s in sections) + (bulk["count"] if bulk else 0)
-    return {**card, "sections": sections, "bulk": bulk, "lines": lines}
+    # "{n} waiting" in the pile header counts what the pile lists, copies included.
+    total = sum(l.get("copies", 1) for s in sections for l in s["lines"]) + sum(
+        l.get("copies", 1) for s in (bulk or {}).get("senders", []) for l in s["lines"])
+    return {**card, "sections": sections, "bulk": bulk, "lines": lines, "total": total}
+
+
+def _reply_lines(replies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """owed() rows in the report's line shape: who is waiting, and the
+    deadline when the mail has one. Ids, order and reasons are unchanged."""
+    ids = [r["id"] for r in replies]
+    due: dict[str, str] = {}
+    if ids:
+        with db.connect() as conn:
+            marks = ",".join("?" * len(ids))
+            due = {r[0]: r[1] for r in conn.execute(
+                f"SELECT email_id, deadline FROM classifications WHERE email_id IN ({marks})", ids)}
+    return [_line(r, reason=r["reason"], deadline=due.get(r["id"])) for r in replies]
 
 
 def build(now: datetime | None = None, today: date | None = None) -> dict[str, Any]:
@@ -151,7 +175,7 @@ def build(now: datetime | None = None, today: date | None = None) -> dict[str, A
     return {
         "headline": {"key": "reportHeadline" if any(counts.values()) else "reportAllClear",
                      "vars": counts},
-        "replies": {"items": [{**r, "email_id": r["id"]} for r in replies], "count": len(replies)},
+        "replies": {"items": _reply_lines(replies), "count": len(replies)},
         "deadlines": {"items": dl, "count": len(dl)},
         "missed": {"items": ms, "count": len(ms)},
         "pile": pile,
