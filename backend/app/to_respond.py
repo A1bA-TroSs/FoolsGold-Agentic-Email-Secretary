@@ -14,10 +14,12 @@ An email is owed a reply when all of these hold:
   5. it arrived in the last WINDOW_DAYS days;
   6. the user has not sent mail in the same thread since (any branch: the
      sent log matches the normalised subject, because Outlook's Thread-Index
-     gives each reply branch its own root);
+     gives each reply branch its own root; a subject without an id also
+     needs the reply to have reached someone on the mail);
   7. it is not a broadcast wearing a direct address: "do not reply" notices,
-     generic greetings ("Dear USER"), newsletters, HTML-only placeholders, or
-     an ask whose opening line names someone else.
+     generic greetings ("Dear USER"), newsletters, or HTML-only placeholders.
+     A mail opening with someone else's name is NOT dropped: that rule hid
+     real asks in review (see _broadcast).
 
 Rules 6 and 7 come from Danny's real mailbox (2026-11-03), where all seven
 listed emails were one of these.
