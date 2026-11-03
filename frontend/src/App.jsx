@@ -207,8 +207,7 @@ export default function App() {
      the pile since you last looked. One payload for the card on top and for
      the rail view. Loading it writes nothing except today's "shown" day for
      the local open rate; only `dismissRecap` moves the window. */
-  const [report, setReportState] = useState(null);
-  const setReport = useCallback((next) => setReportState(next), []);
+  const [report, setReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const reloadReport = useCallback(() => api.report().then(setReport).catch(() => {}), [setReport]);
   const [banner, setBanner] = useState('');
@@ -451,7 +450,6 @@ export default function App() {
      The card hides immediately rather than waiting for the refetch, because
      the server will now answer `too_soon` and the component renders nothing
      for it anyway. */
-
   async function dismissRecap() {
     setReport((r) => (r ? { ...r, pile: null } : r));
     try { await api.recapSeen(); } catch { /* the window stays open; try again next time */ }
