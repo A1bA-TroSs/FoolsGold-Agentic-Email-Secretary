@@ -34,7 +34,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from . import db
+from . import db, report
 
 BUCKETS = ("action", "fyi", "noise")
 DEFAULT_N = 120
@@ -366,6 +366,8 @@ def scorecard() -> dict[str, Any]:
         "apple": {"measured": bool(s["apple"]["measured"]),
                   "matched": int(s["apple"]["matched"]),
                   "reason": s["apple"]["reason"] if s["apple"]["reason"] in _REASONS else ""},
+        # F6: is the morning report read? Days opened of days shown.
+        "report": {k: int(v) for k, v in report.open_rate().items()},
     }
 
 
