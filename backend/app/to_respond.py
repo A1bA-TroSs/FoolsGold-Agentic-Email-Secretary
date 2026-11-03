@@ -71,7 +71,8 @@ _MIN_KEY_WEIGHT = 12         # "Question", "Hello", "Re: hi" do not identify a t
 # or a [TAG]. Anything shorter ("Meeting request", "Quick question") joins a
 # thread only when the reply also went to someone in it.
 _SPECIFIC_WEIGHT = 28
-_SPECIFIC_MARK = re.compile(r"\d{4,}|\[[^\]]+\]")
+# An id (a run of digits that is not a bare year) or a [TAG].
+_SPECIFIC_MARK = re.compile(r"\b(?!(?:19|20)\d{2}\b)\d{4,}\b|\[[^\]]+\]")
 
 
 def _clean_subject(subject: str | None) -> str:
@@ -105,20 +106,31 @@ def _specific(subject: str | None) -> bool:
 
 
 def _answered(email: dict[str, Any], received: datetime, me: str,
-              sent_after: dict[str, list[tuple[str, set[str]]]] | None) -> bool:
-    """The user sent mail in this thread after it arrived. A specific subject
-    is enough (Outlook gives each reply branch its own Thread-Index root); a
-    generic one also needs the reply to have gone to someone on this mail."""
+              sent_after: dict[str, list[tuple]] | None) -> bool:
+    """The user sent mail in this thread after it arrived. A reply with a
+    specific subject is enough (Outlook gives each reply branch its own
+    Thread-Index root). A reply with a generic subject, or a forward (sending
+    the ask on to a friend is not answering it), also needs to have gone to
+    someone on this mail."""
     key = subject_key(email.get("subject"))
     if not key or not sent_after or key not in sent_after:
         return False
-    people = {(email.get("from_address") or "").lower()} | _addresses(email) - {me}
+    people = ({(email.get("from_address") or "").lower()} | _addresses(email)) - {me, ""}
     specific = _specific(email.get("subject"))
-    for at, recipients in sent_after[key]:
+    for entry in sent_after[key]:
+        at, recipients = entry[0], entry[1]
+        forward = bool(entry[2]) if len(entry) > 2 else False
         when = _when(at)
-        if when is not None and when > received and (specific or recipients & people):
+        if when is None or when <= received:
+            continue
+        if (specific and not forward) or recipients & people:
             return True
     return False
+
+
+def is_forward(subject: str | None) -> bool:
+    text = _GATEWAY_TAG.sub("", unicodedata.normalize("NFC", subject or ""))
+    return bool(re.match(r"^\s*(?:fw|fwd|전달|转发|轉寄)\s*[:：]", text, re.I))
 
 
 def _addresses(email: dict[str, Any]) -> set[str]:
@@ -139,25 +151,26 @@ def _addresses(email: dict[str, Any]) -> set[str]:
 # Notices that say they cannot be answered. Anchored to the notice wording, so
 # "please do not reply all" or "don't respond to the vendor yet" in a person's
 # ask do not match.
-_NO_REPLY = re.compile(
+_NO_REPLY = re.compile(  # noqa: E501
     r"\b(?:please\s+)?(?:do\s+not|don't|pls\s+do\s+not)\s+(?:reply|respond)\s+(?:directly\s+)?to\s+this\s+"
     r"(?:e-?mail|message|address|notification|mailbox)\b|"
     r"\b(?:this|the)\s+(?:mailbox|inbox|e-?mail\s+address|address)\s+is\s+(?:unmonitored|not\s+monitored)\b|"
     r"\bunmonitored\s+(?:mailbox|inbox|e-?mail\s+address|account)\b|"
-    r"\bthis\s+is\s+an\s+(?:automated|automatic|auto-generated)\s+(?:message|e-?mail|notification)\b|"
+    r"(?:^|[.!?]\s+|\n)\s*this\s+is\s+an\s+(?:automated|automatic|auto-generated)\s+(?:message|e-?mail|notification)\b|"
     r"\bthis\s+(?:e-?mail|message|notification)\s+(?:was|is|has\s+been)\s+(?:automatically\s+generated|sent\s+automatically)\b|"
     r"회신하지\s*마|회신\s*하지\s*마|답장하지\s*마|발신\s*전용|회신이\s*불가|"
     r"返信しないで|送信専用|请勿回复|請勿回覆", re.I)
 # A greeting to nobody in particular, on the opening line only (a forwarded
 # "Dear all" further down is someone else's broadcast).
 _GENERIC_GREETING = re.compile(
-    r"^\W*(?:dear|hi|hello|hey|greetings)\s+(?:user|users|students?|colleagues|members?|"
-    r"customers?|participants?|applicants?|valued\s+\w+|sir\s+or\s+madam|sir/madam)\s*(?:[,.!:]|$)|"
-    r"^\W*(?:안녕하세요[,.!\s]*)?(?:회원님들|학생\s*여러분|고객님)", re.I)
+    r"^\W*(?:dear|hi|hello|hey|greetings)\s+(?:user|users|customers?|applicants?|valued\s+\w+|"
+    r"sir\s+or\s+madam|sir/madam)\s*(?:[,.!:]|$)|"
+    r"^\W*(?:안녕하세요[,.!\s]*)?(?:회원님들|고객님)", re.I)
 # "Dear all" and "Hi everyone" are a group ask when a small group is on the
 # mail; sent to the user alone (Bcc) or to a crowd, it is a broadcast.
-_GROUP_GREETING = re.compile(r"^\W*(?:dear|hi|hello|hey)\s+(?:all|everyone|everybody)\s*(?:[,.!:]|$)|"
-                             r"^\W*(?:안녕하세요[,.!\s]*)?여러분", re.I)
+_GROUP_GREETING = re.compile(r"^\W*(?:dear|hi|hello|hey)\s+(?:all|everyone|everybody|students?|colleagues|"
+                             r"members?|participants?)\s*(?:[,.!:]|$)|"
+                             r"^\W*(?:안녕하세요[,.!\s]*)?(?:학생\s*)?여러분", re.I)
 _PLACEHOLDER = re.compile(
     r"html (?:compatible|capable) (?:e-?mail )?(?:viewer|reader|client)|"
     r"view this (?:e-?mail|message) in (?:your|a) (?:web )?browser|"
@@ -165,7 +178,6 @@ _PLACEHOLDER = re.compile(
 _NEWSLETTER = re.compile(r"\bnewsletter\b|뉴스레터|ニュースレター|通讯|電子報", re.I)
 # "Jordan," / "Jordan, please follow up" / "Hi Jordan,": a single name opening the mail.
 _OPENING = re.compile(r"^\s*(?:(?i:hi|hello|dear|hey)\s+)?([A-Z][a-z'-]{1,20})\s*[,:]")
-_OPENING_KO = re.compile(r"^\s*([가-힣]{2,4})\s*(?:님|씨)\s*[,.!]?")
 
 
 def _opening_lines(text: str, n: int = 3) -> list[str]:
@@ -179,7 +191,7 @@ def _first_line(text: str) -> str:
     return lines[0] if lines else ""
 
 
-def _broadcast(email: dict[str, Any], text: str, me: str, others: set[str]) -> bool:
+def _broadcast(email: dict[str, Any], text: str, me: str) -> bool:
     """A mail that reached the user directly but is not asking them."""
     first = _first_line(text)
     if _NO_REPLY.search(text) or any(_GENERIC_GREETING.match(l) for l in _opening_lines(text)):
@@ -193,42 +205,37 @@ def _broadcast(email: dict[str, Any], text: str, me: str, others: set[str]) -> b
         return True
     if len(text) < 300 and _PLACEHOLDER.search(text):
         return True
-    m = _OPENING.match(first) or _OPENING_KO.match(first)
-    if m and m.group(1).casefold() in others:
-        return True              # "Jordan, please follow up" asks Jordan, a known other person
+    m = _OPENING.match(first)
+    if m and _names_another_recipient(m.group(1), email, me):
+        return True              # "Jordan, please follow up" with jordan@ also on the mail
     return False
 
 
-def other_people(me: str, user_name: str | None) -> set[str]:
-    """First names of people other than the user, from who has written to
-    them. An opening line counts as someone else's only when it names one of
-    these, and never a name the user goes by; a title ("Sir,", "교수님,") or
-    an unknown name never drops a mail."""
-    mine = {t.casefold() for t in re.split(r"[\s,.]+", user_name or "") if t}
-    mine |= {t for t in re.split(r"[._+-]", (me or "").split("@")[0].casefold()) if t}
-    with db.connect() as conn:
-        names = [r[0] for r in conn.execute(
-            "SELECT DISTINCT from_name FROM emails WHERE lower(from_address) != ? "
-            "AND from_name IS NOT NULL AND from_name != ''", (me,))]
-    out: set[str] = set()
-    for name in names:
-        tokens = [t for t in re.split(r"[\s,.()]+", name) if t]
-        for t in tokens[:2]:
-            if re.fullmatch(r"[A-Z][a-z'-]{1,20}", t) or re.fullmatch(r"[가-힣]{2,4}", t):
-                out.add(t.casefold())
-    return out - mine
+def _names_another_recipient(name: str, email: dict[str, Any], me: str) -> bool:
+    """The greeted name is the mailbox name of someone else on this mail
+    (jordan@, jordan.liu@). Only positive evidence on the mail itself counts: a
+    title, a nickname, or a name the app has merely seen elsewhere never drops
+    an ask."""
+    name = name.casefold()
+    mine = set(re.split(r"[._+-]", (me or "").split("@")[0].casefold()))
+    if name in mine:
+        return False
+    for addr in _addresses(email) - {me}:
+        local = addr.split("@")[0]
+        if name in re.split(r"[._+-]", local):
+            return True
+    return False
 
 
-def _asks(email: dict[str, Any], bucket: str | None, me: str = "",
-          others: set[str] | None = None) -> str | None:
+def _asks(email: dict[str, Any], bucket: str | None, me: str = "") -> str | None:
     """The plain reason this email asks something of the user, or None."""
     subject = email.get("subject") or ""
-    if re.match(r"^\s*(?:re|fw|fwd|답장|회신|전달)\s*[:：]", subject, re.I):
+    if _PREFIX.match(_GATEWAY_TAG.sub("", subject)):
         subject = ""    # a reply's subject repeats the old ask
     text = cues.strip_quoted(email.get("body_text") or email.get("body_preview") or "")
     text = _SIGNATURE.split(text, maxsplit=1)[0]
     text = _URL.sub(" ", text)
-    if _broadcast(email, text, me, others or set()):
+    if _broadcast(email, text, me):
         return None
     if any(q in part for part in (_URL.sub(" ", subject), text) for q in ("?", "？")):
         return "question"
@@ -247,8 +254,7 @@ def reason(email: dict[str, Any], me: str, *, bucket: str | None = None,
            verdict: str | None = None, muted: bool = False,
            snooze_until: str | None = None,
            now: datetime | None = None,
-           sent_after: dict[str, list[tuple[str, set[str]]]] | None = None,
-           others: set[str] | None = None) -> str | None:
+           sent_after: dict[str, list[tuple]] | None = None) -> str | None:
     """Why this email is owed a reply ("question", "request", "action"), or
     None when it is not. Each condition is checked on its own so a test can
     pin each one."""
@@ -273,7 +279,7 @@ def reason(email: dict[str, Any], me: str, *, bucket: str | None = None,
         return None
     if _answered(email, received, me, sent_after):
         return None              # answered in this thread, in some branch
-    return _asks(email, bucket, me, others)
+    return _asks(email, bucket, me)
 
 
 def _when(value: str | None) -> datetime | None:
@@ -292,7 +298,6 @@ def owed(me: str | None = None, now: datetime | None = None) -> list[dict[str, A
     now = now or datetime.now(timezone.utc)
     since = (now - timedelta(days=WINDOW_DAYS + 1)).isoformat()
     sent = db.sent_after()
-    others = other_people((me or "").lower(), db.get_setting("user_name", "") or "")
     with db.connect() as conn:
         rows = [dict(r) for r in conn.execute(
             "SELECT e.id, e.subject, e.from_name, e.from_address, e.to_recipients, "
@@ -308,7 +313,7 @@ def owed(me: str | None = None, now: datetime | None = None) -> list[dict[str, A
     for r in rows:
         why = reason(r, me, bucket=r["bucket"], verdict=r["verdict"],
                      muted=bool(r["muted"]), snooze_until=r["snooze_until"], now=now,
-                     sent_after=sent, others=others)
+                     sent_after=sent)
         if why:
             out.append({"id": r["id"], "subject": r["subject"], "from_name": r["from_name"],
                         "from_address": r["from_address"], "received_at": r["received_at"],
