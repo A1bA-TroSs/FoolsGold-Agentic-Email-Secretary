@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { LANGUAGES, useT } from '../lib/i18n.js';
 import OllamaDownload from './OllamaDownload.jsx';
+import QualityCheck from './QualityCheck.jsx';
 import './Compose.css';
 
 const SOURCE_KEYS = ['user_address', 'user_role', 'applemail_root', 'applemail_inbox_only'];
@@ -56,6 +57,7 @@ const SEARCHABLE = [
   'rescoreTitle', 'rescoreHelp', 'rescanTitle', 'notifyTitle', 'sync',
   'daysToKeep', 'maxMessages', 'batchSize',
   'sendTitle', 'sendHelp', 'imapHost', 'draftsFolder', 'appPassword',
+  'qcTitle', 'qcHelp',
 ];
 
 function Section({ group, titleKey, hintKey, terms = [], tab, q, t, children }) {
@@ -939,6 +941,13 @@ export default function Settings({
               {rescan.detail}
             </p>
           )}
+        </Section>
+
+        <Section group="rank" titleKey="qcTitle" hintKey="qcHelp"
+                 tab={tab} q={query} t={t}>
+          <h3>{t('qcTitle')}</h3>
+          <p className="hint">{t('qcHelp')}</p>
+          <QualityCheck />
         </Section>
 
         <Section group="view" titleKey="notifyTitle"

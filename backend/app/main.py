@@ -21,6 +21,7 @@ from .config import APP_NAME, BACKEND_HOST, BACKEND_PORT, VERSION
 from .graph import auth as graph_auth
 from .routers import auth as auth_router
 from .routers import compose as compose_router
+from .routers import quality as quality_router
 from .routers import calendar as calendar_router
 from .routers import config as config_router
 from .routers import mail as mail_router
@@ -92,6 +93,7 @@ app.include_router(calendar_router.router)
 app.include_router(config_router.router)
 app.include_router(ranking_router.router)
 app.include_router(compose_router.router)
+app.include_router(quality_router.router)
 
 
 @app.get("/api/health")

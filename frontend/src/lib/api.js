@@ -102,6 +102,11 @@ export const api = {
   ollamaModels: () => request('/api/ollama/models'),
   ollamaPull: (model) => request('/api/ollama/pull', { method: 'POST', body: JSON.stringify({ model }) }),
   ollamaPullState: () => request('/api/ollama/pull'),
+  qualitySample: (n = 120) => request('/api/quality/sample', { method: 'POST', body: JSON.stringify({ n }) }),
+  qualityNext: () => request('/api/quality/next'),
+  qualityLabel: (label) => request('/api/quality/label', { method: 'POST', body: JSON.stringify(label) }),
+  qualityScore: () => request('/api/quality/score'),
+  qualityExport: () => request('/api/quality/export'),
   // Cloud-AI permission. Granting happens only from the consent dialog.
   aiConsent: (provider) =>
     request(`/api/ai/consent${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),
