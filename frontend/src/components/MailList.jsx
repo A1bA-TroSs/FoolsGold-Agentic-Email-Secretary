@@ -93,6 +93,12 @@ const ACTIONS = [
    under a subject line, and a chip that says nothing trains people to stop
    reading the chips. */
 export function whyLabel(t, m) {
+  // In To respond, the row says why a reply is owed instead.
+  if (m?.respond_reason) {
+    const key = 'respondWhy_' + m.respond_reason;
+    const text = t(key);
+    return text === key ? '' : text;
+  }
   const code = m?.reason_code;
   if (!code || code === 'none') return '';
   const arg = m.reason_arg ?? '';
