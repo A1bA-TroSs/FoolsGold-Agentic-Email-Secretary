@@ -178,10 +178,6 @@ _PLACEHOLDER = re.compile(
     r"view this (?:e-?mail|message) in (?:your|a) (?:web )?browser|"
     r"이 메일이 (?:잘 )?보이지 않", re.I)
 _NEWSLETTER = re.compile(r"\bnewsletter\b|뉴스레터|ニュースレター|通讯|電子報", re.I)
-# "Dion," / "Dion, please follow up" / "Hi Dion,": a single name opening the mail.
-_OPENING = re.compile(r"^\s*(?:(?i:hi|hello|dear|hey)\s+)?([A-Z][a-z'-]{1,20})\s*[,:]")
-
-
 def _opening_lines(text: str, n: int = 3) -> list[str]:
     """The first non-empty lines. A template often puts a logo line or a
     title ("HKUST Ucalendar") above its "Dear USER,"."""
@@ -207,50 +203,11 @@ def _broadcast(email: dict[str, Any], text: str, me: str) -> bool:
         return True
     if len(text) < 300 and _PLACEHOLDER.search(text):
         return True
-    m = _OPENING.match(first)
-    if m and _names_another_recipient(m.group(1), email, me) and _only_them(m.group(1), text, me):
-        return True              # "Dion, please follow up" with dion@ also on the mail
-    return False
-
-
-# A name used to address someone: at the start of a line or a sentence, or
-# in a list ("Dion, Danny, Kenneth,"), followed by a comma or colon.
-_VOCATIVE = re.compile(r"(?:^|[.!?]\s+|\n|,\s*)\s*(?:(?i:hi|hello|dear|hey)\s+)?([A-Z][a-z'-]{1,20})\s*[,:]")
-_SEVERAL = re.compile(r"\b(?:both|each of you|all of you|everyone|you two|each)\b", re.I)
-
-
-def _only_them(name: str, text: str, me: str) -> bool:
-    """The mail speaks to that one person and nobody else: no second name
-    addressed anywhere, no "both"/"each of you", and no sign of the user's
-    own mailbox name."""
-    named = {v.casefold() for v in _VOCATIVE.findall(text)} - _ROLE_WORDS
-    if named - {name.casefold()}:
-        return False
-    if _SEVERAL.search(text):
-        return False
-    mine = [t for t in re.split(r"[._+-]", (me or "").split("@")[0].casefold()) if len(t) > 2]
-    lowered = text.casefold()
-    return not any(re.search(rf"\b{re.escape(t)}\b", lowered) for t in mine)
-
-
-_ROLE_WORDS = {"team", "all", "lab", "group", "office", "admin", "info", "staff", "students",
-               "everyone", "members", "dept", "department", "committee", "board", "class"}
-
-
-def _names_another_recipient(name: str, email: dict[str, Any], me: str) -> bool:
-    """The greeted name is the mailbox name of someone else on this mail
-    (dion@, dion.liu@). Only positive evidence on the mail itself counts: a
-    title, a nickname, or a name the app has merely seen elsewhere never drops
-    an ask."""
-    name = name.casefold()
-    mine = set(re.split(r"[._+-]", (me or "").split("@")[0].casefold()))
-    # "Team," to team@ is the user's team being asked, user included.
-    if name in mine or name in _ROLE_WORDS:
-        return False
-    for addr in _addresses(email) - {me}:
-        local = addr.split("@")[0]
-        if name in re.split(r"[._+-]", local):
-            return True
+    # Deliberately no "addressed to someone else by name" rule. Four review
+    # rounds showed a greeting cannot be read reliably without knowing every
+    # name the user goes by ("Dion, thanks. Can you send me the file?" is
+    # still an ask on the user). On Danny's mailbox the one such mail sat in a
+    # thread he had answered, which the sent log already clears.
     return False
 
 
