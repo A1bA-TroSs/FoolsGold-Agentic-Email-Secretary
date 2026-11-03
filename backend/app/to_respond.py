@@ -67,13 +67,13 @@ _KO_QUESTION = re.compile(r"(?:까요|나요|[신인는]가요|습니까|실지�
 _PREFIX = re.compile(r"^\s*(?:(?:re|fw|fwd|aw|sv|답장|회신|전달|返信|转发|回复)\s*(?:\[\d+\])?\s*[:：]\s*)+", re.I)
 _GATEWAY_TAG = re.compile(r"^\s*\[(?:external|ext|external sender|외부|외부메일|외부 메일|caution)\]\s*", re.I)
 _MIN_KEY_WEIGHT = 12         # "Question", "Hello", "Re: hi" do not identify a thread
-# Enough on its own to name one thread: a subject carrying an id or a [TAG]
-# ("[CO-OP] SID 12345678"). Length is not enough -- "Request for a meeting
-# next week" is long and generic -- so any other subject joins a thread only
-# when the reply also went to someone on it. Erring this way keeps a mail
-# owed rather than hiding it.
-# An id (a run of digits that is not a bare year) or a [TAG].
-_SPECIFIC_MARK = re.compile(r"\b(?!(?:19|20)\d{2}\b)\d{4,}\b|\[[^\]]+\]")
+# Enough on its own to name one thread: a subject carrying an id, a run of 4+
+# digits that is not a bare year ("[CO-OP] SID 12345678"). Neither length nor
+# a bracket tag is enough: "Request for a meeting next week" is generic, and
+# [문의], [요청] or [COMP4211] are categories many senders share. Any other
+# subject joins a thread only when the reply also went to someone on it.
+# Erring this way keeps a mail owed rather than hiding it.
+_SPECIFIC_MARK = re.compile(r"\b(?!(?:19|20)\d{2}\b)\d{4,}\b")
 
 
 def _clean_subject(subject: str | None) -> str:
@@ -166,8 +166,7 @@ _NO_REPLY = re.compile(  # noqa: E501
 # A greeting to nobody in particular, on the opening line only (a forwarded
 # "Dear all" further down is someone else's broadcast).
 _GENERIC_GREETING = re.compile(
-    r"^\W*(?:dear|hi|hello|hey|greetings)\s+(?:user|users|customers?|applicants?|valued\s+\w+|"
-    r"sir\s+or\s+madam|sir/madam)\s*(?:[,.!:]|$)|"
+    r"^\W*(?:dear|hi|hello|hey|greetings)\s+(?:user|users|customers?|valued\s+\w+)\s*(?:[,.!:]|$)|"
     r"^\W*(?:안녕하세요[,.!\s]*)?(?:회원님들|고객님)", re.I)
 # "Dear all" and "Hi everyone" are a group ask when a small group is on the
 # mail; sent to the user alone (Bcc) or to a crowd, it is a broadcast.
