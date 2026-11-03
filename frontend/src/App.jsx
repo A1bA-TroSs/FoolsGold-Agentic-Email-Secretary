@@ -19,7 +19,7 @@ import Calendar, { DayPanel, useCalendar, todayIso } from './components/Calendar
 import Splash from './components/Splash.jsx';
 import LogoMenu from './components/LogoMenu.jsx';
 import { SkeletonList, Sweep, SyncStep, ThinkingNote } from './components/Loading.jsx';
-import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, PileIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
+import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, PileIcon, RefreshIcon, ReplyIcon, UndoIcon } from './components/Icons.jsx';
 
 /* Views are a flat list including Settings, not a modal on top of everything
    else. Settings used to be a boolean overlay, which meant clicking a sidebar
@@ -37,6 +37,10 @@ import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDown
    onto is a checklist for today, which is what that icon has always said. */
 const VIEWS = [
   { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: AgendaIcon },
+  /* Replies you owe (A1): direct asks from people, not yet answered, from the
+     last two weeks. Apple Mail clears a row when you reply; Outlook rows stay
+     until you mark them done. */
+  { id: 'respond',  key: 'viewRespond',  hintKey: 'viewRespondHint',  short: 'railRespond',  icon: ReplyIcon },
   /* The pile, and it is a different room from either neighbour -- which is
      the test the removed Today view failed. Priority ranks what to do next
      and shows seven rows; All is the mailbox in date order; this is what
@@ -346,13 +350,14 @@ export default function App() {
       const data = await api.listMail({
         // The muted box hides the bucket chips, so applying a filter the user
         // cannot see (or clear) would silently shrink it.
-        bucket: (view === 'muted' || view === 'done' || view === 'dismissed') ? null : bucketFilter,
+        bucket: (view === 'muted' || view === 'done' || view === 'dismissed' || view === 'respond') ? null : bucketFilter,
         search: search.trim() || undefined,
         sort: view === 'all' ? 'date' : (view === 'done' || view === 'dismissed') ? 'decided' : 'priority',
         muted: view === 'muted',
         // Sorted by the decision, newest first: the tick you want back is the
         // one you just made.
         verdict: view === 'done' ? 'done' : view === 'dismissed' ? 'not_relevant' : undefined,
+        toRespond: view === 'respond',
       });
       /* Not `setMail(data.items)`. Reusing the row objects that did not
          change is what lets the memoised rows stay put through a reload --
@@ -1023,7 +1028,7 @@ export default function App() {
                 </button>
               </div>
 
-              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && view !== 'recap' && <div className="filters">
+              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && view !== 'recap' && view !== 'respond' && <div className="filters">
                 {[
                   { id: null, label: `${t('filterAll')} ${visible.length ? `(${visible.length})` : ''}` },
                   { id: 'action', label: `${t('filterAction')} ${counts.action ? `(${counts.action})` : ''}` },
@@ -1073,6 +1078,7 @@ export default function App() {
                         the same mail -- the exact confusion the removed Today
                         view was deleted for. */}
                     {view === 'priority' && <FirstPriority settings={settings} onSettings={setSettings} />}
+                    {view === 'respond' && <p className="hint" style={{ margin: '4px 12px 8px' }}>{t('respondHelp')}</p>}
                     {view === 'recap' ? null : listLoading && !mail.length
                       ? <SkeletonList />
                       : <MailList items={visible} selectedId={selectedId} cursorId={cursorId}
@@ -1254,7 +1260,9 @@ function Rail({ view, setView, counts, recapCount, logoOpen, onLogo, t, putAwayO
             {id === 'priority' && counts.action ? <span className="badge" /> : null}
             {id === 'recap' && recapCount ? <span className="badge" /> : null}
           </span>
-          <span className="rail-label">{t(short)}</span>
+          <span className="rail-label">
+            {t(short)}{id === 'respond' && counts.to_respond ? ` ${counts.to_respond}` : ''}
+          </span>
         </button>
       ))}
 
