@@ -2323,7 +2323,7 @@ const ja = {
   noModelsInstalled: 'Ollama にモデルがありません。ひとつ取得してから確認してください。',
   modelNotInstalled: '上の欄のモデルが一覧にないため、ランク付けは構造的な手がかりだけで行われます。',
   refreshModels: 'もう一度確認',
-  viewRespond: "返信待ち",
+  viewRespond: "要返信",
   viewRespondHint: "あなた宛てで、まだ返信していない依頼のあるメール",
   railRespond: "返信",
   respondHelp: "過去 14 日間に人からあなた宛てに直接届き、質問や依頼があってまだ返信していないメールです。Apple メールで返信すると自動で消えます。Outlook のメールは返信後に完了にしてください。",
