@@ -171,7 +171,7 @@ def test_a_blocked_mail_folder_is_not_measured(client, monkeypatch):
     client.post("/api/quality/sample", json={"n": 40})
     label_all(client, {f"m{i}": "action" for i in range(40)})
     apple = client.get("/api/quality/score").json()["apple"]
-    assert apple["measured"] is False and apple["reason"] == "no_index"
+    assert apple["measured"] is False and apple["reason"] == "no_access"
 
 
 def test_the_score_card_carries_numbers_only(client, box):
@@ -192,3 +192,22 @@ def test_the_score_card_carries_numbers_only(client, box):
         assert all(v is None or isinstance(v, (int, float)) for v in d.values())
     # Same install, same id; never derived from the mail.
     assert client.get("/api/quality/export").json()["install_id"] == card["install_id"]
+
+
+def test_a_mis_pressed_label_can_be_taken_back(client):
+    client.post("/api/quality/sample", json={"n": 5})
+    first = client.get("/api/quality/next").json()["item"]["email_id"]
+    label_all(client, {first: "noise"})
+    assert client.get("/api/quality/next").json()["item"]["email_id"] != first
+    r = client.post("/api/quality/undo", json={"email_id": first})
+    assert r.status_code == 200 and r.json()["labelled"] == 0
+    assert client.get("/api/quality/next").json()["item"]["email_id"] == first
+    assert client.post("/api/quality/undo", json={"email_id": first}).status_code == 404
+
+
+def test_the_card_says_how_many_emails_apple_was_measured_on(client, box):
+    client.post("/api/quality/sample", json={"n": 40})
+    label_all(client, {f"m{i}": "action" for i in range(40)})
+    envelope(box, {100 + i: 1 for i in range(20)})
+    card = client.get("/api/quality/export").json()
+    assert card["apple"]["measured"] is True and card["apple"]["matched"] == 20
