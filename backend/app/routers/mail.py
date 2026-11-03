@@ -294,9 +294,6 @@ def clear_feedback(email_id: str) -> dict:
     return {"email_id": email_id, "verdict": None}
 
 
-# Declared above `/{email_id}` on purpose: FastAPI matches in declaration order,
-# and a single-segment path registered after it would be swallowed as an email
-# id. `/digest/today` escapes that by having two segments; this one does not.
 @router.get("/report")
 def morning_report() -> dict:
     """The morning report (F6): replies owed, what is due, what was missed,
@@ -313,6 +310,9 @@ def morning_report_opened() -> dict:
     return report.mark_opened()
 
 
+# Declared above `/{email_id}` on purpose: FastAPI matches in declaration order,
+# and a single-segment path registered after it would be swallowed as an email
+# id. `/digest/today` escapes that by having two segments; this one does not.
 @router.get("/recap")
 def recap_card(force: bool = False) -> dict:
     """What piled up since the user last looked.
