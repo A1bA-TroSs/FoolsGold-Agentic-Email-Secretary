@@ -29,17 +29,25 @@ from typing import Any
 from . import cues, db, priority
 
 WINDOW_DAYS = 14
-_CLOSED = ("done", "not_relevant")
+# The verdicts the app treats as dismissed (App.jsx DISMISSED, plus not relevant).
+_CLOSED = ("done", "not_relevant", "not_important")
 
 # A "?" inside a link (`...?usp=sharing`) asks nothing.
 _URL = re.compile(r"(?:https?://|www\.)\S+|<[^>\s]+>", re.I)
-# A signature starts at "-- " or a common sign-off line; links and phone
-# numbers below it are not part of the ask.
-_SIGNATURE = re.compile(r"\n(?:--\s*\n|(?:best|regards|thanks|cheers|sent from my)\b[^\n]*\n)", re.I)
+# A signature starts at "-- " or at a sign-off standing alone on its line
+# ("Thanks,", "Best regards", "감사합니다."). A sentence that merely starts
+# with "Thanks for ..." is body text, and the ask below it still counts.
+_SIGNATURE = re.compile(
+    r"\n(?:--[ \t]*|(?:best|best regards|kind regards|warm regards|regards|thanks|thank you|"
+    r"many thanks|thanks again|cheers|sincerely|sent from my [^\n]*|감사합니다|고맙습니다)[ \t]*[,.!]?[ \t]*)(?:\n|$)",
+    re.I)
 # Asks written without a question mark: "Can you send the slides by Friday."
 # and the polite Korean question ending "가능하실까요." / "괜찮으신가요."
-_EN_ASK = re.compile(r"\b(?:can|could|would|will) you\b|\bplease\b|\blet me know\b", re.I)
-_KO_QUESTION = re.compile(r"(?:까요|나요|가요|습니까|ㄹ까요|실지요|는지요)\s*[.?？!]?\s*(?:$|\n)", re.M)
+# "Please find attached" and "please see below" hand something over; they ask nothing.
+_EN_ASK = re.compile(r"\b(?:can|could|would|will) you\b|\bplease\b(?!\s+(?:find|see|note)\b)|"
+                     r"\blet me know\b", re.I)
+# Bare 가요 is also a statement ("내일 회사에 가요."), so only 신가요/인가요/는가요.
+_KO_QUESTION = re.compile(r"(?:까요|나요|[신인는]가요|습니까|실지요|는지요)\s*[.?？!]?\s*(?:$|\n)", re.M)
 
 
 def _asks(email: dict[str, Any], bucket: str | None) -> str | None:
