@@ -118,6 +118,19 @@ def mailbox_kind(name: str) -> str | None:
     return _KIND_OF.get(_norm_name(name))
 
 
+def excluded_kinds(chain: list[str]) -> set[str]:
+    """The excluded kinds a mailbox path falls under. Junk, Sent, Drafts,
+    Trash and Outbox anywhere in the path (Gmail nests them under [Gmail]);
+    Archive only as the account's top mailbox, so a user's own "Projects/보관"
+    folder is kept."""
+    kinds = set()
+    for depth, name in enumerate(chain):
+        kind = mailbox_kind(name)
+        if kind and (kind != "archive" or depth == 0):
+            kinds.add(kind)
+    return kinds
+
+
 def is_inbox(name: str) -> bool:
     return _norm_name(name) in _INBOX_NAMES
 
@@ -179,7 +192,7 @@ def _mailbox_chain(path: Path, root: Path) -> list[str]:
 def _wanted_mailbox(chain: list[str], inbox_only: bool) -> bool:
     if not chain:
         return False
-    if any(mailbox_kind(name) for name in chain):
+    if excluded_kinds(chain):
         return False
     if inbox_only:
         return is_inbox(chain[0])
@@ -663,7 +676,7 @@ def _importance(message: email.message.Message) -> str:
 # --------------------------------------------------------------------------
 
 SENT_MAILBOXES = _MAILBOX_KINDS["sent"]
-_AFFINITY_CACHE: dict[str, tuple[float, dict[str, int]]] = {}
+_AFFINITY_CACHE: dict[str, tuple[float, dict[str, int], tuple[int, float]]] = {}
 _AFFINITY_TTL_SECONDS = 6 * 3600
 _AFFINITY_LOOKBACK_DAYS = 365
 _AFFINITY_MAX_FILES = 3000
@@ -699,15 +712,18 @@ def build_correspondent_affinity(root: Path, force: bool = False) -> dict[str, i
     key = str(root)
     cached = _AFFINITY_CACHE.get(key)
     now = datetime.now(timezone.utc).timestamp()
-    if cached and not force and (now - cached[0]) < _AFFINITY_TTL_SECONDS:
-        return cached[1]
-
     cutoff = now - _AFFINITY_LOOKBACK_DAYS * 86400
-    counts: dict[str, int] = {}
+    # The stat walk is cheap; the header reads are not. Re-read only when the
+    # Sent folder changed, so a reply sent a minute ago reaches the sent log
+    # (and leaves To respond) on the next sync instead of hours later.
     try:
         files = [f for f in _iter_sent_files(root) if f[1] >= cutoff]
     except (PermissionError, OSError):
         files = []
+    stamp = (len(files), max((m for _, m in files), default=0.0))
+    if cached and not force and cached[2] == stamp and (now - cached[0]) < _AFFINITY_TTL_SECONDS:
+        return cached[1]
+    counts: dict[str, int] = {}
     files.sort(key=lambda f: f[1], reverse=True)
 
     parser = BytesHeaderParser(policy=email.policy.default)
@@ -744,7 +760,7 @@ def build_correspondent_affinity(root: Path, force: bool = False) -> dict[str, i
         db.record_sent(sent)
     except Exception:  # noqa: BLE001 - the log is a hint; affinity must not fail over it
         pass
-    _AFFINITY_CACHE[key] = (now, counts)
+    _AFFINITY_CACHE[key] = (now, counts, stamp)
     return counts
 
 
