@@ -113,3 +113,24 @@ def test_the_mail_list_view_and_rail_count_agree(client):
     plain = client.get("/api/mail").json()["items"]
     assert all("respond_reason" not in i for i in plain)
     assert {i["id"] for i in plain} >= {"m1", "m3"}
+
+
+# Round 1 review: a "?" in a link or a signature asks nothing; a question in the
+# subject, a polite Korean ending and "Can you ..." without "?" all ask.
+@pytest.mark.parametrize("case, email, expected", [
+    ("link", mail(body_text="Here is the doc: https://docs.google.com/d/1?usp=sharing"), None),
+    ("signature link", mail(body_text="Notes attached.\n\nBest,\nKim\nhttps://uni.edu/p?id=3"), None),
+    ("subject question", mail(subject="Are you free Tuesday?", body_text="See below."), "question"),
+    ("reply subject repeats", mail(subject="Re: Are you free Tuesday?", body_text="Noted."), None),
+    ("polite korean", mail(subject="일정", body_text="다음 주 화요일 가능하실까요."), "question"),
+    ("can you, no mark", mail(body_text="Can you send the slides by Friday."), "request"),
+])
+def test_round_one_cases(case, email, expected):
+    assert why(email) == expected, case
+
+
+def test_an_active_snooze_hides_the_mail_until_it_ends():
+    later = (NOW + timedelta(days=1)).isoformat()
+    earlier = (NOW - timedelta(hours=1)).isoformat()
+    assert why(mail(), verdict="snoozed", snooze_until=later) is None
+    assert why(mail(), verdict="snoozed", snooze_until=earlier) == "question"
