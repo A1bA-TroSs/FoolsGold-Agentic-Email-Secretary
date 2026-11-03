@@ -73,12 +73,57 @@ def _fda_status() -> "SourceStatus":
                         extra={"detail_key": "fdaNeeded",
                                "detail_vars": {"launcher": _launcher()}})
 
-# Mailboxes we never want in a priority inbox.
-EXCLUDED_MAILBOXES = {
-    "trash", "deleted messages", "deleted items", "junk", "junk e-mail", "spam",
-    "sent", "sent messages", "sent items", "drafts", "outbox", "archive",
-    "notes", "rss",
+# Mailboxes we never want in a priority inbox, by kind. Apple Mail names the
+# standard mailboxes in the system language, and the folder name on disk is
+# that localised name (Danny's Mac, 2026-11-03: 받은 편지함, 정크 메일, 보낸 편지함).
+# An English-only list let 141 junk mails and 82 of his own sent mails into the
+# inbox views and hid his Sent folder from the correspondent walk.
+_MAILBOX_KINDS: dict[str, set[str]] = {
+    "junk": {"junk", "junk e-mail", "junk email", "spam", "bulk mail",
+             "정크 메일", "정크메일", "스팸", "스팸 메일", "迷惑メール", "迷惑メッセージ",
+             "垃圾邮件", "垃圾郵件", "垃圾信件"},
+    "sent": {"sent", "sent messages", "sent items", "sent mail",
+             "보낸 편지함", "보낸편지함", "보낸 메일", "送信済み", "送信済みメール",
+             "送信済みメッセージ", "送信済みアイテム", "已发送", "已发送邮件", "已傳送",
+             "已傳送郵件", "寄件備份"},
+    "drafts": {"drafts", "draft", "임시 보관함", "임시보관함", "下書き", "草稿", "草稿箱"},
+    "trash": {"trash", "deleted messages", "deleted items", "bin", "휴지통", "지운 편지함",
+              "ゴミ箱", "削除済み", "削除済みアイテム", "废纸篓", "已删除", "已删除邮件",
+              "垃圾桶", "已刪除", "已刪除郵件"},
+    "archive": {"archive", "보관", "보관함", "아카이브", "アーカイブ", "归档", "歸檔", "封存"},
+    "outbox": {"outbox", "보낼 편지함", "送信トレイ", "送信箱", "发件箱", "寄件匣"},
+    "other": {"notes", "rss"},
 }
+# One list of localised Sent and Drafts names for the whole app: the IMAP
+# folder finder's lists are merged in rather than kept as a second copy.
+from ..transports.imap_folders import DRAFTS_NAMES as _IMAP_DRAFTS, SENT_NAMES as _IMAP_SENT  # noqa: E402
+_MAILBOX_KINDS["sent"] |= set(_IMAP_SENT)
+_MAILBOX_KINDS["drafts"] |= set(_IMAP_DRAFTS)
+_KIND_OF = {unicodedata.normalize("NFC", name).casefold(): kind
+            for kind, names in _MAILBOX_KINDS.items() for name in names}
+_INBOX_NAMES = {"inbox", "받은 편지함", "받은편지함", "受信", "受信トレイ", "受信箱",
+                "收件箱", "收件匣"}
+
+
+def _norm_name(name: str) -> str:
+    # macOS file names are often NFD; a Korean name read from disk does not
+    # equal the same name typed in source until both are NFC.
+    return " ".join(unicodedata.normalize("NFC", name or "").casefold().split())
+
+
+def mailbox_kind(name: str) -> str | None:
+    """"junk", "sent", "drafts", "trash", "archive", "outbox" (or "other" for
+    Notes and RSS) for a standard mailbox in any of the languages above;
+    None for the inbox and the user's own folders."""
+    return _KIND_OF.get(_norm_name(name))
+
+
+def is_inbox(name: str) -> bool:
+    return _norm_name(name) in _INBOX_NAMES
+
+
+# Kept for callers that test a single name; every kind is excluded.
+EXCLUDED_MAILBOXES = set(_KIND_OF)
 
 # Apple Mail's flags bitfield, as stored in the .emlx plist.
 FLAG_READ = 1 << 0
@@ -134,10 +179,10 @@ def _mailbox_chain(path: Path, root: Path) -> list[str]:
 def _wanted_mailbox(chain: list[str], inbox_only: bool) -> bool:
     if not chain:
         return False
-    if any(name.strip().lower() in EXCLUDED_MAILBOXES for name in chain):
+    if any(mailbox_kind(name) for name in chain):
         return False
     if inbox_only:
-        return chain[0].strip().lower() == "inbox"
+        return is_inbox(chain[0])
     return True
 
 
@@ -617,7 +662,7 @@ def _importance(message: email.message.Message) -> str:
 # correspondent affinity
 # --------------------------------------------------------------------------
 
-SENT_MAILBOXES = {"sent", "sent messages", "sent items"}
+SENT_MAILBOXES = _MAILBOX_KINDS["sent"]
 _AFFINITY_CACHE: dict[str, tuple[float, dict[str, int]]] = {}
 _AFFINITY_TTL_SECONDS = 6 * 3600
 _AFFINITY_LOOKBACK_DAYS = 365
@@ -630,7 +675,7 @@ def _iter_sent_files(root: Path) -> Iterator[tuple[Path, float]]:
         if os.path.basename(dirpath) != "Messages":
             continue
         chain = _mailbox_chain(Path(dirpath), root)
-        if not chain or chain[0].strip().lower() not in SENT_MAILBOXES:
+        if not chain or not any(mailbox_kind(name) == "sent" for name in chain):
             continue
         for name in filenames:
             if name.endswith(".emlx"):
@@ -666,6 +711,7 @@ def build_correspondent_affinity(root: Path, force: bool = False) -> dict[str, i
     files.sort(key=lambda f: f[1], reverse=True)
 
     parser = BytesHeaderParser(policy=email.policy.default)
+    sent: list[dict[str, Any]] = []
     for path, _mtime in files[:_AFFINITY_MAX_FILES]:
         try:
             with open(path, "rb") as handle:
@@ -678,14 +724,38 @@ def build_correspondent_affinity(root: Path, force: bool = False) -> dict[str, i
         try:
             headers = parser.parsebytes(head)
             values = headers.get_all("To", []) + headers.get_all("Cc", [])
+            recipients = []
             for _name, address in email.utils.getaddresses([str(v) for v in values]):
                 if address:
                     counts[address.lower()] = counts.get(address.lower(), 0) + 1
+                    recipients.append(address.lower())
+            sent.append({"key": str(path), "subject": str(headers.get("Subject") or ""),
+                         "sent_at": _header_iso(headers.get("Date"), _mtime),
+                         "recipients": recipients,
+                         "from_name": email.utils.parseaddr(str(headers.get("From") or ""))[0],
+                         "from_address": email.utils.parseaddr(str(headers.get("From") or ""))[1]})
         except Exception:  # noqa: BLE001
             continue
 
+    # The same walk feeds the sent log (A1: a reply anywhere in a thread
+    # answers it). Only a hashed subject key, the time and the recipients are
+    # kept -- see db.record_sent.
+    try:
+        db.record_sent(sent)
+    except Exception:  # noqa: BLE001 - the log is a hint; affinity must not fail over it
+        pass
     _AFFINITY_CACHE[key] = (now, counts)
     return counts
+
+
+def _header_iso(value: Any, fallback: float) -> str:
+    try:
+        dt = email.utils.parsedate_to_datetime(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    except Exception:  # noqa: BLE001
+        return datetime.fromtimestamp(fallback, timezone.utc).isoformat()
 
 
 class AppleMailSource(MailSource):
@@ -821,6 +891,7 @@ class AppleMailSource(MailSource):
                 "or set the path manually in Settings."
             )
 
+        db.purge_excluded_folders()
         days = days if days is not None else int(db.get_setting("sync_days", "30") or 30)
         max_messages = max_messages if max_messages is not None else int(
             db.get_setting("sync_max_messages", "300") or 300

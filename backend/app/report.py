@@ -30,6 +30,9 @@ from . import db, recap, relevance, to_respond
 
 DEADLINE_BACK_DAYS = 2      # same grace as relevance.DATED_ASK_GRACE_DAYS
 DEADLINE_AHEAD_DAYS = 7
+# A deadline read out of mail older than this is not "due soon", whatever date
+# came out of it (Danny's 2022 seminar notice read as due this week).
+DEADLINE_MAIL_MAX_AGE_DAYS = 60
 MISSED_AFTER_HOURS = 24
 MISSED_WITHIN_DAYS = 7
 _CLOSED = ("done", "not_relevant", "not_important")
@@ -89,7 +92,9 @@ def when(deadline: str, today: date) -> str:
 def deadlines(today: date, now: datetime, shown: set[str]) -> list[dict[str, Any]]:
     lo = (today - timedelta(days=DEADLINE_BACK_DAYS)).isoformat()
     hi = (today + timedelta(days=DEADLINE_AHEAD_DAYS)).isoformat()
-    rows = _open_rows("c.deadline IS NOT NULL AND substr(c.deadline, 1, 10) BETWEEN ? AND ?", (lo, hi))
+    oldest = (now - timedelta(days=DEADLINE_MAIL_MAX_AGE_DAYS)).isoformat()
+    rows = _open_rows("c.deadline IS NOT NULL AND substr(c.deadline, 1, 10) BETWEEN ? AND ? "
+                      "AND datetime(e.received_at) >= datetime(?)", (lo, hi, oldest))
     rows = [r for r in rows if r["id"] not in shown and not _snoozed(r, now)]
     rows.sort(key=lambda r: (r["deadline"][:10], -(datetime.fromisoformat(
         (r.get("received_at") or "1970-01-01").replace("Z", "+00:00")).timestamp())))

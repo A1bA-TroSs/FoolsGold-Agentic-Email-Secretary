@@ -43,6 +43,15 @@ def known_identities() -> list[str]:
             "NFC", (row["folder"] or "").split("/")[-1]).strip().lower()
         if leaf in SENT_NAMES and row["a"] not in out:
             out.append(row["a"])
+    # Sent rows are no longer kept in the mail cache (they were never inbox
+    # mail); the sent log keeps the address each was sent from.
+    with db.connect() as conn:
+        logged = conn.execute(
+            "SELECT from_address AS a, COUNT(*) AS n FROM sent_log WHERE from_address LIKE '%@%' "
+            "GROUP BY from_address ORDER BY n DESC").fetchall()
+    for row in logged:
+        if row["a"] not in out:
+            out.append(row["a"])
     return out
 
 
