@@ -35,12 +35,13 @@ export const api = {
   login: (email) => request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email }) }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
 
-  listMail: ({ bucket, search, sort = 'priority', muted = false, verdict } = {}) => {
+  listMail: ({ bucket, search, sort = 'priority', muted = false, verdict, toRespond = false } = {}) => {
     const q = new URLSearchParams({ sort });
     if (bucket) q.set('bucket', bucket);
     if (search) q.set('search', search);
     if (muted) q.set('muted', 'true');
     if (verdict) q.set('verdict', verdict);
+    if (toRespond) q.set('to_respond', 'true');
     return request(`/api/mail?${q}`);
   },
 

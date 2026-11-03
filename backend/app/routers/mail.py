@@ -40,9 +40,20 @@ def list_mail(
     sort: str = Query("priority", pattern="^(priority|date|decided)$"),
     muted: bool = Query(False, description="show only mail from muted senders"),
     verdict: str | None = Query(None, description="show only mail carrying this verdict"),
+    to_respond: bool = Query(False, description="show only replies the user owes (A1)"),
     limit: int = Query(200, le=1000),
 ) -> dict:
     where, params = [], []
+    from .. import to_respond as owed_mod
+    owed = owed_mod.owed()
+    reasons = {o["id"]: o["reason"] for o in owed}
+    if to_respond:
+        # The same rows as GET /to-respond, in the list's own shape so the
+        # mail list, the reading pane and the done / not relevant actions
+        # work unchanged.
+        where.append(f"e.id IN ({','.join('?' * len(reasons)) or 'NULL'})")
+        params.extend(reasons)
+        sort = "date"
     # A verdict filter is a view of the user's own decisions, so it is the one
     # place the mute filter does not apply. Muting a correspondent tomorrow must
     # not erase the fact that you finished something of theirs today -- the
@@ -97,11 +108,15 @@ def list_mail(
             ).fetchall()
         }
 
+    counts["to_respond"] = len(owed)
+
     now = datetime.now(timezone.utc)
     items = []
     for row in rows:
         item = dict(row)
         item["matched"] = [m for m in (item.get("matched") or "").split(",") if m]
+        if to_respond and item["id"] in reasons:
+            item["respond_reason"] = reasons[item["id"]]
         # A snooze that has expired is no longer a snooze.
         if item.get("verdict") == "snoozed" and item.get("snooze_until"):
             try:
@@ -120,7 +135,7 @@ def list_mail(
     # and would quietly lose rows. The ranked list is the one surface whose job
     # is "what should I look at", and there a second copy of an announcement
     # answers nothing the first did not.
-    if sort == "priority" and not search and not muted and verdict is None:
+    if sort == "priority" and not search and not muted and verdict is None and not to_respond:
         items = dedup.collapse(
             items,
             eligible=lambda r: (r.get("verdict") or "") in ("", "pinned"),
@@ -129,6 +144,15 @@ def list_mail(
 
     return {"items": items, "counts": counts, "ai": pipeline.ai_status(),
             "sync": sync_state()}
+
+
+@router.get("/to-respond")
+def to_respond() -> dict:
+    """Replies the user owes (roadmap A1): direct asks from people, not yet
+    answered, from the last two weeks. A view only; ranking is unchanged."""
+    from .. import to_respond as owed
+    items = owed.owed()
+    return {"items": items, "count": len(items), "window_days": owed.WINDOW_DAYS}
 
 
 @router.get("/{email_id}/part/{cid}")
