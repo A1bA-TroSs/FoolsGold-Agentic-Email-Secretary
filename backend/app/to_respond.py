@@ -208,9 +208,29 @@ def _broadcast(email: dict[str, Any], text: str, me: str) -> bool:
     if len(text) < 300 and _PLACEHOLDER.search(text):
         return True
     m = _OPENING.match(first)
-    if m and _names_another_recipient(m.group(1), email, me):
+    if m and _names_another_recipient(m.group(1), email, me) and _only_them(m.group(1), text, me):
         return True              # "Dion, please follow up" with dion@ also on the mail
     return False
+
+
+# A name used to address someone: at the start of a line or a sentence, or
+# in a list ("Dion, Danny, Kenneth,"), followed by a comma or colon.
+_VOCATIVE = re.compile(r"(?:^|[.!?]\s+|\n|,\s*)\s*(?:(?i:hi|hello|dear|hey)\s+)?([A-Z][a-z'-]{1,20})\s*[,:]")
+_SEVERAL = re.compile(r"\b(?:both|each of you|all of you|everyone|you two|each)\b", re.I)
+
+
+def _only_them(name: str, text: str, me: str) -> bool:
+    """The mail speaks to that one person and nobody else: no second name
+    addressed anywhere, no "both"/"each of you", and no sign of the user's
+    own mailbox name."""
+    named = {v.casefold() for v in _VOCATIVE.findall(text)} - _ROLE_WORDS
+    if named - {name.casefold()}:
+        return False
+    if _SEVERAL.search(text):
+        return False
+    mine = [t for t in re.split(r"[._+-]", (me or "").split("@")[0].casefold()) if len(t) > 2]
+    lowered = text.casefold()
+    return not any(re.search(rf"\b{re.escape(t)}\b", lowered) for t in mine)
 
 
 _ROLE_WORDS = {"team", "all", "lab", "group", "office", "admin", "info", "staff", "students",

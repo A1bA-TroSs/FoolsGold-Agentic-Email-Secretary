@@ -204,6 +204,18 @@ def test_broadcasts_wearing_a_direct_address(case, email):
     assert why(email) is None, case
 
 
+@pytest.mark.parametrize("body", [
+    "Hi Dion,\n\nThanks for the update. Danny, can you send me the numbers by Friday?",
+    "Dion, Danny, Kenneth,\nPlease each send me your section by Friday.",
+    "Dion: please book the room.\nDanny: please prepare the slides.",
+    "Dion, Danny,\n\nCould you both send me your slides by Friday?",
+    "Dion, please follow up with the vendor.\nDanny, could you send the data to me by Friday?",
+])
+def test_a_mail_that_also_asks_the_user_is_kept(body):
+    email = mail(subject="Workshop plan", body_text=body, to_recipients=f'["{ME}", "dion.lee@uni.edu"]')
+    assert why(email) is not None, body
+
+
 def test_an_ask_named_to_another_recipient_is_not_on_the_user():
     email = mail(subject="RE: [CO-OP] SID 20792960", body_text="Dion, Please follow-up : )\nCould you check?",
                  to_recipients=f'["{ME}", "dion.liu@uni.edu"]')
