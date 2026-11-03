@@ -11,7 +11,6 @@ headers first, because they name *you* where To may only name a list.
 """
 from __future__ import annotations
 
-import unicodedata
 
 from .. import db
 from .message import Mailbox, ParentMessage
@@ -25,7 +24,7 @@ def known_identities() -> list[str]:
     construction, whatever the provider and whatever language its folders are
     named in.
     """
-    from ..transports.imap_folders import SENT_NAMES
+    from ..sources.applemail import mailbox_kind
     out: list[str] = []
     configured = (db.get_setting("user_address", "") or "").strip().lower()
     if "@" in configured:
@@ -39,9 +38,8 @@ def known_identities() -> list[str]:
         # filesystem is decomposed, and decomposed Hangul is not equal to the
         # composed constants in SENT_NAMES. Rows written before this fix are
         # still in the database, so normalising here is not redundant.
-        leaf = unicodedata.normalize(
-            "NFC", (row["folder"] or "").split("/")[-1]).strip().lower()
-        if leaf in SENT_NAMES and row["a"] not in out:
+        leaf = (row["folder"] or "").split("/")[-1]
+        if mailbox_kind(leaf) == "sent" and row["a"] not in out:
             out.append(row["a"])
     # Sent rows are no longer kept in the mail cache (they were never inbox
     # mail); the sent log keeps the address each was sent from.
