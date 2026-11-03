@@ -158,7 +158,9 @@ _NO_REPLY = re.compile(  # noqa: E501
     r"\bunmonitored\s+(?:mailbox|inbox|e-?mail\s+address|account)\b|"
     r"(?:^|[.!?]\s+|\n)\s*this\s+is\s+an\s+(?:automated|automatic|auto-generated)\s+(?:message|e-?mail|notification)\b|"
     r"\bthis\s+(?:e-?mail|message|notification)\s+(?:was|is|has\s+been)\s+(?:automatically\s+generated|sent\s+automatically)\b|"
-    r"회신하지\s*마|회신\s*하지\s*마|답장하지\s*마|발신\s*전용|회신이\s*불가|"
+    # Korean notices name the mail itself ("본 메일은 발신 전용입니다", "이 메일에는
+    #회신하지 마십시오"); a person's "회신이 불가하면 알려주세요" is an ask.
+    r"발신\s*전용|(?:본|이)\s*(?:메일|이메일|e-?mail)[^.\n]{0,20}(?:회신|답장)\s*(?:하지\s*마|이\s*불가|되지\s*않)|"
     r"返信しないで|送信専用|请勿回复|請勿回覆", re.I)
 # A greeting to nobody in particular, on the opening line only (a forwarded
 # "Dear all" further down is someone else's broadcast).
@@ -211,6 +213,10 @@ def _broadcast(email: dict[str, Any], text: str, me: str) -> bool:
     return False
 
 
+_ROLE_WORDS = {"team", "all", "lab", "group", "office", "admin", "info", "staff", "students",
+               "everyone", "members", "dept", "department", "committee", "board", "class"}
+
+
 def _names_another_recipient(name: str, email: dict[str, Any], me: str) -> bool:
     """The greeted name is the mailbox name of someone else on this mail
     (jordan@, jordan.liu@). Only positive evidence on the mail itself counts: a
@@ -218,7 +224,8 @@ def _names_another_recipient(name: str, email: dict[str, Any], me: str) -> bool:
     an ask."""
     name = name.casefold()
     mine = set(re.split(r"[._+-]", (me or "").split("@")[0].casefold()))
-    if name in mine:
+    # "Team," to team@ is the user's team being asked, user included.
+    if name in mine or name in _ROLE_WORDS:
         return False
     for addr in _addresses(email) - {me}:
         local = addr.split("@")[0]
