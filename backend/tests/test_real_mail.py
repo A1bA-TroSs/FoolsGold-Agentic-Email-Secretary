@@ -73,7 +73,8 @@ def test_the_sent_walk_finds_a_korean_sent_folder_and_fills_the_sent_log(fresh):
         b"Subject: Re: [CO-OP] SID 12345678 approval\nDate: Wed, 29 Oct 2026 15:27:00 +0800\n\nThanks\n")
     assert applemail.build_correspondent_affinity(root, force=True) == {"robin@uni.edu": 1}
     after = db.sent_after()
-    assert after == {to_respond.subject_key("[CO-OP] SID 12345678 approval"): "2026-10-29T07:27:00+00:00"}
+    assert after == {to_respond.subject_key("[CO-OP] SID 12345678 approval"):
+                     [("2026-10-29T07:27:00+00:00", {"robin@uni.edu"})]}
     assert db.get_setting("user_name", "") == "Sample Student"
 
 
@@ -89,6 +90,7 @@ def stored(i, folder, frm="x@uni.edu", subject="Hello there everyone", name="S")
 
 def test_purge_drops_junk_and_sent_rows_and_keeps_inbox_and_user_folders(fresh):
     db.upsert_emails([stored("inbox", "받은 편지함"), stored("proj", "Projects/2026"),
+                      stored("mine", "Projects/보관"),
                       stored("junk", nfd("정크 메일")), stored("trash", "휴지통"),
                       stored("sent", nfd("보낸 편지함"), frm=ME, name="Sample Student",
                              subject="Re: Visa documents for spring")])
@@ -97,7 +99,7 @@ def test_purge_drops_junk_and_sent_rows_and_keeps_inbox_and_user_folders(fresh):
         conn.commit()
     assert db.purge_excluded_folders() == 3
     with db.connect() as conn:
-        assert {r[0] for r in conn.execute("SELECT id FROM emails")} == {"inbox", "proj"}
+        assert {r[0] for r in conn.execute("SELECT id FROM emails")} == {"inbox", "proj", "mine"}
         assert conn.execute("SELECT COUNT(*) FROM classifications WHERE email_id='junk'").fetchone()[0] == 0
         log = [dict(r) for r in conn.execute("SELECT * FROM sent_log")]
     assert len(log) == 1
@@ -108,6 +110,24 @@ def test_purge_drops_junk_and_sent_rows_and_keeps_inbox_and_user_folders(fresh):
     assert db.purge_excluded_folders() == 0           # idempotent
 
 
+def test_purge_leaves_what_the_user_made(fresh):
+    db.upsert_emails([stored("junk", "정크 메일")])
+    with db.connect() as conn:
+        conn.execute("INSERT INTO tasks (title, due_date, status, email_id, origin) "
+                     "VALUES ('Renamed by me', '2026-11-05', 'open', 'junk', 'email')")
+        conn.execute("INSERT INTO tasks (title, due_date, status, email_id, origin) "
+                     "VALUES ('Done one', '2026-11-01', 'done', 'junk', 'email')")
+        conn.execute("INSERT INTO eval_labels (email_id, bucket) VALUES ('junk', 'noise')")
+        conn.commit()
+    db.purge_excluded_folders()
+    with db.connect() as conn:
+        tasks = {r[0]: r[1] for r in conn.execute("SELECT title, deleted_at FROM tasks")}
+        labels = conn.execute("SELECT COUNT(*) FROM eval_labels").fetchone()[0]
+    assert set(tasks) == {"Renamed by me", "Done one"}        # nothing deleted
+    assert tasks["Renamed by me"] and not tasks["Done one"]   # open one in the removed box
+    assert labels == 1
+
+
 def test_reply_identities_survive_the_purge(fresh):
     db.upsert_emails([stored("sent", "보낸 편지함", frm="alias@alumni.org")])
     db.purge_excluded_folders()
@@ -116,17 +136,26 @@ def test_reply_identities_survive_the_purge(fresh):
 
 # ---------------------------------------------------- answered in the thread
 
+def sent(subject, hours_ago, to=("robin@uni.edu",)):
+    return {to_respond.subject_key(subject): [((NOW - timedelta(hours=hours_ago)).isoformat(), set(to))]}
+
+
 def test_a_reply_in_another_branch_answers_the_thread():
-    sent = {to_respond.subject_key("Re: [CO-OP] SID 12345678 approval"): (NOW - timedelta(hours=2)).isoformat()}
-    email = mail(subject="RE: [CO-OP] SID 12345678 approval", body_text="Could you confirm the form?")
+    email = mail(subject="RE: [CO-OP] SID 12345678 approval", from_address="jordan@uni.edu",
+                 body_text="Could you confirm the form?")
     assert why(email) == "question"
-    assert why(email, sent_after=sent) is None
+    assert why(email, sent_after=sent("Re: [CO-OP] SID 12345678 approval", 2)) is None
     # A reply sent before the mail arrived answers nothing.
-    early = {k: (NOW - timedelta(days=3)).isoformat() for k in sent}
-    assert why(email, sent_after=early) == "question"
+    assert why(email, sent_after=sent("Re: [CO-OP] SID 12345678 approval", 72)) == "question"
 
 
-@pytest.mark.parametrize("subject", ["Question", "Re: hi", "Meeting", "회의", "Fwd: Hello"])
+def test_a_generic_subject_joins_only_when_the_reply_went_to_someone_on_it():
+    email = mail(subject="Meeting request", from_address="other@x.com", body_text="Can we meet Friday?")
+    assert why(email, sent_after=sent("Re: Meeting request", 1, to=("someone@else.com",))) == "question"
+    assert why(email, sent_after=sent("Re: Meeting request", 1, to=("other@x.com",))) is None
+
+
+@pytest.mark.parametrize("subject", ["Question", "Re: hi", "Meeting", "회의", "Fwd: Hello", "[EXTERNAL] RE: Hi"])
 def test_short_subjects_never_join_threads(subject):
     assert to_respond.subject_key(subject) is None
 
@@ -134,7 +163,8 @@ def test_short_subjects_never_join_threads(subject):
 def test_reply_prefixes_in_any_language_share_a_key():
     keys = {to_respond.subject_key(s) for s in (
         "Visa documents for spring", "Re: Visa documents for spring", "RE: Re: visa  documents for spring",
-        "회신: Visa documents for spring", "답장: Fwd: Visa documents for spring")}
+        "회신: Visa documents for spring", "답장: Fwd: Visa documents for spring",
+        "[EXTERNAL] RE: Visa documents for spring", "[외부] 회신: Visa documents for spring")}
     assert len(keys) == 1 and None not in keys
 
 
@@ -157,27 +187,50 @@ def test_broadcasts_wearing_a_direct_address(case, email):
     assert why(email) is None, case
 
 
-def test_an_ask_named_to_someone_else_is_not_on_the_user():
-    email = mail(subject="RE: [CO-OP] SID 12345678", body_text="Jordan,\nPlease follow-up : )\nCould you check?")
-    assert why(email) == "question"                 # name unknown: kept
-    assert why(email, user_name="Sample Student") is None
-    to_me = mail(body_text="Hi Alex,\nCould you send me the draft?")
-    assert why(to_me, user_name="Sample Student") == "question"
-    # Greeted by a Korean name the app does not know: still the user's mail.
-    ko = mail(subject="자료 요청", body_text="길동님,\n내일까지 자료를 보내주시기 바랍니다.")
-    assert why(ko, user_name="Sample Student") == "request"
-    assert why(ko, user_name="홍길동") == "request"
-    assert why(mail(subject="자료", body_text="민수님,\n자료 보내주세요."), user_name="홍길동") is None
+def test_an_ask_named_to_a_known_other_person_is_not_on_the_user():
+    others = {"jordan", "민수"}
+    email = mail(subject="RE: [CO-OP] SID 12345678", body_text="Jordan, Please follow-up : )\nCould you check?")
+    assert why(email) == "question"                 # nobody known: kept
+    assert why(email, others=others) is None
+    assert why(mail(subject="자료", body_text="민수님,\n자료 보내주세요."), others=others) is None
+
+
+@pytest.mark.parametrize("body", [
+    "Sir,\nCould you sign the form?", "Professor,\nCould you sign the form?",
+    "Gildong,\nCould you send the draft?", "Alex,\nCould you send the draft?",
+    "선배님,\n이 부분 설명해주실 수 있을까요?", "팀장님,\n보고서 검토 부탁드립니다.",
+    "길동님,\n내일까지 자료를 보내주시기 바랍니다.",
+])
+def test_titles_and_unknown_names_never_drop_an_ask(body):
+    assert why(mail(subject="요청 Request", body_text=body), others={"jordan", "민수"}) is not None
+
+
+def test_other_people_never_includes_the_user(fresh):
+    db.upsert_emails([stored("a", "INBOX", frm="jordan@uni.edu", name="Jordan LIU"),
+                      stored("b", "INBOX", frm="kim@uni.edu", name="김민수"),
+                      stored("c", "INBOX", frm="you2@uni.edu", name="Sample Kim")])
+    assert to_respond.other_people(ME, "Sample Student") == {"jordan", "김민수", "kim"}
 
 
 @pytest.mark.parametrize("email, expected", [
     (mail(body_text="Thanks,\nCould you send the deck by Friday?"), "question"),
     (mail(body_text="Hi all and Alex,\nCan you join?"), "question"),
+    (mail(body_text="Please do not reply all. Could you send me your slot privately?"), "question"),
+    (mail(body_text="Don't respond to the vendor yet. Can you check the quote with me first?"), "question"),
+    (mail(body_text="The attached report was automatically generated. Can you review it before Monday?"), "question"),
+    (mail(body_text="Hi team,\nCould each of you send me your slides?"), "question"),
+    (mail(body_text="Alex, can you reply to this one?\n\nDear all,\nThe event is on."), "question"),
+    (mail(body_text="Dear all,\nCould you send me your slides?",
+          to_recipients=f'["{ME}", "b@uni.edu", "c@uni.edu"]'), "question"),
     (mail(subject="자료 요청", body_text="안녕하세요.\n내일까지 발표 자료를 보내주시기 바랍니다."), "request"),
     (mail(body_text="Please reply by Friday with your slot."), "request"),
 ])
 def test_real_asks_still_show(email, expected):
-    assert why(email, user_name="Sample Student") == expected
+    assert why(email, others={"jordan"}) == expected
+
+
+def test_dear_all_to_the_user_alone_is_a_broadcast():
+    assert why(mail(body_text="Dear all,\nPlease register by Friday.")) is None
 
 
 # ------------------------------------------------------- deadlines by mail date

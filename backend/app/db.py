@@ -1556,12 +1556,19 @@ def _learn_user_name(names: list[str]) -> None:
     set_setting("user_name", best)
 
 
-def sent_after() -> dict[str, str]:
-    """subject key -> the latest time the user sent mail with that subject."""
+def sent_after() -> dict[str, list[tuple[str, set[str]]]]:
+    """subject key -> every (time, recipients) the user sent with that subject."""
+    out: dict[str, list[tuple[str, set[str]]]] = {}
     with connect() as conn:
-        rows = conn.execute("SELECT subject_key, MAX(sent_at) FROM sent_log "
-                            "WHERE subject_key IS NOT NULL GROUP BY subject_key").fetchall()
-    return {r[0]: r[1] for r in rows}
+        rows = conn.execute("SELECT subject_key, sent_at, recipients FROM sent_log "
+                            "WHERE subject_key IS NOT NULL").fetchall()
+    for key, at, recipients in rows:
+        try:
+            people = {str(a).lower() for a in json.loads(recipients or "[]")}
+        except ValueError:
+            people = set()
+        out.setdefault(key, []).append((at or "", people))
+    return out
 
 
 def purge_excluded_folders() -> int:
@@ -1573,7 +1580,7 @@ def purge_excluded_folders() -> int:
     they were inbox mail. Only the app's own copy is removed; Mail is never
     touched. Sent rows are first written to the sent log, so the fact that the
     user replied survives the purge."""
-    from .sources.applemail import mailbox_kind
+    from .sources.applemail import excluded_kinds
 
     with connect() as conn:
         rows = [dict(r) for r in conn.execute(
@@ -1581,8 +1588,7 @@ def purge_excluded_folders() -> int:
             "to_recipients, cc_recipients FROM emails WHERE folder IS NOT NULL AND folder != ''")]
     doomed, sent = [], []
     for r in rows:
-        kinds = {mailbox_kind(part) for part in str(r["folder"]).split("/")}
-        kinds.discard(None)
+        kinds = excluded_kinds(str(r["folder"]).split("/"))
         if not kinds:
             continue
         doomed.append(r["id"])
@@ -1604,13 +1610,14 @@ def purge_excluded_folders() -> int:
             for start in range(0, len(doomed), 500):
                 chunk = doomed[start:start + 500]
                 marks = ",".join("?" * len(chunk))
-                # What was read out of these rows goes with them: a to-do
-                # extracted from a junk mail is junk. The user's own verdicts
-                # and the learning history are kept.
-                for table in ("classifications", "task_sources", "eval_labels"):
-                    conn.execute(f"DELETE FROM {table} WHERE email_id IN ({marks})", chunk)
-                conn.execute(f"DELETE FROM tasks WHERE email_id IN ({marks}) "
-                             "AND id NOT IN (SELECT task_id FROM task_sources)", chunk)
+                # A to-do read out of a junk mail is junk, but the user may
+                # have edited it: it goes to the removed box (deleted_at), from
+                # which it can be restored, rather than being deleted. Hand
+                # labels, verdicts and the learning history are kept.
+                conn.execute(f"DELETE FROM classifications WHERE email_id IN ({marks})", chunk)
+                conn.execute(f"UPDATE tasks SET deleted_at = ? WHERE email_id IN ({marks}) "
+                             "AND origin = 'email' AND status = 'open' AND deleted_at IS NULL",
+                             (now_iso(), *chunk))
                 conn.execute(f"DELETE FROM emails WHERE id IN ({marks})", chunk)
             conn.commit()
     return len(doomed)
