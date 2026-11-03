@@ -67,10 +67,11 @@ _KO_QUESTION = re.compile(r"(?:까요|나요|[신인는]가요|습니까|실지�
 _PREFIX = re.compile(r"^\s*(?:(?:re|fw|fwd|aw|sv|답장|회신|전달|返信|转发|回复)\s*(?:\[\d+\])?\s*[:：]\s*)+", re.I)
 _GATEWAY_TAG = re.compile(r"^\s*\[(?:external|ext|external sender|외부|외부메일|외부 메일|caution)\]\s*", re.I)
 _MIN_KEY_WEIGHT = 12         # "Question", "Hello", "Re: hi" do not identify a thread
-# Enough on its own to name one thread: a long subject, or one carrying an id
-# or a [TAG]. Anything shorter ("Meeting request", "Quick question") joins a
-# thread only when the reply also went to someone in it.
-_SPECIFIC_WEIGHT = 28
+# Enough on its own to name one thread: a subject carrying an id or a [TAG]
+# ("[CO-OP] SID 20792960"). Length is not enough -- "Request for a meeting
+# next week" is long and generic -- so any other subject joins a thread only
+# when the reply also went to someone on it. Erring this way keeps a mail
+# owed rather than hiding it.
 # An id (a run of digits that is not a bare year) or a [TAG].
 _SPECIFIC_MARK = re.compile(r"\b(?!(?:19|20)\d{2}\b)\d{4,}\b|\[[^\]]+\]")
 
@@ -102,7 +103,7 @@ def subject_key(subject: str | None) -> str | None:
 
 def _specific(subject: str | None) -> bool:
     text = _clean_subject(subject)
-    return _weight(text) >= _SPECIFIC_WEIGHT or bool(_SPECIFIC_MARK.search(text))
+    return bool(_SPECIFIC_MARK.search(text))
 
 
 def _answered(email: dict[str, Any], received: datetime, me: str,

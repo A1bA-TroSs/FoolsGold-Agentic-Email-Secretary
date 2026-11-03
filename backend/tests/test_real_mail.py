@@ -155,13 +155,22 @@ def test_a_generic_subject_joins_only_when_the_reply_went_to_someone_on_it():
     assert why(email, sent_after=sent("Re: Meeting request", 1, to=("other@x.com",))) is None
 
 
+def test_a_long_generic_subject_still_needs_the_reply_to_reach_the_thread():
+    email = mail(subject="Request for a meeting next week", from_address="prof@uni.edu",
+                 body_text="Could we meet on Tuesday?")
+    assert why(email, sent_after=sent("Re: Request for a meeting next week", 1,
+                                      to=("other@corp.com",))) == "question"
+    assert why(email, sent_after=sent("Re: Request for a meeting next week", 1,
+                                      to=("prof@uni.edu",))) is None
+
+
 def test_a_forward_is_not_a_reply():
     ask = mail(subject="Draft paper for NeurIPS submission review", from_address="prof@uni.edu",
                body_text="Could you review the draft?")
     assert why(ask, sent_after=sent("Fwd: Draft paper for NeurIPS submission review", 1,
                                     to=("friend@gmail.com",))) == "question"
     assert why(ask, sent_after=sent("Fwd: Draft paper for NeurIPS submission review", 1,
-                                    to=("prof@uni.edu",))) is None
+                                    to=("prof@uni.edu",))) is None   # forwarded back to the thread
 
 
 def test_a_year_is_not_an_id():
