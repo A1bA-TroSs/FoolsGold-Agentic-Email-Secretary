@@ -34,6 +34,8 @@ export default function QualityCheck() {
   const [score, setScore] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [last, setLast] = useState(null);       // email id of the last saved label
+  const [note, setNote] = useState('');
 
   const load = useCallback(async () => {
     try { setState(await api.qualityNext()); } catch (e) { setError(e.message); }
@@ -41,12 +43,13 @@ export default function QualityCheck() {
   useEffect(() => { load(); }, [load]);
 
   async function start() {
-    setBusy(true); setError('');
+    setBusy(true); setError(''); setNote('');
     try {
-      await api.qualitySample();
+      const r = await api.qualitySample();
       const s = await api.qualityNext();
       setState(s);
       setLabelling(Boolean(s.item));
+      if (!s.item && r.sampled === 0) setNote(t('qcNoMore'));
       reset();
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
@@ -59,12 +62,26 @@ export default function QualityCheck() {
     try {
       await api.qualityLabel({ email_id: state.item.email_id, bucket: a.bucket,
                                addressed: a.addressed, deadline: deadline || null });
+      setLast(state.item.email_id);
       const s = await api.qualityNext();
       setState(s);
       reset();
       if (!s.item) { setLabelling(false); setScore(await api.qualityScore()); }
     } catch (e) { setError(e.message); } finally { setBusy(false); }
   }, [state]);
+
+  // Take back the last saved label (a mis-pressed key); it is asked again.
+  const undo = useCallback(async () => {
+    if (!last) return;
+    setBusy(true); setError('');
+    try {
+      await api.qualityUndo(last);
+      setLast(null);
+      setState(await api.qualityNext());
+      setLabelling(true);
+      reset();
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  }, [last]);
 
   const choose = useCallback((which, value) => {
     const a = { ...answer, [which]: value };
@@ -77,21 +94,24 @@ export default function QualityCheck() {
     }
   }, [answer, save]);
 
-  // Single keys while labelling. Ignored while typing the date.
+  // Single keys while labelling. Ignored while typing the date. Matched on the
+  // physical key (e.code), so the shortcuts still work with a Korean or
+  // Japanese input source on, where e.key is a jamo or "Process".
   useEffect(() => {
     if (!labelling || step === 'date' || busy) return undefined;
     function onKey(e) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const tag = (e.target?.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-      const k = e.key.toLowerCase();
-      if (k === 'escape') { setLabelling(false); return; }
+      if (e.key === 'Escape') { setLabelling(false); return; }
+      if (e.key === 'Backspace' || e.code === 'KeyZ') { e.preventDefault(); undo(); return; }
+      const k = /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
       const map = KEYS[step];
       if (map && k in map) { e.preventDefault(); choose(step, map[k]); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [labelling, step, busy, choose]);
+  }, [labelling, step, busy, choose, undo]);
 
   async function showScore() {
     setError('');
@@ -154,8 +174,9 @@ export default function QualityCheck() {
             ))}
           </div>
         )}
-        <div style={{ marginTop: 10 }}>
+        <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
           <button className="btn ghost" onClick={() => setLabelling(false)}>{t('qcPause')}</button>
+          {last && <button className="btn ghost" disabled={busy} onClick={undo}><kbd>Z</kbd> {t('qcUndo')}</button>}
         </div>
         {error && <p className="compose-error">{error}</p>}
       </div>
@@ -175,9 +196,11 @@ export default function QualityCheck() {
             {total ? t('qcMore') : t('qcStart')}
           </button>
         )}
+        {last && <button className="btn ghost" disabled={busy} onClick={undo}>{t('qcUndo')}</button>}
         {done > 0 && <button className="btn" onClick={showScore}>{t('qcShowScore')}</button>}
         {done > 0 && <button className="btn" onClick={exportCard}>{t('qcExport')}</button>}
       </div>
+      {note && <p className="hint" style={{ marginTop: 6 }}>{note}</p>}
       {done > 0 && <p className="hint" style={{ marginTop: 6 }}>{t('qcExportHelp')}</p>}
       {score && (
         <>
@@ -190,6 +213,8 @@ export default function QualityCheck() {
                 <th>{t('qcColPrecision')}</th>
                 <th>{t('qcColFloor')}</th>
                 <th>{t('qcColApple')}</th>
+                <th>{t('qcColAgree')}</th>
+                <th>{t('qcColDates')}</th>
               </tr>
             </thead>
             <tbody>
@@ -201,6 +226,8 @@ export default function QualityCheck() {
                   <td style={{ textAlign: 'center' }}>{pct(d.fg_act_precision)}</td>
                   <td style={{ textAlign: 'center' }}>{pct(d.floor_act_recall)}</td>
                   <td style={{ textAlign: 'center' }}>{pct(d.apple_act_recall)}</td>
+                  <td style={{ textAlign: 'center' }}>{pct(d.bucket_agreement)}</td>
+                  <td style={{ textAlign: 'center' }}>{pct(d.date_recall)}</td>
                 </tr>
               ))}
             </tbody>

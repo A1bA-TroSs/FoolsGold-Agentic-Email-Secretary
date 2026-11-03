@@ -105,6 +105,7 @@ export const api = {
   qualitySample: (n = 120) => request('/api/quality/sample', { method: 'POST', body: JSON.stringify({ n }) }),
   qualityNext: () => request('/api/quality/next'),
   qualityLabel: (label) => request('/api/quality/label', { method: 'POST', body: JSON.stringify(label) }),
+  qualityUndo: (emailId) => request('/api/quality/undo', { method: 'POST', body: JSON.stringify({ email_id: emailId }) }),
   qualityScore: () => request('/api/quality/score'),
   qualityExport: () => request('/api/quality/export'),
   // Cloud-AI permission. Granting happens only from the consent dialog.

@@ -3,6 +3,7 @@
   POST /api/quality/sample   pick the emails to label (resumable)
   GET  /api/quality/next     the next email to label, without the app's answer
   POST /api/quality/label    save one label
+  POST /api/quality/undo     take back a saved label
   GET  /api/quality/score    per-language numbers, Apple Priority beside them
   GET  /api/quality/export   the numbers-only score card a tester sends back
 """
@@ -45,6 +46,19 @@ def label(body: LabelIn) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Not in the quality-check sample.") from exc
+    return quality.progress()
+
+
+class UndoIn(BaseModel):
+    email_id: str
+
+
+@router.post("/undo")
+def undo(body: UndoIn) -> dict:
+    try:
+        quality.undo(body.email_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="No saved label to take back.") from exc
     return quality.progress()
 
 

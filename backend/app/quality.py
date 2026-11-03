@@ -156,6 +156,17 @@ def save_label(email_id: str, bucket: str, addressed: bool, deadline: str | None
         raise KeyError(email_id)
 
 
+def undo(email_id: str) -> None:
+    """Take back a saved label (a mis-pressed key), so the email is asked again."""
+    with db.connect() as conn:
+        cur = conn.execute(
+            "UPDATE eval_labels SET bucket=NULL, deadline=NULL, addressed=NULL, labelled_at=NULL "
+            "WHERE email_id=? AND bucket IS NOT NULL", (email_id,))
+        conn.commit()
+    if cur.rowcount == 0:
+        raise KeyError(email_id)
+
+
 def labelled() -> list[dict]:
     """Labelled rows joined to their email, as the scorers read them."""
     with db.connect() as conn:
@@ -174,10 +185,14 @@ _EMLX = re.compile(r"^(\d+)(?:\.partial)?\.emlx$")
 
 
 def _mail_root() -> Path | None:
+    """The Apple Mail root, None when there is none. PermissionError (macOS
+    privacy protection) propagates so it is reported as no access."""
     from .sources.applemail import find_mail_root
     try:
         return find_mail_root(db.get_setting("applemail_root", "").strip() or None)
-    except (PermissionError, OSError):
+    except PermissionError:
+        raise
+    except OSError:
         return None
 
 
@@ -188,7 +203,10 @@ def apple_priority(rows: list[dict]) -> tuple[dict[str, bool], str]:
     read-only, so Mail's own file is never opened for writing or locked. The
     `.emlx` file number is `messages.ROWID`; `message_global_data.urgent` is
     the mark (31Carlton7/mac-cli reads the same column for `is:priority`)."""
-    root = _mail_root()
+    try:
+        root = _mail_root()
+    except PermissionError:
+        return {}, "no_access"
     index = root / "MailData" / "Envelope Index" if root else None
     try:
         if index is None or not index.is_file():
@@ -254,7 +272,7 @@ def score() -> dict[str, Any]:
         stored = {r["email_id"]: dict(r) for r in conn.execute(
             "SELECT email_id, bucket, deadline, model FROM classifications")}
     from . import pipeline
-    me = db.get_setting("user_address", "")
+    me = pipeline.user_address()
     floor = {c.email_id: c for c in pipeline._structural_classifications(
         [dict(r, id=r["email_id"]) for r in rows], me)}
     apple, apple_reason = apple_priority(rows)
@@ -346,6 +364,7 @@ def scorecard() -> dict[str, Any]:
         "languages": {lang: {k: d[k] for k in _CARD_KEYS}
                       for lang, d in s["languages"].items() if lang in ("ko", "en", "mixed")},
         "apple": {"measured": bool(s["apple"]["measured"]),
+                  "matched": int(s["apple"]["matched"]),
                   "reason": s["apple"]["reason"] if s["apple"]["reason"] in _REASONS else ""},
     }
 
