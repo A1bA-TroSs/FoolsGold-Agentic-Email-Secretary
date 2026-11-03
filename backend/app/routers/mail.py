@@ -297,6 +297,22 @@ def clear_feedback(email_id: str) -> dict:
 # Declared above `/{email_id}` on purpose: FastAPI matches in declaration order,
 # and a single-segment path registered after it would be swallowed as an email
 # id. `/digest/today` escapes that by having two segments; this one does not.
+@router.get("/report")
+def morning_report() -> dict:
+    """The morning report (F6): replies owed, what is due, what was missed,
+    then the rest of the pile. No model call, nothing sent."""
+    from .. import report
+    return report.build()
+
+
+@router.post("/report/opened")
+def morning_report_opened() -> dict:
+    """The user opened mail from the report today; counted once per day,
+    kept on this machine, and shown only as numbers in the quality export."""
+    from .. import report
+    return report.mark_opened()
+
+
 @router.get("/recap")
 def recap_card(force: bool = False) -> dict:
     """What piled up since the user last looked.

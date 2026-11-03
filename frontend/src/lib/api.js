@@ -75,6 +75,10 @@ export const api = {
      mail from the card. */
   recap: (force = false) => request(`/api/mail/recap?force=${force}`),
   recapSeen: () => request('/api/mail/recap/seen', { method: 'POST' }),
+  /* F6: the morning report. A read, apart from noting today as a day it was
+     shown; `reportOpened` notes a day the user opened mail from it. */
+  report: () => request('/api/mail/report'),
+  reportOpened: () => request('/api/mail/report/opened', { method: 'POST' }),
 
   // --- writing mail -----------------------------------------------------
   // `sendDraft` takes a token and nothing else, mirroring the endpoint. There
