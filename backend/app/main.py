@@ -34,6 +34,12 @@ POLL_SECONDS = 300  # background refresh while the window is open
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # Older versions cached Junk and Sent mail from Macs whose Mail folders are
+    # not in English; drop that copy (Mail itself is untouched).
+    try:
+        db.purge_excluded_folders()
+    except Exception:  # noqa: BLE001 - a cleanup must never stop the app starting
+        pass
     task = asyncio.create_task(_poller())
     try:
         yield

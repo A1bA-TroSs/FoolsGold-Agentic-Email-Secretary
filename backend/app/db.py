@@ -105,6 +105,20 @@ CREATE TABLE IF NOT EXISTS muted_senders (
     created_at TEXT
 );
 
+-- Mail the user sent, as little of it as answers "did I reply in this
+-- thread": a hash of the normalised subject, when, to whom, and from which
+-- of the user's addresses (compose picks the reply identity from it). No
+-- subject text and no body. Filled from the Sent mailbox walk and from sent rows the
+-- folder purge finds in the cache.
+CREATE TABLE IF NOT EXISTS sent_log (
+    id          TEXT PRIMARY KEY,
+    subject_key TEXT,
+    sent_at     TEXT,
+    recipients  TEXT,
+    from_address TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sent_log_key ON sent_log(subject_key);
+
 -- Checklist items the user typed in, as opposed to due dates we read out of
 -- mail. They share the calendar and the gestures; only the origin differs.
 CREATE TABLE IF NOT EXISTS tasks (
@@ -1497,3 +1511,106 @@ def category_evidence() -> list[dict[str, Any]]:
             "signals": int(counts.get(key, 0)),
         })
     return out
+
+
+# --------------------------------------------------------------------------
+# sent log and the folder purge (real-mail fixes, 2026-11-03)
+# --------------------------------------------------------------------------
+
+def record_sent(items: Iterable[dict[str, Any]]) -> int:
+    """Store what the user sent as subject key, time and recipients only.
+
+    Each item has `key` (anything stable for that message: a file path, a row
+    id), `subject`, `sent_at`, `recipients` and optionally `from_name`. The key
+    and the subject are hashed before they are written."""
+    import hashlib
+    import json as _json
+    from .to_respond import subject_key
+
+    rows, names = [], []
+    for it in items:
+        ident = hashlib.sha1(str(it.get("key") or "").encode("utf-8")).hexdigest()
+        rows.append((ident, subject_key(it.get("subject") or ""), it.get("sent_at") or "",
+                     _json.dumps(sorted(set(it.get("recipients") or []))),
+                     (it.get("from_address") or "").lower() or None))
+        if it.get("from_name"):
+            names.append(str(it["from_name"]).strip())
+    if rows:
+        with connect() as conn:
+            conn.executemany("INSERT OR REPLACE INTO sent_log "
+                             "(id, subject_key, sent_at, recipients, from_address) "
+                             "VALUES (?, ?, ?, ?, ?)", rows)
+            conn.commit()
+    _learn_user_name(names)
+    return len(rows)
+
+
+def _learn_user_name(names: list[str]) -> None:
+    """The user's display name, from the From line of their own sent mail,
+    unless they set one. Used to tell an ask on them from an ask on a
+    colleague ("Jordan, please follow up")."""
+    names = [n for n in names if n and "@" not in n]
+    if not names or (get_setting("user_name", "") or "").strip():
+        return
+    best = max(set(names), key=names.count)
+    set_setting("user_name", best)
+
+
+def sent_after() -> dict[str, str]:
+    """subject key -> the latest time the user sent mail with that subject."""
+    with connect() as conn:
+        rows = conn.execute("SELECT subject_key, MAX(sent_at) FROM sent_log "
+                            "WHERE subject_key IS NOT NULL GROUP BY subject_key").fetchall()
+    return {r[0]: r[1] for r in rows}
+
+
+def purge_excluded_folders() -> int:
+    """Drop cached rows that came from Junk, Sent, Drafts, Trash, Archive or
+    Outbox, in any language Apple Mail names them in.
+
+    Earlier versions knew only the English names, so on a Mac whose Mail
+    folders are Korean the cache holds junk and the user's own sent mail as if
+    they were inbox mail. Only the app's own copy is removed; Mail is never
+    touched. Sent rows are first written to the sent log, so the fact that the
+    user replied survives the purge."""
+    from .sources.applemail import mailbox_kind
+
+    with connect() as conn:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT id, folder, subject, from_name, from_address, received_at, "
+            "to_recipients, cc_recipients FROM emails WHERE folder IS NOT NULL AND folder != ''")]
+    doomed, sent = [], []
+    for r in rows:
+        kinds = {mailbox_kind(part) for part in str(r["folder"]).split("/")}
+        kinds.discard(None)
+        if not kinds:
+            continue
+        doomed.append(r["id"])
+        if "sent" in kinds:
+            import json as _json
+            recipients = []
+            for col in ("to_recipients", "cc_recipients"):
+                try:
+                    recipients += [str(a).lower() for a in _json.loads(r[col] or "[]")]
+                except ValueError:
+                    pass
+            sent.append({"key": f"row:{r['id']}", "subject": r["subject"], "sent_at": r["received_at"],
+                         "recipients": recipients, "from_name": r["from_name"],
+                         "from_address": r["from_address"]})
+    if sent:
+        record_sent(sent)
+    if doomed:
+        with connect() as conn:
+            for start in range(0, len(doomed), 500):
+                chunk = doomed[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                # What was read out of these rows goes with them: a to-do
+                # extracted from a junk mail is junk. The user's own verdicts
+                # and the learning history are kept.
+                for table in ("classifications", "task_sources", "eval_labels"):
+                    conn.execute(f"DELETE FROM {table} WHERE email_id IN ({marks})", chunk)
+                conn.execute(f"DELETE FROM tasks WHERE email_id IN ({marks}) "
+                             "AND id NOT IN (SELECT task_id FROM task_sources)", chunk)
+                conn.execute(f"DELETE FROM emails WHERE id IN ({marks})", chunk)
+            conn.commit()
+    return len(doomed)

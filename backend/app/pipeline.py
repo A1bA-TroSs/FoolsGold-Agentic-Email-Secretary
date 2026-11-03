@@ -151,7 +151,9 @@ def _structural_classifications(emails: list[dict[str, Any]], me: str) -> list[C
     for email in emails:
         bucket = priority.structural_bucket(email, me)
         text = f"{email.get('subject','')}\n{email.get('body_text') or email.get('body_preview') or ''}"
-        deadline = priority.extract_deadline(text)
+        # Against the day the mail was sent, not today: "Wed Nov 2" in a 2022
+        # seminar notice is 2022-11-02, not this year's 2 November.
+        deadline = priority.extract_deadline(text, today=priority.mail_day(email))
         out.append(
             Classification(
                 email_id=email["id"],
