@@ -189,6 +189,7 @@ def test_reply_prefixes_in_any_language_share_a_key():
                           body_text="Please do not reply to this email as this mailbox is unmonitored. "
                                     "Please confirm your pickup time.")),
     ("korean do not reply", mail(subject="성적 안내", body_text="본 메일은 발신 전용입니다. 확인 부탁드립니다.")),
+    ("korean notice", mail(subject="성적 안내", body_text="이 메일에는 회신하지 마십시오. 확인 바랍니다.")),
     ("dear user", mail(subject="HKUST Daily Event Alert", from_address="calendar@ust.hk",
                        body_text="HKUST Ucalendar\nDear USER, Don't miss out. Register now and reply to RSVP.")),
     ("dear students", mail(subject="Exchange info session", body_text="Dear students,\nPlease register by Friday.")),
@@ -234,6 +235,9 @@ def test_titles_and_names_never_drop_an_ask(body):
     (mail(body_text="Danny, can you reply to this one?\n\nDear all,\nThe event is on."), "question"),
     (mail(body_text="Dear all,\nCould you send me your slides?",
           to_recipients=f'["{ME}", "b@uni.edu", "c@uni.edu"]'), "question"),
+    (mail(subject="자료", body_text="금요일까지 회신이 불가하면 알려주세요."), "request"),
+    (mail(body_text="Team, please send your slides by Friday.",
+          to_recipients=f'["{ME}", "team@uni.edu"]'), "request"),
     (mail(body_text="Dear colleagues,\nCould you send me your availability?",
           to_recipients=f'["{ME}", "b@uni.edu"]'), "question"),
     (mail(body_text="Our system sends this is an automated message notice weekly; can you check why?"), "question"),
