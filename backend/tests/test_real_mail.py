@@ -164,6 +164,22 @@ def test_a_long_generic_subject_still_needs_the_reply_to_reach_the_thread():
                                       to=("prof@uni.edu",))) is None
 
 
+@pytest.mark.parametrize("subject", ["[문의] 졸업 논문 일정", "[요청] 자료 요청 드립니다",
+                                     "[COMP4211] Question about HW2"])
+def test_a_shared_tag_does_not_join_two_senders(subject):
+    second = mail(subject=subject, from_address="b@x.kr", body_text="Could you check this for me?")
+    assert why(second, sent_after=sent("RE: " + subject, 1, to=("a@x.kr",))) == "question"
+    assert why(second, sent_after=sent("RE: " + subject, 1, to=("b@x.kr",))) is None
+
+
+@pytest.mark.parametrize("greeting", ["Dear Applicant,", "Dear Sir or Madam,"])
+def test_a_form_greeting_to_the_user_alone_is_still_an_ask(greeting):
+    email = mail(subject="Interview invitation", from_address="coordinator@uni.edu",
+                 body_text=greeting + "\nWe are pleased to invite you to an interview. "
+                           "Please reply to confirm one of the slots below by 5 Nov.")
+    assert why(email) is not None
+
+
 def test_a_forward_is_not_a_reply():
     ask = mail(subject="Draft paper for NeurIPS submission review", from_address="prof@uni.edu",
                body_text="Could you review the draft?")
