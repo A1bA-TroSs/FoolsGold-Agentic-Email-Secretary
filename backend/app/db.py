@@ -115,7 +115,8 @@ CREATE TABLE IF NOT EXISTS sent_log (
     subject_key TEXT,
     sent_at     TEXT,
     recipients  TEXT,
-    from_address TEXT
+    from_address TEXT,
+    is_forward  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sent_log_key ON sent_log(subject_key);
 
@@ -1521,53 +1522,42 @@ def record_sent(items: Iterable[dict[str, Any]]) -> int:
     """Store what the user sent as subject key, time and recipients only.
 
     Each item has `key` (anything stable for that message: a file path, a row
-    id), `subject`, `sent_at`, `recipients` and optionally `from_name`. The key
-    and the subject are hashed before they are written."""
+    id), `subject`, `sent_at`, `recipients` and `from_address`. The key and the
+    subject are hashed before they are written; only whether the subject was a
+    forward is kept from it."""
     import hashlib
     import json as _json
-    from .to_respond import subject_key
+    from .to_respond import is_forward, subject_key
 
-    rows, names = [], []
+    rows = []
     for it in items:
         ident = hashlib.sha1(str(it.get("key") or "").encode("utf-8")).hexdigest()
         rows.append((ident, subject_key(it.get("subject") or ""), it.get("sent_at") or "",
                      _json.dumps(sorted(set(it.get("recipients") or []))),
-                     (it.get("from_address") or "").lower() or None))
-        if it.get("from_name"):
-            names.append(str(it["from_name"]).strip())
+                     (it.get("from_address") or "").lower() or None,
+                     int(is_forward(it.get("subject")))))
     if rows:
         with connect() as conn:
             conn.executemany("INSERT OR REPLACE INTO sent_log "
-                             "(id, subject_key, sent_at, recipients, from_address) "
-                             "VALUES (?, ?, ?, ?, ?)", rows)
+                             "(id, subject_key, sent_at, recipients, from_address, is_forward) "
+                             "VALUES (?, ?, ?, ?, ?, ?)", rows)
             conn.commit()
-    _learn_user_name(names)
     return len(rows)
 
 
-def _learn_user_name(names: list[str]) -> None:
-    """The user's display name, from the From line of their own sent mail,
-    unless they set one. Used to tell an ask on them from an ask on a
-    colleague ("Dion, please follow up")."""
-    names = [n for n in names if n and "@" not in n]
-    if not names or (get_setting("user_name", "") or "").strip():
-        return
-    best = max(set(names), key=names.count)
-    set_setting("user_name", best)
-
-
-def sent_after() -> dict[str, list[tuple[str, set[str]]]]:
-    """subject key -> every (time, recipients) the user sent with that subject."""
-    out: dict[str, list[tuple[str, set[str]]]] = {}
+def sent_after() -> dict[str, list[tuple[str, set[str], bool]]]:
+    """subject key -> every (time, recipients, was a forward) the user sent
+    with that subject."""
+    out: dict[str, list[tuple[str, set[str], bool]]] = {}
     with connect() as conn:
-        rows = conn.execute("SELECT subject_key, sent_at, recipients FROM sent_log "
+        rows = conn.execute("SELECT subject_key, sent_at, recipients, is_forward FROM sent_log "
                             "WHERE subject_key IS NOT NULL").fetchall()
-    for key, at, recipients in rows:
+    for key, at, recipients, fwd in rows:
         try:
             people = {str(a).lower() for a in json.loads(recipients or "[]")}
         except ValueError:
             people = set()
-        out.setdefault(key, []).append((at or "", people))
+        out.setdefault(key, []).append((at or "", people, bool(fwd)))
     return out
 
 

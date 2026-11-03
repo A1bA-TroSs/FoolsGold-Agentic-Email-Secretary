@@ -74,8 +74,7 @@ def test_the_sent_walk_finds_a_korean_sent_folder_and_fills_the_sent_log(fresh):
     assert applemail.build_correspondent_affinity(root, force=True) == {"cindy@uni.edu": 1}
     after = db.sent_after()
     assert after == {to_respond.subject_key("[CO-OP] SID 20792960 approval"):
-                     [("2026-10-29T07:27:00+00:00", {"cindy@uni.edu"})]}
-    assert db.get_setting("user_name", "") == "Danny Park"
+                     [("2026-10-29T07:27:00+00:00", {"cindy@uni.edu"}, False)]}
 
 
 # ------------------------------------------------------------- purge and log
@@ -137,7 +136,8 @@ def test_reply_identities_survive_the_purge(fresh):
 # ---------------------------------------------------- answered in the thread
 
 def sent(subject, hours_ago, to=("cindy@uni.edu",)):
-    return {to_respond.subject_key(subject): [((NOW - timedelta(hours=hours_ago)).isoformat(), set(to))]}
+    return {to_respond.subject_key(subject): [((NOW - timedelta(hours=hours_ago)).isoformat(), set(to),
+                                               to_respond.is_forward(subject))]}
 
 
 def test_a_reply_in_another_branch_answers_the_thread():
@@ -153,6 +153,20 @@ def test_a_generic_subject_joins_only_when_the_reply_went_to_someone_on_it():
     email = mail(subject="Meeting request", from_address="other@x.com", body_text="Can we meet Friday?")
     assert why(email, sent_after=sent("Re: Meeting request", 1, to=("someone@else.com",))) == "question"
     assert why(email, sent_after=sent("Re: Meeting request", 1, to=("other@x.com",))) is None
+
+
+def test_a_forward_is_not_a_reply():
+    ask = mail(subject="Draft paper for NeurIPS submission review", from_address="prof@uni.edu",
+               body_text="Could you review the draft?")
+    assert why(ask, sent_after=sent("Fwd: Draft paper for NeurIPS submission review", 1,
+                                    to=("friend@gmail.com",))) == "question"
+    assert why(ask, sent_after=sent("Fwd: Draft paper for NeurIPS submission review", 1,
+                                    to=("prof@uni.edu",))) is None
+
+
+def test_a_year_is_not_an_id():
+    ask = mail(subject="Graduation 2026", from_address="office@uni.edu", body_text="Can you confirm?")
+    assert why(ask, sent_after=sent("Re: Graduation 2026", 1, to=("me.personal@gmail.com",))) == "question"
 
 
 @pytest.mark.parametrize("subject", ["Question", "Re: hi", "Meeting", "회의", "Fwd: Hello", "[EXTERNAL] RE: Hi"])
@@ -178,6 +192,8 @@ def test_reply_prefixes_in_any_language_share_a_key():
     ("dear user", mail(subject="HKUST Daily Event Alert", from_address="calendar@ust.hk",
                        body_text="HKUST Ucalendar\nDear USER, Don't miss out. Register now and reply to RSVP.")),
     ("dear students", mail(subject="Exchange info session", body_text="Dear students,\nPlease register by Friday.")),
+    ("dear user, title line first", mail(subject="Weekly Event Summary",
+                                         body_text="HKUST Ucalendar\nDear USER,\nPlease reply to RSVP.")),
     ("newsletter", mail(subject="Boundless Oct newsletter", from_address="ustboundless@ust.hk",
                         body_text="Read the stories. Can you spare a minute for our survey?")),
     ("html placeholder", mail(subject="Career Center Registration - Confirmation",
@@ -187,29 +203,25 @@ def test_broadcasts_wearing_a_direct_address(case, email):
     assert why(email) is None, case
 
 
-def test_an_ask_named_to_a_known_other_person_is_not_on_the_user():
-    others = {"dion", "민수"}
-    email = mail(subject="RE: [CO-OP] SID 20792960", body_text="Dion, Please follow-up : )\nCould you check?")
-    assert why(email) == "question"                 # nobody known: kept
-    assert why(email, others=others) is None
-    assert why(mail(subject="자료", body_text="민수님,\n자료 보내주세요."), others=others) is None
+def test_an_ask_named_to_another_recipient_is_not_on_the_user():
+    email = mail(subject="RE: [CO-OP] SID 20792960", body_text="Dion, Please follow-up : )\nCould you check?",
+                 to_recipients=f'["{ME}", "dion.liu@uni.edu"]')
+    assert why(email) is None
+    alone = mail(subject="RE: [CO-OP] SID 20792960", body_text="Dion, Please follow-up : )\nCould you check?")
+    assert why(alone) == "question"           # no Dion on the mail: kept
 
 
 @pytest.mark.parametrize("body", [
     "Sir,\nCould you sign the form?", "Professor,\nCould you sign the form?",
     "Yoonsung,\nCould you send the draft?", "Danny,\nCould you send the draft?",
+    "Team,\nCould you send your slides?", "Reminder: could you send the form?",
+    "Hi Kenneth and Danny,\nCould you both review?",
     "선배님,\n이 부분 설명해주실 수 있을까요?", "팀장님,\n보고서 검토 부탁드립니다.",
     "윤성님,\n내일까지 자료를 보내주시기 바랍니다.",
 ])
-def test_titles_and_unknown_names_never_drop_an_ask(body):
-    assert why(mail(subject="요청 Request", body_text=body), others={"dion", "민수"}) is not None
-
-
-def test_other_people_never_includes_the_user(fresh):
-    db.upsert_emails([stored("a", "INBOX", frm="dion@uni.edu", name="Dion LIU"),
-                      stored("b", "INBOX", frm="kim@uni.edu", name="김민수"),
-                      stored("c", "INBOX", frm="danny2@uni.edu", name="Danny Kim")])
-    assert to_respond.other_people(ME, "Danny Park") == {"dion", "김민수", "kim"}
+def test_titles_and_names_never_drop_an_ask(body):
+    email = mail(subject="요청 Request", body_text=body, to_recipients=f'["{ME}", "kenneth.wong@uni.edu"]')
+    assert why(email) is not None, body
 
 
 @pytest.mark.parametrize("email, expected", [
@@ -222,11 +234,14 @@ def test_other_people_never_includes_the_user(fresh):
     (mail(body_text="Danny, can you reply to this one?\n\nDear all,\nThe event is on."), "question"),
     (mail(body_text="Dear all,\nCould you send me your slides?",
           to_recipients=f'["{ME}", "b@uni.edu", "c@uni.edu"]'), "question"),
+    (mail(body_text="Dear colleagues,\nCould you send me your availability?",
+          to_recipients=f'["{ME}", "b@uni.edu"]'), "question"),
+    (mail(body_text="Our system sends this is an automated message notice weekly; can you check why?"), "question"),
     (mail(subject="자료 요청", body_text="안녕하세요.\n내일까지 발표 자료를 보내주시기 바랍니다."), "request"),
     (mail(body_text="Please reply by Friday with your slot."), "request"),
 ])
 def test_real_asks_still_show(email, expected):
-    assert why(email, others={"dion"}) == expected
+    assert why(email) == expected
 
 
 def test_dear_all_to_the_user_alone_is_a_broadcast():
@@ -241,3 +256,31 @@ def test_a_yearless_date_is_read_against_the_day_the_mail_came():
     assert pipeline._structural_classifications([old], ME)[0].deadline == "2022-11-02"
     assert priority.mail_day({"received_at": "2022-10-30T09:00:00+00:00"}) == date(2022, 10, 30)
     assert priority.mail_day({"received_at": ""}) is None
+
+
+def test_a_korean_mail_tree_end_to_end(fresh):
+    """Sync a fake Apple Mail store with NFD Korean folders, then read To respond."""
+    import asyncio
+    root = fresh / "Mail" / "V10"
+    acct = root / "acct"
+    when = "Mon, 02 Nov 2026 09:00:00 +0000"
+
+    def put(folder, n, head):
+        d = acct / f"{nfd(folder)}.mbox" / "Messages"
+        d.mkdir(parents=True, exist_ok=True)
+        raw = (head + f"Date: {when}\nMessage-ID: <{folder}{n}@x>\n\n").encode()
+        body = raw + b"Could you send me the draft by Friday?\n"
+        (d / f"{n}.emlx").write_bytes(str(len(body)).encode() + b"\n" + body)
+
+    put("받은 편지함", 1, f"From: Prof <prof@uni.edu>\nTo: {ME}\nSubject: Draft for the workshop paper\n")
+    put("받은 편지함", 2, f"From: Lab <lab@uni.edu>\nTo: {ME}\nSubject: Re: [LAB] 20260 budget sheet\n")
+    put("정크 메일", 3, f"From: Ads <ads@shop.com>\nTo: {ME}\nSubject: Could you review our offer\n")
+    put("보낸 편지함", 4, f"From: Me <{ME}>\nTo: lab@uni.edu\nSubject: Re: [LAB] 20260 budget sheet\n"
+                       "Date: Tue, 03 Nov 2026 08:00:00 +0000\n")
+    db.set_setting("applemail_root", str(root))
+    from app.sources.applemail import AppleMailSource
+    asyncio.run(AppleMailSource().sync(days=3650))
+    with db.connect() as conn:
+        folders = {r[0] for r in conn.execute("SELECT folder FROM emails")}
+    assert folders == {"받은 편지함"}
+    assert to_respond.subject_key("[LAB] 20260 budget sheet") in db.sent_after()

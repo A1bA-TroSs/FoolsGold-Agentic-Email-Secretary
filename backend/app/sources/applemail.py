@@ -80,7 +80,7 @@ def _fda_status() -> "SourceStatus":
 # inbox views and hid his Sent folder from the correspondent walk.
 _MAILBOX_KINDS: dict[str, set[str]] = {
     "junk": {"junk", "junk e-mail", "junk email", "spam", "bulk mail",
-             "정크 메일", "정크메일", "스팸", "스팸 메일", "迷惑メール", "迷惑メッセージ",
+             "정크 메일", "정크메일", "스팸", "스팸 메일", "迷惑メール", "迷惑メッセージ", "スパム",
              "垃圾邮件", "垃圾郵件", "垃圾信件"},
     "sent": {"sent", "sent messages", "sent items", "sent mail",
              "보낸 편지함", "보낸편지함", "보낸 메일", "送信済み", "送信済みメール",
@@ -126,7 +126,10 @@ def excluded_kinds(chain: list[str]) -> set[str]:
     kinds = set()
     for depth, name in enumerate(chain):
         kind = mailbox_kind(name)
-        if kind and (kind != "archive" or depth == 0):
+        # Archive, and the short English "bin", only as the account's top
+        # mailbox: a user's "Projects/보관" or "Recycling/Bin" folder is theirs.
+        top_only = kind == "archive" or _norm_name(name) == "bin"
+        if kind and (not top_only or depth == 0):
             kinds.add(kind)
     return kinds
 
