@@ -86,6 +86,17 @@ def is_forgotten(deadline: str | None, today: date | None = None) -> bool:
     return (today or date.today()) - due > timedelta(days=FORGET_AFTER_DAYS)
 
 
+def mail_day(email: dict[str, Any]) -> date | None:
+    """The day the mail was received, or None to mean today. Dates without a
+    year, and weekdays, are read against this day."""
+    value = (email.get("received_at") or "")[:10]
+    try:
+        day = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return min(day, date.today())
+
+
 def extract_deadline(text: str, today: date | None = None) -> str | None:
     if not text:
         return None
@@ -155,7 +166,7 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
         # is a must-see kind, or it asks for something by a date it names.
         if cues.always_important(email):
             return "action" if asks else "fyi"
-        if cues.is_dated_ask(email, extract_deadline(f"{subject}\n{body}")):
+        if cues.is_dated_ask(email, extract_deadline(f"{subject}\n{body}", today=mail_day(email))):
             return "action"
         return "noise"
     if asks:
