@@ -134,3 +134,25 @@ def test_an_active_snooze_hides_the_mail_until_it_ends():
     earlier = (NOW - timedelta(hours=1)).isoformat()
     assert why(mail(), verdict="snoozed", snooze_until=later) is None
     assert why(mail(), verdict="snoozed", snooze_until=earlier) == "question"
+
+
+# Round 2 review: a sentence that starts with "Thanks" is not a signature;
+# handing something over is not an ask; a plain Korean statement is not a
+# question; "not important" closes a mail as it does everywhere else.
+@pytest.mark.parametrize("case, email, expected", [
+    ("thanks opener", mail(body_text="Hi,\nThanks for yesterday.\nCould you send the deck by Friday?"), "question"),
+    ("thanks so much", mail(body_text="Hi Alex,\nThanks so much for the update.\nPlease confirm the room booking by Friday."), "request"),
+    ("best news", mail(body_text="Hi,\nBest news: we got the grant!\nCan you confirm the budget?"), "question"),
+    ("sign-off then link", mail(body_text="See you then.\nThanks,\nKim\nhttps://uni.edu/p?id=3"), None),
+    ("korean sign-off", mail(subject="자료", body_text="자료 공유드립니다.\n감사합니다.\nhttps://x.kr/a?b=1"), None),
+    ("please find attached", mail(body_text="Please find attached the minutes from today."), None),
+    ("please see below", mail(body_text="FYI, please see the notes below.\nNo action needed."), None),
+    ("korean statement", mail(subject="일정", body_text="저는 내일 회사에 가요."), None),
+    ("korean polite question", mail(subject="일정", body_text="내일 회의 괜찮으신가요."), "question"),
+])
+def test_round_two_cases(case, email, expected):
+    assert why(email) == expected, case
+
+
+def test_not_important_closes_the_mail():
+    assert why(mail(), verdict="not_important") is None
