@@ -216,12 +216,11 @@ def test_a_mail_that_also_asks_the_user_is_kept(body):
     assert why(email) is not None, body
 
 
-def test_an_ask_named_to_another_recipient_is_not_on_the_user():
-    email = mail(subject="RE: [CO-OP] SID 12345678", body_text="Jordan, Please follow-up : )\nCould you check?",
-                 to_recipients=f'["{ME}", "jordan.liu@uni.edu"]')
-    assert why(email) is None
-    alone = mail(subject="RE: [CO-OP] SID 12345678", body_text="Jordan, Please follow-up : )\nCould you check?")
-    assert why(alone) == "question"           # no Jordan on the mail: kept
+def test_an_opening_name_alone_never_drops_an_ask():
+    # No "addressed to someone else" rule: a greeting cannot be read reliably.
+    email = mail(subject="Workshop", body_text="Jordan, thanks for the notes.\nCan you send me the file?",
+                 to_recipients=f'["{ME}", "jordan.lee@uni.edu"]')
+    assert why(email) == "question"
 
 
 @pytest.mark.parametrize("body", [
