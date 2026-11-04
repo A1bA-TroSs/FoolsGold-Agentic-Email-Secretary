@@ -11,11 +11,11 @@ A macOS email secretary that ranks your inbox and pulls out deadlines, with AI o
 
 **It reads the mail already on your Mac.** The default source parses Apple Mail's local store, so there is no account to connect and no server of ours to trust. A hosted filter such as [SaneBox](https://www.sanebox.com/help/155-how-does-sanebox-work) connects to your mail server instead. macOS asks you to grant Full Disk Access first.
 
-**Ranking works with no AI and no key.** With the default provider, `none`, mail is ranked on deadlines, senders and direct address. Add a model only if you want one: Ollama runs on your Mac, and Anthropic, OpenAI or GitHub Copilot use your own account. A cloud provider receives nothing until you have read who gets what and pressed Allow.
+**Ranking works with no AI and no key.** With the default provider, `none`, mail is ranked on deadlines, senders and direct address. Add a model only if you want one: Ollama runs on your Mac, and Settings can download its model for you; Anthropic, OpenAI or GitHub Copilot use your own account. A cloud provider receives nothing until you have read who gets what and pressed Allow.
 
-**It says why, and what you owe.** [Outlook's Focused Inbox](https://support.microsoft.com/en-us/outlook/mail/focused-inbox-for-outlook) splits mail into two tabs. Fools Gold orders one list, labels rows with a reason such as a deadline or "addressed to you", and puts due dates on a calendar with a checklist per day.
+**It says why, and what you owe.** [Outlook's Focused Inbox](https://support.microsoft.com/en-us/outlook/mail/focused-inbox-for-outlook) splits mail into two tabs. Fools Gold orders one list, labels rows with a reason such as a deadline or "addressed to you", lists the replies you owe, and puts due dates on a calendar with a checklist per day.
 
-Real interface with fixture data, captured in August 2026. It predates the "Piled up" recap and later menu changes.
+Real interface with fixture data, captured in August 2026. It predates the morning report, the To respond list and later menu changes.
 
 ![Priority inbox showing four items that need attention, with deadlines and reasons, beside a briefing of what is crucial today.](docs/screenshot-gold.png)
 
@@ -37,12 +37,15 @@ npm start
 
 ## What it does
 
-- Priority list, all-mail list and a "Piled up" recap of what arrived while you were away
-- To-dos read from message bodies, when a model is connected; deadlines are also found without one
+- Priority list and all-mail list
+- A morning report: replies you owe, deadlines from two days ago to a week ahead, important mail still unopened after a day, then what piled up since you last looked
+- To respond: mail written to you that asks something and that you have not answered
+- Exam, payment, ticket and calendar-invite notices are never hidden as noise unless you muted the sender
+- To-dos read from message bodies, when a model is connected; deadlines, including Korean dates, are also found without one
 - Calendar with a checklist per day; ticked items stay visible, struck through
 - Morning and evening checklist reminders
 - Mute or highlight a sender, not just a message
-- Ranking that can learn from your actions once you switch learning on
+- Ranking that learns from your actions, switched on from the start for new installs
 - Reply and forward with a review step: the exact message is shown before it can be sent, or saved to Drafts if the server refuses
 - Interface in English, Korean, Chinese and Japanese, with four colour themes
 
@@ -61,7 +64,6 @@ The folder holds a copy of your mail and the key stored beside what it encrypts,
 
 - Version 1.2.7, run from source. No packaged release is published yet.
 - macOS only, and the packaging config targets Apple Silicon. The Apple Mail route reads only what Apple Mail has downloaded.
-- Without a model, deadlines are read only from ISO and English date forms, so Korean dates are missed.
 - The privacy policy is a draft with unfilled fields.
 - Not for shared machines: the local database is protected only by your user account.
 - Not in the Mac App Store, whose sandbox blocks reading `~/Library/Mail`.
