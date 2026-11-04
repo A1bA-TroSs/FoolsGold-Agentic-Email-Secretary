@@ -40,13 +40,9 @@ BUCKETS = ("action", "fyi", "noise")
 
 
 def labelled() -> list[dict]:
-    with db.connect() as conn:
-        return [dict(r) for r in conn.execute(
-            "SELECT l.*, e.subject, e.from_name, e.from_address, e.body_text, "
-            "       e.body_preview, e.to_recipients, e.cc_recipients, e.received_at, "
-            "       e.is_read, e.is_answered, e.is_flagged, e.has_attachments, e.importance "
-            "FROM eval_labels l JOIN emails e ON e.id = l.email_id "
-            "WHERE l.bucket IS NOT NULL")]
+    """The labelled set, read the same way the in-app quality check reads it."""
+    from app import quality
+    return quality.labelled()
 
 
 async def predict(rows: list[dict], provider_name: str, model: str, host: str):

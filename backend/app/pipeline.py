@@ -13,7 +13,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from . import db, dedup, learning, priority
+from . import cues, db, dedup, learning, priority
 from .llm.base import Classification, ProviderUnavailable
 from .llm.registry import get_provider
 
@@ -41,6 +41,37 @@ def _mark_ai(available: bool, detail: str = "", off: bool = False,
     _ai_status["detail"] = detail
     _ai_status["detail_key"] = key
     _ai_status["detail_vars"] = vars or {}
+
+
+def user_context(provider: Any = None) -> "UserContext":
+    """Who the user is, for the classify prompt (roadmap F3).
+
+    Address and role go to every provider. The people the user writes to most
+    go only to a local model (`provider.local`, Ollama), and only while the
+    `share_correspondents` setting is on: Danny, 2026-11-02, "Only for Ollama
+    (local)". The user's own address and system senders are never listed."""
+    from .llm.base import MAX_CORRESPONDENTS, MAX_ROLE_CHARS, UserContext
+    me = user_address()
+    role = " ".join((db.get_setting("user_role", "") or "").split())[:MAX_ROLE_CHARS]
+    people: list[tuple[str, str]] = []
+    share = (db.get_setting("share_correspondents", "1") or "1").strip().lower() not in ("0", "false", "off", "no")
+    # Without the user's own address the list could name the user to themselves.
+    if share and me and getattr(provider, "local", False):
+        try:
+            from .sources.registry import get_source
+            counts = get_source().correspondents() or {}
+        except Exception:  # noqa: BLE001 - context is a nicety, never a blocker
+            counts = {}
+        ranked = sorted(((n, (a or "").strip().lower()) for a, n in counts.items()),
+                        key=lambda item: (-item[0], item[1]))
+        # An address longer than 64 characters is a generated or tracking one,
+        # not a person; it also keeps the block near its size budget.
+        addresses = [a for n, a in ranked
+                     if n > 0 and a and len(a) <= 64 and a != me
+                     and not cues.NOISE_SENDER.search(a)][:MAX_CORRESPONDENTS]
+        names = db.display_names(addresses) if addresses else {}
+        people = [(names.get(a, ""), a) for a in addresses]
+    return UserContext(address=me, role=role, correspondents=people)
 
 
 def _ranking_context() -> tuple[dict[str, int], dict[str, dict[str, Any]], set[str]]:
@@ -120,7 +151,9 @@ def _structural_classifications(emails: list[dict[str, Any]], me: str) -> list[C
     for email in emails:
         bucket = priority.structural_bucket(email, me)
         text = f"{email.get('subject','')}\n{email.get('body_text') or email.get('body_preview') or ''}"
-        deadline = priority.extract_deadline(text)
+        # Against the day the mail was sent, not today: "Wed Nov 2" in a 2022
+        # seminar notice is 2022-11-02, not this year's 2 November.
+        deadline = priority.extract_deadline(text, today=priority.mail_day(email))
         out.append(
             Classification(
                 email_id=email["id"],
@@ -185,7 +218,8 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
             weights=weights,
             centroids=centroids,
         )
-        bucket = axes.bucket(thresholds)
+        bucket = axes.bucket(
+            thresholds, floor=(email.get("from_address") or "").lower() not in muted)
 
         # A muted sender is a standing decision, and exploration must not
         # quietly overturn it -- "I do not want to see this" is a promise, not
@@ -233,6 +267,7 @@ def _persist(classifications: list[Classification], emails_by_id: dict[str, dict
         # must not need one API call per row to say why a row is there.
         reason_code, reason_arg = learning.reason_for_email(
             axes, matched or axis_topics, deadline, verdict=verdict, today=today,
+            muted=(email.get("from_address") or "").lower() in muted,
         )
         db.save_classification({
             "email_id": c.email_id,
@@ -296,6 +331,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
 
         try:
             provider = get_provider()
+            context = user_context(provider)
         except ProviderUnavailable as exc:
             turned_off = (db.get_setting("llm_provider", "copilot") or "").lower() == "none"
             _mark_ai(False, "" if turned_off else str(exc), off=turned_off,
@@ -311,7 +347,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
         for start in range(0, len(emails), batch_size):
             batch = emails[start : start + batch_size]
             try:
-                results = await provider.classify_batch(batch, topics)
+                results = await provider.classify_batch(batch, topics, context)
                 _persist(results, emails_by_id, "llm", f"{provider.name}:{provider.model}")
                 done += len(results)
                 # Anything the model skipped still needs a row, or we re-ask forever.
@@ -337,7 +373,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
         upgraded = 0
         if not used_fallback and done < limit:
             upgraded = await _upgrade_structural(provider, me, topics, batch_size,
-                                                 budget=limit - done)
+                                                 budget=limit - done, context=context)
 
         return {
             "classified": done,
@@ -349,7 +385,7 @@ async def classify_pending(limit: int = 100) -> dict[str, Any]:
 
 
 async def _upgrade_structural(provider, me: str, topics: list[str],
-                              batch_size: int, budget: int) -> int:
+                              batch_size: int, budget: int, context: Any = None) -> int:
     """Re-ask the model about mail that only has a structural verdict.
 
     Bounded by the same limit as a normal pass, so a recovering key costs one
@@ -362,7 +398,8 @@ async def _upgrade_structural(provider, me: str, topics: list[str],
         return 0
     by_id = {e["id"]: e for e in emails}
     try:
-        results = await provider.classify_batch(emails, topics)
+        results = await provider.classify_batch(
+            emails, topics, context if context is not None else user_context(provider))
     except Exception as exc:  # noqa: BLE001 - the upgrade is best-effort
         _mark_ai(False, str(exc), key=getattr(exc, "key", None),
                  vars=getattr(exc, "vars", None))
@@ -466,7 +503,8 @@ def rescore_all() -> int:
                 weights=weights,
                 centroids=centroids,
             )
-            bucket = axes.bucket(thresholds)
+            bucket = axes.bucket(
+                thresholds, floor=(email.get("from_address") or "").lower() not in muted)
             if bucket == "noise" and (email.get("from_address") or "").lower() not in muted:
                 explorable.append(email["id"])
 
@@ -481,6 +519,7 @@ def rescore_all() -> int:
             reason_code, reason_arg = learning.reason_for_email(
                 axes, matched or axis_topics, email.get("deadline"),
                 verdict=verdict, today=today,
+                muted=(email.get("from_address") or "").lower() in muted,
             )
             conn.execute(
                 "UPDATE classifications SET score = ?, matched = ?, bucket = ?, "
