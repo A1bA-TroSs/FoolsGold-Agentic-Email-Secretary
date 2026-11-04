@@ -4,8 +4,8 @@ import { useEvent } from './lib/useEvent.js';
 import { reuseUnchanged } from './lib/reconcile.js';
 import { I18nContext, translator } from './lib/i18n.js';
 import Connect from './components/Connect.jsx';
-import Digest from './components/Digest.jsx';
-import Recap from './components/Recap.jsx';
+import FirstPriority from './components/FirstPriority.jsx';
+import MorningReport from './components/MorningReport.jsx';
 import MailDetail from './components/MailDetail.jsx';
 import MailList from './components/MailList.jsx';
 import ConfirmMute from './components/ConfirmMute.jsx';
@@ -18,7 +18,7 @@ import Calendar, { DayPanel, useCalendar, todayIso } from './components/Calendar
 import Splash from './components/Splash.jsx';
 import LogoMenu from './components/LogoMenu.jsx';
 import { SkeletonList, Sweep, SyncStep, ThinkingNote } from './components/Loading.jsx';
-import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, PileIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
+import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, PileIcon, RefreshIcon, ReplyIcon, UndoIcon } from './components/Icons.jsx';
 
 /* Views are a flat list including Settings, not a modal on top of everything
    else. Settings used to be a boolean overlay, which meant clicking a sidebar
@@ -36,6 +36,10 @@ import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDown
    onto is a checklist for today, which is what that icon has always said. */
 const VIEWS = [
   { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: AgendaIcon },
+  /* Replies you owe (A1): direct asks from people, not yet answered, from the
+     last two weeks. Apple Mail clears a row when you reply; Outlook rows stay
+     until you mark them done. */
+  { id: 'respond',  key: 'viewRespond',  hintKey: 'viewRespondHint',  short: 'railRespond',  icon: ReplyIcon },
   /* The pile, and it is a different room from either neighbour -- which is
      the test the removed Today view failed. Priority ranks what to do next
      and shows seven rows; All is the mailbox in date order; this is what
@@ -199,25 +203,13 @@ export default function App() {
   const [search, setSearch] = useState('');
   const [listLoading, setListLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [digest, setDigestState] = useState(null);
-  /* The briefing is one entry per actionable email, so on a full mailbox it is
-     the same size as the list and re-renders for the same reason. */
-  const setDigest = useCallback((next) => setDigestState((prev) => {
-    if (!next || !prev) return next;
-    const items = reuseUnchanged(prev.items, next.items);
-    return items === prev.items ? { ...next, items: prev.items } : { ...next, items };
-  }), []);
-  const [digestLoading, setDigestLoading] = useState(false);
-  /* What piled up since the user last looked. Loaded like the briefing and
-     deliberately unlike it in one respect: nothing here writes. Rendering the
-     card does not mark mail read and does not close the window -- only
-     `dismissRecap` does, and it is bound to one button. */
-  const [recap, setRecap] = useState(null);
-  /* Two payloads, deliberately. The card that volunteers itself obeys the
-     quiet period after a dismissal; the one behind the rail button does not,
-     because the user asked for it. One piece of state would have to serve
-     both rules and would get one of them wrong. */
-  const [recapView, setRecapView] = useState(null);
+  /* The morning report (F6): replies owed, what is due, what was missed, then
+     the pile since you last looked. One payload for the card on top and for
+     the rail view. Loading it writes nothing except today's "shown" day for
+     the local open rate; only `dismissRecap` moves the window. */
+  const [report, setReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const reloadReport = useCallback(() => api.report().then(setReport).catch(() => {}), [setReport]);
   const [banner, setBanner] = useState('');
   const [leaving, setLeaving] = useState(null);   // { id, kind } while a row plays out
   const [undo, setUndo] = useState(null);
@@ -345,13 +337,14 @@ export default function App() {
       const data = await api.listMail({
         // The muted box hides the bucket chips, so applying a filter the user
         // cannot see (or clear) would silently shrink it.
-        bucket: (view === 'muted' || view === 'done' || view === 'dismissed') ? null : bucketFilter,
+        bucket: (view === 'muted' || view === 'done' || view === 'dismissed' || view === 'respond') ? null : bucketFilter,
         search: search.trim() || undefined,
         sort: view === 'all' ? 'date' : (view === 'done' || view === 'dismissed') ? 'decided' : 'priority',
         muted: view === 'muted',
         // Sorted by the decision, newest first: the tick you want back is the
         // one you just made.
         verdict: view === 'done' ? 'done' : view === 'dismissed' ? 'not_relevant' : undefined,
+        toRespond: view === 'respond',
       });
       /* Not `setMail(data.items)`. Reusing the row objects that did not
          change is what lets the memoised rows stay put through a reload --
@@ -402,9 +395,7 @@ export default function App() {
     const tick = () => {
       if (document.hidden) return;
       loadMail();
-      api.digest(false).then(setDigest).catch(() => {});
-      api.recap().then(setRecap).catch(() => {});
-      if (view === 'recap') api.recap(true).then(setRecapView).catch(() => {});
+      reloadReport();
     };
     const timer = setInterval(tick, 90_000);
     window.addEventListener('focus', tick);
@@ -447,9 +438,8 @@ export default function App() {
 
   useEffect(() => {
     if (!source.ready) return;
-    setDigestLoading(true);
-    api.digest(false).then(setDigest).catch(() => {}).finally(() => setDigestLoading(false));
-    api.recap().then(setRecap).catch(() => {});
+    setReportLoading(true);
+    reloadReport().finally(() => setReportLoading(false));
   }, [source.ready]);
 
   /* The one place the absence window closes.
@@ -460,20 +450,12 @@ export default function App() {
      The card hides immediately rather than waiting for the refetch, because
      the server will now answer `too_soon` and the component renders nothing
      for it anyway. */
-  useEffect(() => {
-    if (!source.ready || view !== 'recap') return;
-    api.recap(true).then(setRecapView).catch(() => {});
-  }, [source.ready, view]);
-
   async function dismissRecap() {
-    setRecap(null);
+    setReport((r) => (r ? { ...r, pile: null } : r));
     try { await api.recapSeen(); } catch { /* the window stays open; try again next time */ }
+    reloadReport();
   }
 
-  async function refreshDigest() {
-    setDigestLoading(true);
-    try { setDigest(await api.digest(true)); } finally { setDigestLoading(false); }
-  }
 
   /* A sync against a small or already-current mailbox can finish in under a
      tenth of a second. Without a floor the progress sweep flashes for two
@@ -489,8 +471,7 @@ export default function App() {
       await api.sync();
       setLastSync(new Date().toISOString());
       await loadMail();
-      api.digest(false).then(setDigest).catch(() => {});
-      api.recap().then(setRecap).catch(() => {});
+      reloadReport();
     } catch (e) {
       setBanner(e.status === 401 ? t('sessionExpired') : e.message);
       if (e.status === 401 || e.status === 428) {
@@ -608,8 +589,9 @@ export default function App() {
        below brings up the next row from the queue. Undo puts it back (the
        refetch after an undo re-joins it). */
     if (['done', 'not_relevant', 'snoozed'].includes(verdict)) {
-      setTimeout(() => setDigest((d) => (d && d.items
-        ? { ...d, items: d.items.filter((x) => x.email_id !== id) } : d)),
+      const drop = (sec) => (sec ? { ...sec, items: sec.items.filter((x) => x.email_id !== id) } : sec);
+      setTimeout(() => setReport((r) => (r
+        ? { ...r, replies: drop(r.replies), deadlines: drop(r.deadlines), missed: drop(r.missed) } : r)),
       verdict === 'done' ? 650 : 250);
     }
 
@@ -626,9 +608,8 @@ export default function App() {
       setTimeout(() => {
         setLeaving(null);
         loadMail();
-        // Cheap: today's digest is cached, so this only re-reads the verdicts
-        // that were just joined onto it.
-        api.digest(false).then(setDigest).catch(() => {});
+        // The report is SQL and rules, no model call, so re-reading it is cheap.
+        reloadReport();
       }, settle);
     } catch (e) {
       setBanner(e.message);
@@ -791,6 +772,18 @@ export default function App() {
      reading pane, and without a way back the only exit was to pick a different
      email or change view entirely. */
   const closeEmail = useCallback(() => setSelectedId(null), []);
+
+  /* Opening mail from the report is what counts as the report being read,
+     once per day, on this machine only (A5's export shows the numbers). */
+  const openedToday = useRef('');
+  const openFromReport = useCallback((id) => {
+    const day = new Date().toDateString();
+    if (openedToday.current !== day) {
+      openedToday.current = day;
+      api.reportOpened().catch(() => { openedToday.current = ''; });
+    }
+    openEmail(id);
+  }, [openEmail]);
 
   const calendar = useCalendar(loadMail, view === 'calendar');
   useEffect(() => { calendarRef.current = calendar.reload; }, [calendar.reload]);
@@ -957,7 +950,7 @@ export default function App() {
         <Titlebar title={t('appName')} sub={t('notConnected')} />
         <div className="app">
           <Rail view={view} setView={setView} counts={counts} t={t}
-              recapCount={recap?.total || 0}
+              recapCount={report?.pile?.lines || 0}
                 putAwayOpen={putAwayOpen} setPutAwayOpen={setPutAwayOpen}
                 logoOpen={logoOpen} onLogo={() => setLogoOpen((v) => !v)} />
           <div className="pane-detail">
@@ -1022,7 +1015,7 @@ export default function App() {
                 </button>
               </div>
 
-              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && view !== 'recap' && <div className="filters">
+              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && view !== 'recap' && view !== 'respond' && <div className="filters">
                 {[
                   { id: null, label: `${t('filterAll')} ${visible.length ? `(${visible.length})` : ''}` },
                   { id: 'action', label: `${t('filterAction')} ${counts.action ? `(${counts.action})` : ''}` },
@@ -1055,7 +1048,9 @@ export default function App() {
                         briefing filling the reading pane itself is what once
                         made its rows look dead on click. */}
                     {view === 'recap' && (
-                      <Recap card={recapView} selectedId={selectedId} onOpen={openEmail} />
+                      <MorningReport report={report} loading={reportLoading}
+                                     selectedId={selectedId} checkedIds={doneIds}
+                                     onOpen={openFromReport} onDone={applyFeedback} />
                     )}
                     {view === 'muted' && <>
                       <MutedBox senders={mutedSenders} onUnmute={unmute} />
@@ -1071,6 +1066,8 @@ export default function App() {
                         were stacked in one column saying different things about
                         the same mail -- the exact confusion the removed Today
                         view was deleted for. */}
+                    {view === 'priority' && <FirstPriority settings={settings} onSettings={setSettings} />}
+                    {view === 'respond' && <p className="hint" style={{ margin: '4px 12px 8px' }}>{t('respondHelp')}</p>}
                     {view === 'recap' ? null : listLoading && !mail.length
                       ? <SkeletonList />
                       : <MailList items={visible} selectedId={selectedId} cursorId={cursorId}
@@ -1163,20 +1160,14 @@ export default function App() {
                 </div>
               ) : (
                 <div className="scroll">
-                  {/* Above the briefing, because it answers the question that
-                      comes first: not "what should I do" but "what is in
-                      there". It disappears once dismissed and stays gone for
-                      the floor window. */}
+                  {/* One card where the briefing and the recap used to be two
+                      (F6). Opens with replies owed and what is due. */}
                   {view !== 'recap' && (
-                    <Recap card={recap} selectedId={selectedId}
-                           onOpen={openEmail} onDismiss={dismissRecap} />
+                    <MorningReport report={report} loading={reportLoading}
+                                   selectedId={selectedId} checkedIds={doneIds}
+                                   onOpen={openFromReport} onDone={applyFeedback}
+                                   onDismiss={dismissRecap} />
                   )}
-                  <Digest
-                    digest={digest} loading={digestLoading} onRefresh={refreshDigest}
-                    selectedId={selectedId} checkedIds={doneIds}
-                    onOpen={openEmail} onDone={applyFeedback}
-                    onOpenSettings={() => setView('settings')}
-                  />
                   <div className="empty">
                     {listLoading ? <ThinkingNote>{t('thinking')}</ThinkingNote> : t('selectEmail')}
                   </div>
@@ -1252,7 +1243,9 @@ function Rail({ view, setView, counts, recapCount, logoOpen, onLogo, t, putAwayO
             {id === 'priority' && counts.action ? <span className="badge" /> : null}
             {id === 'recap' && recapCount ? <span className="badge" /> : null}
           </span>
-          <span className="rail-label">{t(short)}</span>
+          <span className="rail-label">
+            {t(short)}{id === 'respond' && counts.to_respond ? ` ${counts.to_respond}` : ''}
+          </span>
         </button>
       ))}
 

@@ -109,6 +109,21 @@ class Classification:
     tasks: list[ExtractedTask] = field(default_factory=list)
 
 
+@dataclass
+class UserContext:
+    """Who the inbox belongs to, for the classify prompt (roadmap F3).
+
+    `correspondents` are (name, address) pairs, most-written-to first. They are
+    only filled for a local provider; see `pipeline.user_context`."""
+    address: str = ""
+    role: str = ""
+    correspondents: list[tuple[str, str]] = field(default_factory=list)
+
+
+MAX_CORRESPONDENTS = 10
+MAX_ROLE_CHARS = 120
+
+
 class ProviderUnavailable(RuntimeError):
     """Raised when a provider cannot run at all (no key, not signed in, offline).
     The caller falls back to structural scoring and shows the 'AI unavailable'
@@ -168,10 +183,15 @@ class LLMProvider(ABC):
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
             return False, str(exc)
 
-    async def classify_batch(self, emails: list[dict[str, Any]], priorities: list[str]) -> list[Classification]:
+    # True only when the model runs on this machine (Ollama). Decides whether
+    # the user's top correspondents may go into the prompt.
+    local: bool = False
+
+    async def classify_batch(self, emails: list[dict[str, Any]], priorities: list[str],
+                             context: UserContext | None = None) -> list[Classification]:
         if not emails:
             return []
-        raw = await self.complete(CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities))
+        raw = await self.complete(CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities, context))
         return parse_classifications(raw, [e["id"] for e in emails])
 
     async def summarize(
@@ -230,6 +250,18 @@ Rules for tasks:
 - At most 5 per email. Empty list is the right answer for most mail, and always
   the right answer for newsletters and marketing.
 
+When the prompt describes the user (their address, role, the people they write to
+most) and says how each email reached them, use it to judge whether the email is
+theirs to act on. These only lean the bucket; a stated deadline or a task for the
+user always counts:
+- Sent "to you" by someone they write to often (the line says so), asking
+  something or continuing their thread: lean "action".
+- "not addressed to you" (a list or bcc): lean "fyi" or "noise", unless it states
+  something this user must do.
+- "cc you": usually "fyi".
+- The role says what is relevant: course mail matters to a student, a team's
+  review request to its member.
+
 List which of the user's active priorities the email relates to, using their exact
 wording. Empty list if none.
 
@@ -285,15 +317,43 @@ Reply with JSON and nothing else:
 {"headline": "<one sentence>", "items": [{"id": "<id>", "note": "<max 14 words>"}]}"""
 
 
-def _fmt_email(email: dict[str, Any], index: int) -> str:
+def reaches_user(email: dict[str, Any], me: str) -> str:
+    """How the mail reached the user: "to you", "cc you", or not directly."""
+    from ..priority import _recipient_addresses
+    me = (me or "").strip().lower()
+    if not me:
+        return ""
+    if me in _recipient_addresses(email.get("to_recipients")):
+        return "to you"
+    if me in _recipient_addresses(email.get("cc_recipients")):
+        return "cc you"
+    return "not addressed to you directly (list or bcc)"
+
+
+MAX_NAME_CHARS = 40
+
+
+def clean_name(name: str) -> str:
+    """A From display name made safe for one prompt line: no newlines or
+    brackets that could start a new instruction or fake an address, capped."""
+    name = re.sub(r"[<>\[\]{}\"`]", "", " ".join(str(name or "").split()))
+    return name[:MAX_NAME_CHARS].strip()
+
+
+def _fmt_email(email: dict[str, Any], index: int, me: str = "",
+               frequent: frozenset[str] = frozenset()) -> str:
     body = _body_for_prompt(email.get("body_text") or email.get("body_preview") or "")
     to = email.get("to_recipients") or "[]"
     cc = email.get("cc_recipients") or "[]"
+    how = reaches_user(email, me)
+    if how and (email.get("from_address") or "").strip().lower() in frequent:
+        how += "; the sender is someone they write to often"
     return (
         f"--- EMAIL {index} ---\n"
         f"id: {email['id']}\n"
-        f"from: {email.get('from_name','')} <{email.get('from_address','')}>\n"
+        f"from: {clean_name(email.get('from_name', ''))} <{email.get('from_address','')}>\n"
         f"to: {to}\ncc: {cc}\n"
+        + (f"reaches the user: {how}\n" if how else "") +
         f"received: {email.get('received_at','')}\n"
         f"importance: {email.get('importance','normal')}   attachments: {bool(email.get('has_attachments'))}\n"
         f"subject: {email.get('subject','')}\n"
@@ -301,11 +361,31 @@ def _fmt_email(email: dict[str, Any], index: int) -> str:
     )
 
 
-def build_classify_prompt(emails: list[dict[str, Any]], priorities: list[str]) -> str:
+def _context_block(context: UserContext | None) -> str:
+    if not context or not (context.address or context.role or context.correspondents):
+        return ""
+    lines = ["About the user:"]
+    if context.address:
+        lines.append(f"- address: {context.address}")
+    role = " ".join((context.role or "").split())[:MAX_ROLE_CHARS]
+    if role:
+        lines.append(f"- role, in their words: {role}")
+    people = context.correspondents[:MAX_CORRESPONDENTS]
+    if people:
+        lines.append("- people they write to most: " + "; ".join(
+            f"{clean_name(name)} <{addr}>" if clean_name(name) else addr for name, addr in people))
+    return "\n".join(lines) + "\n\n"
+
+
+def build_classify_prompt(emails: list[dict[str, Any]], priorities: list[str],
+                          context: UserContext | None = None) -> str:
     prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
-    blocks = "\n".join(_fmt_email(e, i + 1) for i, e in enumerate(emails))
+    me = context.address if context else ""
+    frequent = frozenset(a for _, a in context.correspondents[:MAX_CORRESPONDENTS]) if context else frozenset()
+    blocks = "\n".join(_fmt_email(e, i + 1, me, frequent) for i, e in enumerate(emails))
     return (
         f"Current date: {date.today().isoformat()}\n\n"
+        f"{_context_block(context)}"
         f"The user's active priorities right now:\n{prio}\n\n"
         f"Classify these {len(emails)} emails.\n\n{blocks}"
     )

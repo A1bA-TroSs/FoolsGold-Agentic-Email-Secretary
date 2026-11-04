@@ -43,6 +43,15 @@ DEFAULT_SETTINGS = {
     # Optional. Goes in the From display name of anything you send; an empty
     # one is fine and common.
     "user_name": "",
+    # Optional, in the user's own words ("PhD student in CS at SNU"). Goes into
+    # the AI classify prompt so the model knows what is relevant to them.
+    "user_role": "",
+    # Whether the people the user writes to most go into the classify prompt.
+    # Only ever sent to a local model (Ollama); cloud providers never get them.
+    "share_correspondents": "1",
+    # "1" once the one-priority question (roadmap F4) was answered or skipped,
+    # at setup or on the main view; it is never asked again.
+    "setup_priority_asked": "",
     # No provider is preselected. The app must never reach for a credential the
     # user did not choose, and until they choose one it ranks mail on
     # structural signals -- which works, and says so.
