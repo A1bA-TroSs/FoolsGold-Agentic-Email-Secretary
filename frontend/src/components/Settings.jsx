@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api.js';
 import { LANGUAGES, useT } from '../lib/i18n.js';
+import OllamaDownload from './OllamaDownload.jsx';
+import QualityCheck from './QualityCheck.jsx';
 import './Compose.css';
 
-const SOURCE_KEYS = ['user_address', 'applemail_root', 'applemail_inbox_only'];
-const AI_KEYS = ['llm_provider', 'ollama_model', 'ollama_host', 'copilot_model', 'anthropic_api_key',
+const SOURCE_KEYS = ['user_address', 'user_role', 'applemail_root', 'applemail_inbox_only'];
+const AI_KEYS = ['llm_provider', 'ollama_model', 'ollama_host', 'share_correspondents', 'copilot_model', 'anthropic_api_key',
                  'anthropic_model', 'openai_api_key', 'openai_model', 'openai_base_url'];
 const SYNC_KEYS = ['sync_days', 'sync_max_messages', 'classify_batch_size'];
 const NOTIFY_KEYS = ['notify_enabled', 'notify_morning', 'notify_evening'];
@@ -55,6 +57,7 @@ const SEARCHABLE = [
   'rescoreTitle', 'rescoreHelp', 'rescanTitle', 'notifyTitle', 'sync',
   'daysToKeep', 'maxMessages', 'batchSize',
   'sendTitle', 'sendHelp', 'imapHost', 'draftsFolder', 'appPassword',
+  'qcTitle', 'qcHelp',
 ];
 
 function Section({ group, titleKey, hintKey, terms = [], tab, q, t, children }) {
@@ -164,7 +167,7 @@ export default function Settings({
      render: it talks to Ollama, and a settings screen must not poll a model
      server in the background. */
   const loadModels = useCallback(async () => {
-    try { setModels(await api.ollamaModels()); } catch { setModels({ installed: [], matches: false }); }
+    try { setModels(await api.ollamaModels()); } catch { setModels({ installed: [], matches: false, reachable: null }); }
   }, []);
   useEffect(() => {
     if (provider === 'ollama' && models === null) loadModels();
@@ -261,6 +264,13 @@ export default function Settings({
             <input className="input" type="email" placeholder="you@outlook.com"
                    value={value('user_address')} onChange={(e) => edit('user_address', e.target.value)} />
             <p className="hint" style={{ marginTop: 4 }}>{t('yourEmailHelp')}</p>
+          </div>
+
+          <div className="field">
+            <label>{t('yourRole')}</label>
+            <input className="input" maxLength={120} placeholder={t('yourRolePlaceholder')}
+                   value={value('user_role')} onChange={(e) => edit('user_role', e.target.value)} />
+            <p className="hint" style={{ marginTop: 4 }}>{t('yourRoleHelp')}</p>
           </div>
 
           {value('mail_source') === 'applemail' && (
@@ -563,9 +573,6 @@ export default function Settings({
                 <input className="input" value={value('ollama_model')}
                        onChange={(e) => edit('ollama_model', e.target.value)}
                        placeholder="qwen3.5:9b" />
-                <p className="hint" style={{ marginTop: 6 }}>
-                  {t('localPull', { model: value('ollama_model') || 'qwen3.5:9b' })}
-                </p>
               </div>
 
               {/* What this Mac actually has.
@@ -586,7 +593,9 @@ export default function Settings({
                   <button className="btn ghost" style={{ padding: '2px 8px' }}
                           onClick={loadModels}>{t('refreshModels')}</button>
                 ) : models.installed.length === 0 ? (
-                  <p className="hint">{t('noModelsInstalled')}</p>
+                  // Not when Ollama did not answer: the panel below says so,
+                  // and "Pull one" would contradict it.
+                  models.reachable === false ? null : <p className="hint">{t('noModelsInstalled')}</p>
                 ) : (
                   <>
                     <div className="lang-grid">
@@ -604,6 +613,11 @@ export default function Settings({
                   </>
                 )}
               </div>
+              <OllamaDownload models={models} typed={value('ollama_model')} onDone={loadModels} />
+              {/* The terminal route, kept only as a fallback line. */}
+              {models && models.reachable !== false && !models.matches && (
+                <p className="hint">{t('localPull', { model: value('ollama_model') || 'qwen3.5:9b' })}</p>
+              )}
               <div className="field">
                 <label>{t('ollamaHost')}</label>
                 <input className="input" value={value('ollama_host')}
@@ -670,6 +684,18 @@ export default function Settings({
                 <p className="hint" style={{ marginTop: 6 }}>{t('endpointHelp')}</p>
               </div>
             </>
+          )}
+
+          {value('llm_provider') === 'ollama' && (
+            <div className="field">
+              <label>
+                <input type="checkbox" style={{ marginRight: 6 }}
+                       checked={value('share_correspondents') !== '0'}
+                       onChange={(e) => edit('share_correspondents', e.target.checked ? '1' : '0')} />
+                {t('shareCorrespondents')}
+              </label>
+              <p className="hint" style={{ marginTop: 4 }}>{t('shareCorrespondentsHelp')}</p>
+            </div>
           )}
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -915,6 +941,13 @@ export default function Settings({
               {rescan.detail}
             </p>
           )}
+        </Section>
+
+        <Section group="rank" titleKey="qcTitle" hintKey="qcHelp"
+                 tab={tab} q={query} t={t}>
+          <h3>{t('qcTitle')}</h3>
+          <p className="hint">{t('qcHelp')}</p>
+          <QualityCheck />
         </Section>
 
         <Section group="view" titleKey="notifyTitle"

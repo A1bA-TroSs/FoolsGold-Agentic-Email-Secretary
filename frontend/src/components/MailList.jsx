@@ -93,6 +93,12 @@ const ACTIONS = [
    under a subject line, and a chip that says nothing trains people to stop
    reading the chips. */
 export function whyLabel(t, m) {
+  // In To respond, the row says why a reply is owed instead.
+  if (m?.respond_reason) {
+    const key = 'respondWhy_' + m.respond_reason;
+    const text = t(key);
+    return text === key ? '' : text;
+  }
   const code = m?.reason_code;
   if (!code || code === 'none') return '';
   const arg = m.reason_arg ?? '';
@@ -102,6 +108,12 @@ export function whyLabel(t, m) {
     if (days === 0) return t('whyDeadlineToday');
     if (days < 0) return t('whyDeadlineOver', { arg: String(-days) });
     return t('whyDeadline', { arg: String(days) });
+  }
+  if (code === 'mustSee') {
+    // exam / payment / ticket / invite: kinds of mail that are never hidden.
+    const key = 'whyMustSee' + arg.charAt(0).toUpperCase() + arg.slice(1);
+    const text = t(key);
+    return text === key ? '' : text;
   }
   const key = 'why' + code.charAt(0).toUpperCase() + code.slice(1);
   const text = t(key, { arg });

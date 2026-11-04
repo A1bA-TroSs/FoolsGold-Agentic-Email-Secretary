@@ -47,6 +47,7 @@ from .base import (
     CheckResult,
     LLMProvider,
     ProviderUnavailable,
+    UserContext,
     build_classify_prompt,
     build_digest_prompt,
     parse_agenda,
@@ -271,13 +272,23 @@ class OllamaProvider(LLMProvider):
     # the two real jobs, each with its schema
     # ------------------------------------------------------------------
 
+    # The only provider that may see the user's top correspondents (Danny,
+    # 2026-11-02: "Only for Ollama (local)") -- and only while the server is
+    # on this machine. An Ollama host on another computer is not local.
+    @property
+    def local(self) -> bool:  # type: ignore[override]
+        from urllib.parse import urlparse
+        host = (urlparse(self.host if "://" in self.host else f"http://{self.host}").hostname or "").lower()
+        return host in ("localhost", "127.0.0.1", "::1") or host.startswith("127.")
+
     async def classify_batch(
-        self, emails: list[dict[str, Any]], priorities: list[str]
+        self, emails: list[dict[str, Any]], priorities: list[str],
+        context: UserContext | None = None,
     ) -> list[Classification]:
         if not emails:
             return []
         raw = await self._chat(
-            CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities), CLASSIFY_SCHEMA
+            CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities, context), CLASSIFY_SCHEMA
         )
         # The schema wraps the list in an object because Ollama constrains to a
         # schema with a named root far more reliably than to a bare array. The
@@ -341,13 +352,18 @@ class OllamaProvider(LLMProvider):
                            vars={"model": self.model, "host": self.host},
                            models=models)
 
-    async def available_models(self) -> list[str]:
+    async def installed(self) -> list[str] | None:
+        """The installed model names, or None when Ollama did not answer
+        (not running, not installed, wrong host)."""
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=CONNECT_TIMEOUT)) as client:
                 response = await client.get(f"{self.host}/api/tags")
             return [m.get("name", "") for m in (response.json().get("models") or [])]
-        except (httpx.HTTPError, ValueError):
-            return []
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return None
+
+    async def available_models(self) -> list[str]:
+        return await self.installed() or []
 
 
 def _unwrap(raw: str, key: str) -> str:
