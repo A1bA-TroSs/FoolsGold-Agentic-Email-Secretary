@@ -1,23 +1,25 @@
+<img src="assets/logo.png" width="88" alt="Fools Gold logo: a cluster of gold crystals">
+
 # Fools Gold
 
 A macOS email secretary that ranks your inbox and pulls out deadlines, with AI optional.
 
+[Quick start](#quick-start) · [How it works](#how-it-works) · [Privacy](docs/PRIVACY.md)
+
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-dark.png">
-  <img alt="Diagram: mail from Apple Mail or Outlook is stored in a local database, ranked on structural signals with optional AI, and shown as a priority list, checklist, calendar and recap." src="docs/readme/hero.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-dark.webp">
+  <img alt="Fools Gold in use: the priority list with a reason on each row beside the morning report, then the To respond list, then the calendar, where a to-do read out of an email is ticked and stays on the day, struck through." src="docs/readme/hero.webp">
 </picture>
+
+<sub>The real interface, run against a fake backend that serves demo mail instead of a mailbox, recorded in November 2026. [Still image](docs/readme/hero.png).</sub>
 
 ## Why use it
 
-**It reads the mail already on your Mac.** The default source parses Apple Mail's local store, so there is no account to connect and no server of ours to trust. A hosted filter such as [SaneBox](https://www.sanebox.com/help/155-how-does-sanebox-work) connects to your mail server instead. macOS asks you to grant Full Disk Access first.
+**It reads the mail already on your Mac.** The default source parses Apple Mail's local store, so there is no account to connect and no server of ours in between. A hosted filter such as [SaneBox](https://www.sanebox.com/help/155-how-does-sanebox-work) connects to your mail server instead. macOS asks you to grant Full Disk Access first.
 
-**Ranking works with no AI and no key.** With the default provider, `none`, mail is ranked on deadlines, senders and direct address. Add a model only if you want one: Ollama runs on your Mac, and Settings can download its model for you; Anthropic, OpenAI or GitHub Copilot use your own account. A cloud provider receives nothing until you have read who gets what and pressed Allow.
+**Ranking works with no AI and no key.** The default provider, `none`, ranks mail on deadlines, senders and direct address. A model is optional: Ollama on your Mac, whose model Settings can download for you, or Anthropic, OpenAI or GitHub Copilot on your own account. A cloud provider receives nothing until you have read who gets what and pressed Allow.
 
-**It says why, and what you owe.** [Outlook's Focused Inbox](https://support.microsoft.com/en-us/outlook/mail/focused-inbox-for-outlook) splits mail into two tabs. Fools Gold orders one list, labels rows with a reason such as a deadline or "addressed to you", lists the replies you owe, and puts due dates on a calendar with a checklist per day.
-
-Real interface with fixture data, captured in August 2026. It predates the morning report, the To respond list and later menu changes.
-
-![Priority inbox showing four items that need attention, with deadlines and reasons, beside a briefing of what is crucial today.](docs/screenshot-gold.png)
+**It says why, and what you owe.** [Outlook's Focused Inbox](https://support.microsoft.com/en-us/outlook/mail/focused-inbox-for-outlook) splits mail into two tabs. Fools Gold orders one list, labels each row with its reason, such as a deadline or "addressed to you", lists the replies you owe, and puts due dates on a calendar with a checklist per day.
 
 ## Quick start
 
@@ -49,7 +51,16 @@ npm start
 - Reply and forward with a review step: the exact message is shown before it can be sent, or saved to Drafts if the server refuses
 - Interface in English, Korean, Chinese and Japanese, with four colour themes
 
+| To respond | Calendar and checklist | Korean interface |
+|---|---|---|
+| ![To respond: two emails written to you that ask something, each labelled with why a reply is owed.](docs/readme/to-respond.png) | ![November calendar with due dates on each day, and the day's checklist on the left with finished items struck through.](docs/readme/calendar.png) | ![The priority list and morning report with the interface in Korean.](docs/readme/korean.png) |
+
 ## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/diagram-dark.png">
+  <img alt="Diagram: mail from Apple Mail or Outlook is stored in a local database, ranked on structural signals with optional AI, and shown as a priority list, checklist, calendar and recap." src="docs/readme/diagram.png">
+</picture>
 
 An Electron shell runs a Python backend on 127.0.0.1 and a React interface. Everything is kept in `~/.foolsgold/`:
 
