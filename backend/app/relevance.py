@@ -239,37 +239,6 @@ FEATURE_NAMES = (
     "structural_noise",
 )
 
-<<<<<<< HEAD
-_ACTION_CUE = re.compile(
-    r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
-    r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
-    r"overdue|final notice|last chance to)\b", re.I
-)
-_NOISE_SENDER = re.compile(
-    r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
-    r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
-)
-_NOISE_SUBJECT = re.compile(
-    r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
-    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
-)
-# Official machine mail. A school's LMS, registrar and portal, and a
-# government office, send from exactly the addresses _NOISE_SENDER catches
-# (notifications@instructure.com, no-reply@university.ac.kr), and that mail is
-# what students rate most important (Waterloo 2019: professor 87%, registrar
-# 79%). Two universities told students to switch Outlook's Focused Inbox off
-# because such mail landed in "Other". So a no-reply ADDRESS from these
-# domains is not by itself evidence of noise. A newsletter SUBJECT still is.
-_OFFICIAL_DOMAIN = re.compile(
-    r"@(?:[\w-]+\.)*(?:"
-    r"edu|edu\.[a-z]{2}|ac\.[a-z]{2}|gov|gov\.[a-z]{2}|go\.kr|mil|"
-    r"instructure\.com|canvaslms\.com|blackboard\.com|moodle\w*\.\w+|"
-    r"brightspace\.com|d2l\.com|gradescope\.com|piazza\.com|edstem\.org"
-    r")>?$",
-    re.I,
-)
-_TOKEN = re.compile(r"[a-z0-9]+")
-=======
 _ACTION_CUE = cues.EN_ACTION
 _NOISE_SENDER = cues.NOISE_SENDER
 # Latin words and Hangul runs. The old `[a-z0-9]+` dropped every Korean
@@ -277,7 +246,6 @@ _NOISE_SENDER = cues.NOISE_SENDER
 # centroids and Rocchio learning saw nothing in Korean mail at all.
 _TOKEN = re.compile(r"[a-z0-9]+|[\uac00-\ud7a3]+")
 _HANGUL = re.compile(r"[\uac00-\ud7a3]")
->>>>>>> origin/develop
 
 
 def sigmoid(x: float) -> float:
@@ -378,48 +346,14 @@ def _text_of(email: dict[str, Any]) -> str:
     )
 
 
-def is_official_sender(address: str) -> bool:
-    """A school, LMS or government sender, whose automated mail is not bulk."""
-    return bool(_OFFICIAL_DOMAIN.search((address or "").strip()))
-
-
 def structural_noise(email: dict[str, Any]) -> float:
     sender = email.get("from_address") or ""
     subject = email.get("subject") or ""
-<<<<<<< HEAD
-    if _NOISE_SUBJECT.search(subject):
-        return 1.0
-    if _NOISE_SENDER.search(sender) and not is_official_sender(sender):
-=======
     if _NOISE_SENDER.search(sender) or is_marketing(subject):
->>>>>>> origin/develop
         return 1.0
     return 0.0
 
 
-<<<<<<< HEAD
-def noise_overruled(
-    email: dict[str, Any],
-    model_bucket: str | None,
-    deadline: str | None,
-    task_count: int,
-) -> bool:
-    """True when the bulk-sender penalty should not apply to this email.
-
-    The penalty is a guess from the address alone. When the model read the
-    text and said "action", AND something concrete backs it (a deadline, or
-    to-dos the extractor found), the guess loses. Hiding a mail the user had to
-    act on costs far more than showing one they did not need: spam-filter work
-    weighs a lost legitimate mail 9 to 999 times a let-through
-    (Androutsopoulos et al. 2000), and a hidden mail is never corrected because
-    it is never seen. A newsletter-style subject keeps the penalty either way.
-    """
-    if model_bucket != "action":
-        return False
-    if not (deadline or task_count > 0):
-        return False
-    return not _NOISE_SUBJECT.search(email.get("subject") or "")
-=======
 is_marketing = cues.is_marketing
 
 
@@ -438,7 +372,6 @@ def dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = 
     """See `cues.is_dated_ask`. A second floor rather than a weight, because
     day-one relevance cannot see a dated request (R = 0.08 for the Canvas notice)."""
     return cues.is_dated_ask(email, deadline, today, DATED_ASK_GRACE_DAYS)
->>>>>>> origin/develop
 
 
 def actionability(
@@ -531,8 +464,6 @@ def axes_for(
     weights: dict[str, float] | None = None,
 ) -> Axes:
     feats = features_for(email, topic_match, addressed_directly, affinity, highlighted, category)
-    if feats["structural_noise"] and noise_overruled(email, model_bucket, deadline, task_count):
-        feats["structural_noise"] = 0.0
     return Axes(
         actionability=actionability(email, model_bucket, deadline, task_count, addressed_directly),
         relevance=relevance(feats, weights),
