@@ -51,8 +51,12 @@ def emails(store, ids):
 # the epoch
 # --------------------------------------------------------------------------
 
-def test_learning_is_off_out_of_the_box(store):
-    assert learning.epoch_start() == "", "a fresh install must not learn from QA rows"
+def test_a_new_database_learns_from_its_creation(store):
+    # Changed with Danny's approval (2026-11-02, roadmap F4): a database created
+    # just now has no QA rows to keep out, so it learns from its creation. An
+    # existing install keeps learning off until switched on by hand; see
+    # tests/test_setup_learning.py.
+    assert learning.epoch_start() != ""
 
 
 def test_every_signal_before_the_epoch_is_refused_and_recorded(store):

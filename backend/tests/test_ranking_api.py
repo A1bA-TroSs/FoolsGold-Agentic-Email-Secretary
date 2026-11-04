@@ -20,10 +20,12 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
-def test_state_reports_learning_off_on_a_fresh_install(client):
+def test_state_reports_learning_on_for_a_new_database(client):
+    # Changed with Danny's approval (2026-11-02, roadmap F4): a new database
+    # learns from its creation; existing installs stay off (test_setup_learning.py).
     body = client.get("/api/ranking").json()
-    assert body["learning"]["enabled"] is False
-    assert body["learning"]["epoch_start"] == ""
+    assert body["learning"]["enabled"] is True
+    assert body["learning"]["epoch_start"] != ""
     assert body["thresholds"]["action"] > 0
 
 

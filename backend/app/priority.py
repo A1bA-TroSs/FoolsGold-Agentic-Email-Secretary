@@ -18,7 +18,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from . import db
+from . import cues, db
 
 BUCKET_WEIGHT = {"action": 45.0, "fyi": 15.0, "noise": 0.0}
 
@@ -43,19 +43,8 @@ _STOPWORDS = {
     "team", "notification", "no", "reply", "noreply", "do", "not", "com", "org",
 }
 
-_NOISE_SENDER = re.compile(
-    r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
-    r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
-)
-_NOISE_SUBJECT = re.compile(
-    r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
-    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
-)
-_ACTION_SUBJECT = re.compile(
-    r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
-    r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
-    r"overdue|final notice|last chance to)\b", re.I
-)
+_NOISE_SENDER = cues.NOISE_SENDER
+_ACTION_SUBJECT = cues.EN_ACTION
 
 # Deadline phrasings we can resolve without a model.
 _ISO_DATE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
@@ -97,6 +86,17 @@ def is_forgotten(deadline: str | None, today: date | None = None) -> bool:
     return (today or date.today()) - due > timedelta(days=FORGET_AFTER_DAYS)
 
 
+def mail_day(email: dict[str, Any]) -> date | None:
+    """The day the mail was received, or None to mean today. Dates without a
+    year, and weekdays, are read against this day."""
+    value = (email.get("received_at") or "")[:10]
+    try:
+        day = date.fromisoformat(value)
+    except ValueError:
+        return None
+    return min(day, date.today())
+
+
 def extract_deadline(text: str, today: date | None = None) -> str | None:
     if not text:
         return None
@@ -125,6 +125,10 @@ def extract_deadline(text: str, today: date | None = None) -> str | None:
         ahead = (target - today.weekday()) % 7 or 7
         return (today + timedelta(days=ahead)).isoformat()
 
+    korean = cues.korean_deadline(window, today)
+    if korean:
+        return korean[1].isoformat()
+
     return None
 
 
@@ -152,9 +156,20 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
     sender = email.get("from_address") or ""
     body = (email.get("body_text") or email.get("body_preview") or "")[:2000]
 
-    if _NOISE_SENDER.search(sender) or _NOISE_SUBJECT.search(subject):
+    marketing = cues.is_marketing(subject)
+    asks = bool(_ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body)
+                or cues.ko_action(subject) or cues.asks_ko(body))
+    if marketing:
         return "noise"
-    if _ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body):
+    if _NOISE_SENDER.search(sender):
+        # A system sender (LMS, registrar, airline) is noise unless the mail
+        # is a must-see kind, or it asks for something by a date it names.
+        if cues.always_important(email):
+            return "action" if asks else "fyi"
+        if cues.is_dated_ask(email, extract_deadline(f"{subject}\n{body}", today=mail_day(email))):
+            return "action"
+        return "noise"
+    if asks:
         return "action"
     if user_address and _addressed_directly(email, user_address) and "?" in subject:
         return "action"
