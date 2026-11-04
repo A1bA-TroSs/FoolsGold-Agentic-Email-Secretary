@@ -108,9 +108,10 @@ def epoch_start() -> str:
 def begin_epoch(at: str | None = None) -> str:
     """Draw the line: everything before this is invisible to learning.
 
-    Set by hand, never inferred. The app was clicked through for weeks to check
-    that the buttons worked, and those rows are indistinguishable from
-    preference -- so the default is that none of them count.
+    On an existing install it is set by hand, never inferred: the app was
+    clicked through for weeks to check that the buttons worked, and those rows
+    are indistinguishable from preference. A database created from scratch has
+    no such rows, so `db.init_db` sets it at creation (roadmap F4).
     """
     stamp = at or db.now_iso()
     db.set_setting("learning_epoch_start", stamp)
@@ -254,6 +255,7 @@ def reason_for_email(
     verdict: str | None = None,
     explored: bool = False,
     today: date | None = None,
+    muted: bool = False,
 ) -> tuple[str, str]:
     """The stored one-line reason. Days-to-deadline is resolved here because the
     pure layer has no clock and should not acquire one."""
@@ -273,6 +275,7 @@ def reason_for_email(
         deadline_days=days,
         pinned=(verdict == "pinned"),
         explored=explored,
+        muted=muted,
     )
 
 
@@ -296,7 +299,9 @@ def explain_email(email_id: str) -> dict[str, Any] | None:
         user_address=db.get_setting("user_address", ""),
         highlights=db.sender_highlights(),
     )
-    out = relevance.explain(axes, load_thresholds(), db.ranking_weights())
+    # The same muted rule the list used, so the "why" view cannot contradict it.
+    muted = (email.get("from_address") or "").lower() in db.muted_senders()
+    out = relevance.explain(axes, load_thresholds(), db.ranking_weights(), floor=not muted)
     out["email_id"] = email_id
     out["matched_topics"] = matched
     out["explored"] = bool(email.get("explored"))
@@ -319,7 +324,9 @@ def seed_centroids(priorities: list[dict[str, Any]] | None = None) -> int:
     seeded = 0
     for prio in priorities:
         topic = (prio.get("topic") or "").strip()
-        if not topic or topic in existing:
+        # An all-zero centroid is a Korean topic seeded before the embedder
+        # could read Hangul. It holds nothing learned, so it is seeded again.
+        if not topic or (topic in existing and any(existing[topic])):
             continue
         db.save_priority_centroid(topic, relevance.embed(topic), EMBEDDER_NAME)
         seeded += 1
