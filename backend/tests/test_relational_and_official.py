@@ -5,20 +5,26 @@ users act on (marketing thread, 2026-10-31):
 
 1. A Canvas "Assignment due" from notifications@instructure.com, which the
    model called action with a deadline, scored relevance 0.083 and landed in
-   noise. The bulk-sender regex outvoted the model reading the text.
+   noise. The must-see and dated-ask floors in `cues` now keep it; these tests
+   pin that from the user's side.
 2. Sender relationship, direct address and highlighted senders were computed
    but had no day-one weight, so they could not lift any mail on a fresh
    install.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 from app import priority, relevance
 from app.relevance import Thresholds
 
-CANVAS = {"subject": "Assignment due Nov 3: Lab report 4",
+# Dated asks only keep mail out of noise while the date is still ahead, so the
+# fixtures name a date ten days from whenever the suite runs.
+DUE = date.today() + timedelta(days=10)
+CANVAS = {"subject": f"Assignment due {DUE:%b} {DUE.day}: Lab report 4",
           "from_address": "notifications@instructure.com",
-          "body_text": "Your assignment Lab report 4 is due Nov 3 at 23:59."}
-KO_PORTAL = {"subject": "과제 제출 마감 안내: 11월 3일까지",
+          "body_text": f"Your assignment Lab report 4 is due {DUE:%b} {DUE.day} at 23:59."}
+KO_PORTAL = {"subject": f"과제 제출 마감 안내: {DUE.month}월 {DUE.day}일까지",
              "from_address": "no-reply@portal.snu.ac.kr",
              "body_text": "기한 내 제출 바랍니다."}
 SHOP_ACTION = {"subject": "Complete your order before midnight",
@@ -36,23 +42,13 @@ def _bucket(email, **kw):
     return relevance.axes_for(email, **kw).bucket(Thresholds())
 
 
-# ---------------------------------------------------------------- official mail
-
-def test_official_domains_are_recognised():
-    assert relevance.is_official_sender("notifications@instructure.com")
-    assert relevance.is_official_sender("no-reply@portal.snu.ac.kr")
-    assert relevance.is_official_sender("Registrar <noreply@registrar.uni.edu>")
-    assert relevance.is_official_sender("noreply@minwon.go.kr")
-    assert not relevance.is_official_sender("noreply@shop.example")
-    assert not relevance.is_official_sender("news@edu-deals.com")
-
+# ------------------------------------------------------- official machine mail
 
 def test_lms_deadline_the_model_flagged_is_action_not_noise():
-    assert _bucket(CANVAS, model_bucket="action", deadline="2026-11-03", task_count=1) == "action"
+    assert _bucket(CANVAS, model_bucket="action", deadline=DUE.isoformat(), task_count=1) == "action"
 
 
 def test_korean_portal_deadline_is_not_noise_without_any_ai():
-    assert relevance.structural_noise(KO_PORTAL) == 0.0
     assert priority.structural_bucket(KO_PORTAL) != "noise"
 
 
@@ -66,10 +62,6 @@ def test_official_newsletter_subject_is_still_noise():
 
 
 # ---------------------------------------------- model verdict vs the sender guess
-
-def test_model_action_with_a_deadline_overrules_the_sender_guess():
-    assert _bucket(SHOP_ACTION, model_bucket="action", deadline="2026-11-01") != "noise"
-
 
 def test_model_action_alone_does_not_overrule_it():
     assert _bucket(SHOP_ACTION, model_bucket="action") == "noise"

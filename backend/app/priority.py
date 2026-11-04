@@ -18,11 +18,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
-<<<<<<< HEAD
-from . import db, relevance
-=======
 from . import cues, db
->>>>>>> origin/develop
 
 BUCKET_WEIGHT = {"action": 45.0, "fyi": 15.0, "noise": 0.0}
 
@@ -160,18 +156,10 @@ def structural_bucket(email: dict[str, Any], user_address: str = "") -> str:
     sender = email.get("from_address") or ""
     body = (email.get("body_text") or email.get("body_preview") or "")[:2000]
 
-<<<<<<< HEAD
-    if _NOISE_SUBJECT.search(subject):
-        return "noise"
-    # A school/LMS/government no-reply address is how a registrar or Canvas
-    # sends; the address alone does not make that mail noise.
-    if _NOISE_SENDER.search(sender) and not relevance.is_official_sender(sender):
-=======
     marketing = cues.is_marketing(subject)
     asks = bool(_ACTION_SUBJECT.search(subject) or _ACTION_SUBJECT.search(body)
                 or cues.ko_action(subject) or cues.asks_ko(body))
     if marketing:
->>>>>>> origin/develop
         return "noise"
     if _NOISE_SENDER.search(sender):
         # A system sender (LMS, registrar, airline) is noise unless the mail
