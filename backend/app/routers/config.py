@@ -157,12 +157,40 @@ async def ollama_models() -> dict:
 
     configured = db.get_setting("ollama_model", "") or ""
     provider = OllamaProvider(configured, db.get_setting("ollama_host", "") or "")
-    installed = await provider.available_models()
+    names = await provider.installed()
+    installed = names or []
     return {
         "configured": configured,
+        # False when Ollama did not answer at all, so Settings can say
+        # "Ollama is not running" and link to the download page instead of
+        # offering a model download that cannot work.
+        "reachable": names is not None,
         "installed": installed,
         "matches": any(model_matches(configured, m) for m in installed),
     }
+
+
+class PullIn(BaseModel):
+    model: str
+
+
+@router.post("/ollama/pull", status_code=202)
+async def ollama_pull_start(body: PullIn) -> dict:
+    """Start downloading a model on the configured Ollama host (roadmap F5).
+    Returns at once; poll GET for progress. Never changes `ollama_model`."""
+    from ..llm import ollama_pull
+    try:
+        return ollama_pull.start(db.get_setting("ollama_host", "") or "", body.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/ollama/pull")
+def ollama_pull_state() -> dict:
+    from ..llm import ollama_pull
+    return {**ollama_pull.state(), "suggestions": ollama_pull.suggestions()}
 
 
 @router.get("/settings/copilot-status")
