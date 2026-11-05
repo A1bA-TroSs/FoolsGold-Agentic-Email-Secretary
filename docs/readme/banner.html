@@ -1,0 +1,26 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+*{box-sizing:border-box}
+:root{--bg1:#FAF6EC;--bg2:#F1E6C2;--ink:#3A2E1F;--sub:#6B5A33;--gold:#C9A227;--line:#E2D3A0;--shade:rgba(60,45,10,.22)}
+[data-theme=dark]{--bg1:#24221D;--bg2:#1C1B18;--ink:#F1E8CC;--sub:#C9BC93;--gold:#D4AF37;--line:#4A4232;--shade:rgba(0,0,0,.5)}
+html,body{margin:0;width:1280px;height:320px;overflow:hidden}
+body{position:relative;background:linear-gradient(115deg,var(--bg1) 0%,var(--bg1) 45%,var(--bg2) 100%);color:var(--ink);font-family:-apple-system,"SF Pro Display","Helvetica Neue",Arial,sans-serif}
+.rule{position:absolute;left:0;right:0;bottom:0;height:6px;background:var(--gold)}
+.brand{position:absolute;left:64px;top:0;bottom:6px;display:flex;align-items:center;gap:26px}
+.brand img{width:120px;height:120px}
+h1{margin:0;font-size:76px;line-height:1;letter-spacing:-2px;font-weight:800}
+.tag{margin-top:14px;font-size:23px;color:var(--sub);letter-spacing:-.2px}
+.tag b{color:var(--gold);font-weight:700}
+.shot{position:absolute;right:-90px;top:34px;width:470px;height:300px;border-radius:14px;border:1.5px solid var(--line);box-shadow:0 18px 40px var(--shade);overflow:hidden;
+  -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 22%,#000 100%),linear-gradient(180deg,#000 70%,transparent 100%);-webkit-mask-composite:source-in}
+.shot img{width:100%;display:block}
+.shot .d{display:none}
+[data-theme=dark] .shot .l{display:none}
+[data-theme=dark] .shot .d{display:block}
+</style></head><body>
+<div class="brand">
+  <img src="../../assets/logo.png" alt="">
+  <div><h1>Fools Gold</h1><div class="tag">Your inbox, ranked by <b>what needs you</b>, <b>by when</b> and <b>why</b>.</div></div>
+</div>
+<div class="shot"><img class="l" src="hero.png" alt=""><img class="d" src="hero-dark.png" alt=""></div>
+<div class="rule"></div>
+</body></html>
