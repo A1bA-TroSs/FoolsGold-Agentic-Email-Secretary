@@ -238,3 +238,7 @@ secret.key
 backend-dist/
 .pyinstaller-work/
 !backend/foolsgold-backend.spec
+
+# macOS and stray archives
+.DS_Store
+.snap-*.tar
