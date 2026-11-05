@@ -56,6 +56,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Sequence
 
+from . import cues
+
 # --------------------------------------------------------------------------
 # declared priors -- NOT learned
 # --------------------------------------------------------------------------
@@ -68,6 +70,30 @@ from typing import Any, Callable, Iterable, Sequence
 PRIOR_BIAS = -0.40           # an unmatched email is not noise, it is just not urgent
 PRIOR_TOPIC = 2.20           # a full priority-list match dominates
 PRIOR_STRUCTURAL_NOISE = -2.00
+
+# Who sent it, and to whom. Research on what users act on puts these above
+# topic: past interaction with the sender carried most of the predictive power
+# in enterprise reply prediction (Yang et al., SIGIR 2017), and mail sent to
+# you rather than to a list is far likelier to need you (Karagiannis &
+# Vojnovic, WWW 2009). Before these priors existed the features were computed
+# and shown in `explain`, but on day one they moved nothing: relevance was
+# topic and the bulk-sender penalty alone, so a known correspondent and a
+# stranger's newsletter differed only by the noise regex.
+#
+# Sized so that a highlighted sender beats the bulk-sender penalty ("always
+# show my advisor") and a frequent correspondent addressed directly sits
+# clearly above theta_rel, while neither outweighs a full topic match.
+PRIOR_DIRECT = 0.60          # To: me, not Cc and not a list
+PRIOR_AFFINITY = 1.20        # scaled by affinity in [0, 1]; 1.0 = five+ past exchanges
+PRIOR_HIGHLIGHTED = 2.50     # the user marked this sender to stand out
+
+PRIORS = {
+    "topic_match": PRIOR_TOPIC,
+    "structural_noise": PRIOR_STRUCTURAL_NOISE,
+    "direct_address": PRIOR_DIRECT,
+    "affinity": PRIOR_AFFINITY,
+    "highlighted": PRIOR_HIGHLIGHTED,
+}
 
 # Actionability is deliberately a FIXED formula. It describes the text, and the
 # text does not change when the user changes. Nothing below learns.
@@ -101,6 +127,23 @@ PA_MAX_STEP = 0.35           # no single email may swing a weight more than this
 # is never corrected, so the model never learns it was wrong. Same reasoning as
 # Rocchio's beta=0.75 against gamma=0.15 elsewhere in this file.
 PA_DEMOTE_SCALE = 0.85
+
+
+# Per-coordinate step scaling. A feature the model has never seen moves at the
+# full PA-II step; a well-observed one is damped toward a floor.
+#
+# Deliberately never ABOVE 1.0, so this can only slow a step down, never speed
+# one past what PA-II sanctioned -- the relative-loss bound stays an upper
+# bound. The fast half is not "move further than PA-II says", it is "stop
+# shrinking the step for features you have barely observed", which is exactly
+# the FTRL argument.
+#
+# Worth stating because the obvious alternative is wrong: the interactive-ML
+# literature is explicit that effective updates are *immediate, focused and
+# small*, not large. Cranking C up to make the app feel responsive is the thing
+# the evidence says not to do.
+LR_PRIOR_N = 5.0        # a fresh feature is worth about five observations of doubt
+LR_FLOOR = 0.35         # a mature feature still moves, just slowly
 
 # Confidence by signal provenance. This is where the contamination problem is
 # actually solved: a QA click does not need to be *identified and excluded*, it
@@ -137,6 +180,53 @@ THRESHOLD_MIN = 0.05
 THRESHOLD_MAX = 0.95
 CONSISTENT_RUN = 3           # "marks in a consistent direction" -- how many
 
+# A fixed taxonomy, assigned by the model, one binary feature each.
+#
+# Fixed rather than discovered. BERTopic's own maintainers say that with "only
+# a few documents (~1000)" it is "very difficult to properly extract topics",
+# and that UMAP's stochasticity makes runs differ unless you fix the seed "at
+# the expense of performance". This mailbox holds ~1,200 emails, which is at or
+# below that line -- and a category whose meaning changes between runs is
+# unusable in a UI where the user is learning what the categories mean.
+#
+# Eight, not eighty. Each one has to earn its weight from the user's own
+# clicks, and a taxonomy with a long tail is a taxonomy where most entries
+# never get enough evidence to matter.
+#
+# This is the piece that lets the app learn "exam notices matter to me,
+# hackathon invitations do not" -- a thing neither the sender nor the keyword
+# can express, because both arrive from the same departmental address. It is
+# also, mechanically, nothing new: Gmail's Priority Inbox scores
+# s = sum(f_i*g_i) + sum(f_i*w_i), global prior plus per-user deviation, and a
+# per-category preference is just one more w_i. It composes with PA-II with no
+# architectural change at all.
+CATEGORIES = (
+    "exam",             # tests, grades, results
+    "coursework",       # assignments, submissions, projects
+    "announcement",     # LMS/Canvas notices, course admin
+    "career",           # recruiting, internships, co-op, employers
+    "event",            # talks, seminars, campus happenings
+    "competition",      # hackathons, contests, calls for application
+    "admin",            # registry, fees, IDs, visas, housing
+    "service",          # IT tickets, system notices, password resets
+)
+CATEGORY_FEATURE = "cat_"
+
+
+def category_features(category: str | None) -> dict[str, float]:
+    """One binary feature per category, or none at all.
+
+    An unrecognised or missing category contributes nothing rather than falling
+    back to a default bucket. A wrong category learned confidently is worse
+    than no category: it would attach the user's corrections to the wrong
+    drawer and there would be no way to see that it had.
+    """
+    key = (category or "").strip().lower()
+    if key not in CATEGORIES:
+        return {}
+    return {f"{CATEGORY_FEATURE}{key}": 1.0}
+
+
 FEATURE_NAMES = (
     "topic_match",
     "direct_address",
@@ -149,20 +239,13 @@ FEATURE_NAMES = (
     "structural_noise",
 )
 
-_ACTION_CUE = re.compile(
-    r"\b(action required|urgent|asap|deadline|due|reminder|rsvp|respond|reply|"
-    r"confirm|approve|approval|sign|submit|complete|required|request(?:ed)?|"
-    r"overdue|final notice|last chance to)\b", re.I
-)
-_NOISE_SENDER = re.compile(
-    r"(no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|mailer|notifications?|"
-    r"marketing|updates?|alerts?|billing|receipts?|support)@", re.I
-)
-_NOISE_SUBJECT = re.compile(
-    r"\b(unsubscribe|newsletter|webinar|sale|% ?off|deal|promo|digest|"
-    r"weekly round[- ]?up|invoice|receipt|order (?:confirm|ship))\b", re.I
-)
-_TOKEN = re.compile(r"[a-z0-9]+")
+_ACTION_CUE = cues.EN_ACTION
+_NOISE_SENDER = cues.NOISE_SENDER
+# Latin words and Hangul runs. The old `[a-z0-9]+` dropped every Korean
+# character, so a Korean email embedded to an all-zero vector and topic
+# centroids and Rocchio learning saw nothing in Korean mail at all.
+_TOKEN = re.compile(r"[a-z0-9]+|[\uac00-\ud7a3]+")
+_HANGUL = re.compile(r"[\uac00-\ud7a3]")
 
 
 def sigmoid(x: float) -> float:
@@ -209,9 +292,17 @@ class Axes:
     actionability: float
     relevance: float
     features: dict[str, float] = field(default_factory=dict)
+    # Set for exam, payment, ticket and invitation mail (`cues.ALWAYS_IMPORTANT`).
+    # A floor, not a weight: relevance can still order it, but never hide it.
+    must_see: str | None = None
+    # The mail asks for something by a date it names (`dated_ask`). Same floor.
+    dated_ask: bool = False
 
-    def bucket(self, thresholds: Thresholds) -> str:
-        if self.relevance < thresholds.relevance:
+    def bucket(self, thresholds: Thresholds, floor: bool = True) -> str:
+        """`floor=False` for a muted sender: muting is a standing decision, and
+        the must-see floor must not overturn it."""
+        kept = floor and (self.must_see or self.dated_ask)
+        if self.relevance < thresholds.relevance and not kept:
             return "noise"
         return "action" if self.actionability >= thresholds.action else "fyi"
 
@@ -258,9 +349,29 @@ def _text_of(email: dict[str, Any]) -> str:
 def structural_noise(email: dict[str, Any]) -> float:
     sender = email.get("from_address") or ""
     subject = email.get("subject") or ""
-    if _NOISE_SENDER.search(sender) or _NOISE_SUBJECT.search(subject):
+    if _NOISE_SENDER.search(sender) or is_marketing(subject):
         return 1.0
     return 0.0
+
+
+is_marketing = cues.is_marketing
+
+
+def must_see(email: dict[str, Any]) -> str | None:
+    """The always-important kind of this email (exam, payment, ticket, invite),
+    or None. See `cues` for why this is a floor and not a feature."""
+    return cues.always_important(email)
+
+
+# How far back a named deadline still counts as a reason to keep mail out of
+# noise. A notice whose date passed last week is history.
+DATED_ASK_GRACE_DAYS = 2
+
+
+def dated_ask(email: dict[str, Any], deadline: str | None, today: date | None = None) -> bool:
+    """See `cues.is_dated_ask`. A second floor rather than a weight, because
+    day-one relevance cannot see a dated request (R = 0.08 for the Canvas notice)."""
+    return cues.is_dated_ask(email, deadline, today, DATED_ASK_GRACE_DAYS)
 
 
 def actionability(
@@ -286,9 +397,9 @@ def actionability(
         z += ACT_MODEL_ACTION
     elif hint == "noise":
         z += ACT_MODEL_NOISE
-    if _ACTION_CUE.search(subject):
+    if _ACTION_CUE.search(subject) or cues.ko_action(subject):
         z += ACT_SUBJECT_CUE
-    if _ACTION_CUE.search(body):
+    if _ACTION_CUE.search(body) or cues.asks_ko(body):
         z += ACT_BODY_CUE
     if deadline:
         z += ACT_HAS_DEADLINE
@@ -305,6 +416,7 @@ def features_for(
     addressed_directly: bool = False,
     affinity: float = 0.0,
     highlighted: bool = False,
+    category: str | None = None,
 ) -> dict[str, float]:
     """The relevance feature vector. Every value in [0, 1] so one feature
     cannot dominate purely by scale -- PA-II divides by ||f||^2, which makes an
@@ -319,6 +431,7 @@ def features_for(
         "unread": 0.0 if email.get("is_read") else 1.0,
         "attachment": 1.0 if email.get("has_attachments") else 0.0,
         "structural_noise": structural_noise(email),
+        **category_features(category),
     }
 
 
@@ -330,8 +443,8 @@ def relevance(features: dict[str, float], weights: dict[str, float] | None = Non
     """
     w = weights or {}
     z = PRIOR_BIAS
-    z += PRIOR_TOPIC * features.get("topic_match", 0.0)
-    z += PRIOR_STRUCTURAL_NOISE * features.get("structural_noise", 0.0)
+    for name, prior in PRIORS.items():
+        z += prior * features.get(name, 0.0)
     for name, value in features.items():
         z += float(w.get(name, 0.0)) * float(value)
     return round(sigmoid(z), 4)
@@ -347,13 +460,16 @@ def axes_for(
     addressed_directly: bool = False,
     affinity: float = 0.0,
     highlighted: bool = False,
+    category: str | None = None,
     weights: dict[str, float] | None = None,
 ) -> Axes:
-    feats = features_for(email, topic_match, addressed_directly, affinity, highlighted)
+    feats = features_for(email, topic_match, addressed_directly, affinity, highlighted, category)
     return Axes(
         actionability=actionability(email, model_bucket, deadline, task_count, addressed_directly),
         relevance=relevance(feats, weights),
         features=feats,
+        must_see=must_see(email),
+        dated_ask=dated_ask(email, deadline),
     )
 
 
@@ -361,7 +477,73 @@ def derive_bucket(axes: Axes, thresholds: Thresholds | None = None) -> str:
     return axes.bucket(thresholds or Thresholds())
 
 
-def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None = None) -> dict[str, Any]:
+# The single strongest reason an email is where it is, as a code the UI
+# translates. Ranked by how much a user could act on it: what you declared beats
+# what the app inferred, and an inference you can name beats a number.
+REASON_ORDER = (
+    "pinned", "explored", "topic", "deadline", "mustSee", "flagged",
+    "direct", "affinity", "answered", "noise", "none",
+)
+
+
+def reason_for(
+    axes: Axes,
+    *,
+    matched_topics: Sequence[str] = (),
+    deadline_days: int | None = None,
+    pinned: bool = False,
+    explored: bool = False,
+    muted: bool = False,
+) -> tuple[str, str]:
+    """Why this email is ranked where it is, in one code and one argument.
+
+    Deliberately ONE reason, not a list. A ranking explained by six factors is
+    not explained; the user cannot act on it and cannot tell which one was wrong.
+
+    Deliberately derived, not generated. Asking the model for a sentence would
+    cost a call per email and add a hallucination surface to the one part of the
+    UI whose entire job is to be trustworthy. Every code below is computed from
+    the same features that produced the score, so the explanation cannot drift
+    from the thing it explains.
+
+    This is not decoration. The adaptive layer learns from corrections, and a
+    correction on an unexplained ranking is ambiguous -- demoted because the
+    topic was wrong, or because the timing was? Naming the reason makes the
+    correction interpretable, which is the difference between a training signal
+    and noise.
+    """
+    if pinned:
+        return "pinned", ""
+    if explored:
+        return "explored", ""
+    topics = [t for t in matched_topics if t]
+    if topics and axes.features.get("topic_match", 0.0) > 0.5:
+        return "topic", topics[0]
+    # A rescued ticket or invitation is better named by its kind than by its date.
+    if (axes.must_see in ("ticket", "invite") and not muted
+            and axes.features.get("structural_noise")):
+        return "mustSee", axes.must_see
+    if deadline_days is not None:
+        return "deadline", str(deadline_days)
+    # Named only where the floor is what kept the mail visible (a system
+    # sender); a friend's "기말고사 끝나고 회식?" is not an exam notice.
+    if axes.must_see and not muted and axes.features.get("structural_noise"):
+        return "mustSee", axes.must_see
+    if axes.features.get("flagged"):
+        return "flagged", ""
+    if axes.features.get("direct_address"):
+        return "direct", ""
+    if axes.features.get("affinity", 0.0) >= 0.4:
+        return "affinity", ""
+    if axes.features.get("answered"):
+        return "answered", ""
+    if axes.features.get("structural_noise") and not (axes.dated_ask and not muted):
+        return "noise", ""
+    return "none", ""
+
+
+def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None = None,
+            floor: bool = True) -> dict[str, Any]:
     """Why this email landed where it did, decomposed.
 
     `Provenance As Precondition`: a derived belief that cannot name what
@@ -371,16 +553,13 @@ def explain(axes: Axes, thresholds: Thresholds, weights: dict[str, float] | None
     w = weights or {}
     contributions = {"bias": round(PRIOR_BIAS, 4)}
     for name, value in axes.features.items():
-        prior = 0.0
-        if name == "topic_match":
-            prior = PRIOR_TOPIC
-        elif name == "structural_noise":
-            prior = PRIOR_STRUCTURAL_NOISE
+        prior = PRIORS.get(name, 0.0)
         total = (prior + float(w.get(name, 0.0))) * float(value)
         if abs(total) > 1e-9:
             contributions[name] = round(total, 4)
     return {
-        "bucket": axes.bucket(thresholds),
+        "bucket": axes.bucket(thresholds, floor=floor),
+        "must_see": axes.must_see,
         "actionability": axes.actionability,
         "relevance": axes.relevance,
         "theta_relevance": round(thresholds.relevance, 4),
@@ -478,12 +657,24 @@ def confidence_of(signal: Signal) -> tuple[float, str]:
     return base, "ok"
 
 
+def learning_rate(count: int) -> float:
+    """Step scaling for a feature that has been touched `count` times.
+
+    count 0 -> 1.00   the first correction on a new feature lands in full
+    count 5 -> 0.71
+    count 20 -> 0.45
+    count 45+ -> 0.35 (floor)
+    """
+    return max(LR_FLOOR, math.sqrt(LR_PRIOR_N / (LR_PRIOR_N + max(0, int(count)))))
+
+
 def apply_signal(
     signal: Signal,
     features: dict[str, float],
     weights: dict[str, float],
     *,
     epoch_start: str | None,
+    counts: dict[str, int] | None = None,
 ) -> Outcome:
     """Offer one signal to the relevance model. May refuse; refusal is the point.
 
@@ -495,6 +686,7 @@ def apply_signal(
     per-example confidence, set by where the signal came from rather than by
     what it claims to be.
     """
+    counts = counts or {}
     if not within_epoch(signal.at, epoch_start):
         return Outcome(False, "pre-epoch")
     conf, why = confidence_of(signal)
@@ -518,7 +710,7 @@ def apply_signal(
     for name, value in features.items():
         if not value:
             continue
-        step = sign * float(value) * magnitude
+        step = sign * float(value) * magnitude * learning_rate(counts.get(name, 0))
         step = max(-PA_MAX_STEP, min(PA_MAX_STEP, step))
         if abs(step) < 1e-9:
             continue
@@ -621,6 +813,14 @@ def is_explored(email_id: str, one_in: int = EXPLORE_ONE_IN, salt: str = EXPLORE
     collapses onto that belief and the faster it stops learning. `noise` is a
     one-way door, so a fraction of it is opened on purpose.
 
+    This is `Self-Reinforcing Error` from the ontology vault, applied: a belief
+    entrenches through disuse, and the evidence that would overturn it is never
+    gathered because the belief itself decides what gets shown. Suppression is
+    the self-concealing case -- which is also why `PA_DEMOTE_SCALE` makes
+    demotion slower than promotion. Jiang et al. (arXiv 1902.10730) prove the
+    same result formally and name the three levers: exploration noise, a wide
+    candidate pool, and a cap on repeated exposure. This function is the first.
+
     Deterministic on the id, not random: an email must not flicker in and out of
     the list between refreshes, and a test that cannot reproduce the selection
     cannot check it.
@@ -691,13 +891,29 @@ def hashing_embed(text: str, dims: int = 256) -> list[float]:
     yet would have made none of it testable.
     """
     vec = [0.0] * dims
-    for token in _TOKEN.findall((text or "").lower()):
-        if len(token) < 3:
-            continue
+    for token in _embed_tokens(text):
         h = hashlib.blake2b(token.encode("utf-8"), digest_size=4).digest()
         idx = int.from_bytes(h, "big") % dims
         vec[idx] += 1.0
     return normalise(vec)
+
+
+def _embed_tokens(text: str) -> list[str]:
+    """Latin words of 3+ letters, and Hangul as character bigrams.
+
+    Bigrams because Korean glues particles onto words: `과제를`, `과제는` and
+    `과제` must land on the same dimension, and with no morphological analyser
+    the shared bigram `과제` is what they have in common.
+    """
+    out: list[str] = []
+    for token in _TOKEN.findall((text or "").lower()):
+        if _HANGUL.match(token):
+            if len(token) == 1:
+                continue
+            out.extend(token[i:i + 2] for i in range(len(token) - 1))
+        elif len(token) >= 3:
+            out.append(token)
+    return out
 
 
 _embedder: Callable[[str], list[float]] = hashing_embed

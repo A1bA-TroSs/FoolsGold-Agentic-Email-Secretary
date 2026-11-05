@@ -15,7 +15,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from .. import db, learning
+from .. import db, learning, relevance
 
 router = APIRouter(prefix="/api/ranking", tags=["ranking"])
 
@@ -87,6 +87,28 @@ def start_epoch() -> dict:
     return {"epoch_start": learning.begin_epoch(), "enabled": True}
 
 
+@router.post("/rescore")
+def rescore() -> dict:
+    """Re-derive every bucket and score from the stored classifications.
+
+    No model call. This exists because a change to the ranking rules was
+    otherwise invisible until someone pressed "Re-read everything", which DOES
+    call the model, batch by batch, over the whole mailbox -- so the cheap fix
+    for a logic change was gated behind the expensive operation.
+
+    The gap showed up the first time it mattered: the calendar stopped showing
+    `noise` mail, and nothing changed on screen, because every stored bucket had
+    been assigned by the previous rules and nothing re-derived them.
+    """
+    from .. import pipeline
+
+    updated = pipeline.rescore_all()
+    with db.connect() as conn:
+        buckets = {r["bucket"]: r["n"] for r in conn.execute(
+            "SELECT bucket, COUNT(*) AS n FROM classifications GROUP BY bucket")}
+    return {"rescored": updated, "buckets": buckets}
+
+
 @router.post("/reset")
 def reset() -> dict:
     """Discard the learned deviation. The declared priorities are untouched --
@@ -99,6 +121,18 @@ def reset() -> dict:
 def events(limit: int = Query(default=50, ge=1, le=500), applied_only: bool = False) -> dict:
     return {"events": db.learning_events(limit=limit, applied_only=applied_only),
             "summary": db.learning_summary()}
+
+
+@router.get("/categories")
+def categories() -> dict:
+    """What the app thinks each kind of mail is worth to you, and why.
+
+    `weight` is the learned deviation; `signals` is how many corrections have
+    touched it, which is the honest measure of how much to believe the number.
+    A weight from two clicks is a guess wearing four decimal places.
+    """
+    return {"categories": db.category_evidence(),
+            "taxonomy": list(relevance.CATEGORIES)}
 
 
 @router.get("/explain/{email_id}")

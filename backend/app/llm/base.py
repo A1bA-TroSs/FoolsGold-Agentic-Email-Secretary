@@ -5,6 +5,8 @@ Copilot for Claude for a local model changes one setting and nothing else.
 """
 from __future__ import annotations
 
+from .. import relevance
+
 import json
 import re
 from abc import ABC, abstractmethod
@@ -99,13 +101,71 @@ class Classification:
     deadline: str | None = None
     rationale: str = ""
     matched: list[str] = field(default_factory=list)
+    category: str = ""
+    # What the email SAYS, for someone who has not opened it. Deliberately
+    # not `rationale`: that explains why the app ranked the mail where it
+    # did, which is a sentence about the app. This one is about the mail.
+    summary: str = ""
     tasks: list[ExtractedTask] = field(default_factory=list)
+
+
+@dataclass
+class UserContext:
+    """Who the inbox belongs to, for the classify prompt (roadmap F3).
+
+    `correspondents` are (name, address) pairs, most-written-to first. They are
+    only filled for a local provider; see `pipeline.user_context`."""
+    address: str = ""
+    role: str = ""
+    correspondents: list[tuple[str, str]] = field(default_factory=list)
+
+
+MAX_CORRESPONDENTS = 10
+MAX_ROLE_CHARS = 120
 
 
 class ProviderUnavailable(RuntimeError):
     """Raised when a provider cannot run at all (no key, not signed in, offline).
     The caller falls back to structural scoring and shows the 'AI unavailable'
-    badge rather than blocking the UI."""
+    badge rather than blocking the UI.
+
+    `key` and `vars` are how the failure reaches the screen in the reader's
+    language. The message stays English and stays useful -- it goes to logs and
+    to anyone reading a traceback -- but a failure the app *recognises* also
+    names itself with a translation key, and the UI words it.
+
+    This is the third time the rule has had to be applied: the briefing's
+    `note_key`, the ranking reason's codes, and now this. **Text built in the
+    backend is text in one language**, and it ends up sitting in the middle of
+    a Korean sentence. A failure with no key -- something genuinely unexpected
+    -- still renders its message, which is the right answer for a string
+    nobody anticipated.
+    """
+
+    def __init__(self, message: str, *, key: str | None = None,
+                 vars: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.key = key
+        self.vars = vars or {}
+
+
+@dataclass
+class CheckResult:
+    """What Settings' "test connection" learned.
+
+    Iterable, so every existing `ok, detail = await provider.check()` and every
+    test that unpacks two values keeps working. A provider that has nothing
+    structured to add can still return a plain tuple.
+    """
+
+    ok: bool
+    detail: str
+    key: str | None = None
+    vars: dict[str, Any] = field(default_factory=dict)
+    models: list[str] = field(default_factory=list)
+
+    def __iter__(self):
+        return iter((self.ok, self.detail))
 
 
 class LLMProvider(ABC):
@@ -123,10 +183,15 @@ class LLMProvider(ABC):
         except Exception as exc:  # noqa: BLE001 - surfaced to the user verbatim
             return False, str(exc)
 
-    async def classify_batch(self, emails: list[dict[str, Any]], priorities: list[str]) -> list[Classification]:
+    # True only when the model runs on this machine (Ollama). Decides whether
+    # the user's top correspondents may go into the prompt.
+    local: bool = False
+
+    async def classify_batch(self, emails: list[dict[str, Any]], priorities: list[str],
+                             context: UserContext | None = None) -> list[Classification]:
         if not emails:
             return []
-        raw = await self.complete(CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities))
+        raw = await self.complete(CLASSIFY_SYSTEM, build_classify_prompt(emails, priorities, context))
         return parse_classifications(raw, [e["id"] for e in emails])
 
     async def summarize(
@@ -185,13 +250,47 @@ Rules for tasks:
 - At most 5 per email. Empty list is the right answer for most mail, and always
   the right answer for newsletters and marketing.
 
+When the prompt describes the user (their address, role, the people they write to
+most) and says how each email reached them, use it to judge whether the email is
+theirs to act on. These only lean the bucket; a stated deadline or a task for the
+user always counts:
+- Sent "to you" by someone they write to often (the line says so), asking
+  something or continuing their thread: lean "action".
+- "not addressed to you" (a list or bcc): lean "fyi" or "noise", unless it states
+  something this user must do.
+- "cc you": usually "fyi".
+- The role says what is relevant: course mail matters to a student, a team's
+  review request to its member.
+
 List which of the user's active priorities the email relates to, using their exact
 wording. Empty list if none.
+
+Also give one "category" from exactly this list, describing what KIND of thing the
+email is. This is independent of the bucket: an exam notice can be "fyi" and a
+hackathon invitation can be "action".
+- "exam"          tests, quizzes, grades, results, invigilation
+- "coursework"    assignments, submissions, projects, labs, reports
+- "announcement"  course or LMS notices, timetable changes, class admin
+- "career"        recruiting, internships, co-op, employers, career services
+- "event"         talks, seminars, socials, campus happenings
+- "competition"   hackathons, contests, calls for application, prizes
+- "admin"         registry, fees, ID cards, visas, housing, enrolment
+- "service"       IT tickets, system notices, password and account mail
+Use "" if genuinely none of them fit. Do not invent a category outside this list.
+
+Finally write "summary": one plain sentence, at most 20 words, saying what this email
+TELLS the recipient -- the fact, the change, the offer, the date. It is read by someone
+who has not opened their mail yet, so it has to stand on its own: never "this email" or
+"the sender", and never a restatement of the subject line, which is printed beside it.
+Write it in the same language the email is written in. Use "" when the subject already
+says everything there is to say.
 
 Reply with a JSON array and nothing else. One object per email, same order as given:
 [{"id": "<id>", "bucket": "action|fyi|noise", "deadline": "YYYY-MM-DD or null",
   "tasks": [{"title": "<verb-first, max 12 words>", "due": "YYYY-MM-DD"}],
-  "matched": ["priority", ...], "rationale": "<max 15 words>"}]"""
+  "matched": ["priority", ...], "category": "<one of the list above, or \"\">",
+  "summary": "<max 20 words, or \"\">",
+  "rationale": "<max 15 words>"}]"""
 
 DIGEST_SYSTEM = """You write one short morning briefing for a busy person, in the voice of
 a trusted assistant who has already read everything.
@@ -202,7 +301,12 @@ emails that matter today, each with a one-line reason, plus a single headline
 sentence for the whole day.
 
 Rules:
-- Order by what is time-critical today. Deadlines and decisions first.
+- The window is what matters. Prefer things due TODAY or within the next few
+  days, then things due later in the window. An item whose deadline has already
+  passed belongs here only if it passed very recently and can still be caught;
+  something overdue by a week is not what "today" means, however important it
+  once was.
+- Within the same urgency, order by how much it matters to this person.
 - At most 7 items. Leave out anything that does not need them today.
 - Each note is at most 14 words, names concrete people and dates, and says what
   the user must actually DO. Not "an email about X" -- "confirm the room by 5pm".
@@ -213,15 +317,43 @@ Reply with JSON and nothing else:
 {"headline": "<one sentence>", "items": [{"id": "<id>", "note": "<max 14 words>"}]}"""
 
 
-def _fmt_email(email: dict[str, Any], index: int) -> str:
+def reaches_user(email: dict[str, Any], me: str) -> str:
+    """How the mail reached the user: "to you", "cc you", or not directly."""
+    from ..priority import _recipient_addresses
+    me = (me or "").strip().lower()
+    if not me:
+        return ""
+    if me in _recipient_addresses(email.get("to_recipients")):
+        return "to you"
+    if me in _recipient_addresses(email.get("cc_recipients")):
+        return "cc you"
+    return "not addressed to you directly (list or bcc)"
+
+
+MAX_NAME_CHARS = 40
+
+
+def clean_name(name: str) -> str:
+    """A From display name made safe for one prompt line: no newlines or
+    brackets that could start a new instruction or fake an address, capped."""
+    name = re.sub(r"[<>\[\]{}\"`]", "", " ".join(str(name or "").split()))
+    return name[:MAX_NAME_CHARS].strip()
+
+
+def _fmt_email(email: dict[str, Any], index: int, me: str = "",
+               frequent: frozenset[str] = frozenset()) -> str:
     body = _body_for_prompt(email.get("body_text") or email.get("body_preview") or "")
     to = email.get("to_recipients") or "[]"
     cc = email.get("cc_recipients") or "[]"
+    how = reaches_user(email, me)
+    if how and (email.get("from_address") or "").strip().lower() in frequent:
+        how += "; the sender is someone they write to often"
     return (
         f"--- EMAIL {index} ---\n"
         f"id: {email['id']}\n"
-        f"from: {email.get('from_name','')} <{email.get('from_address','')}>\n"
+        f"from: {clean_name(email.get('from_name', ''))} <{email.get('from_address','')}>\n"
         f"to: {to}\ncc: {cc}\n"
+        + (f"reaches the user: {how}\n" if how else "") +
         f"received: {email.get('received_at','')}\n"
         f"importance: {email.get('importance','normal')}   attachments: {bool(email.get('has_attachments'))}\n"
         f"subject: {email.get('subject','')}\n"
@@ -229,11 +361,31 @@ def _fmt_email(email: dict[str, Any], index: int) -> str:
     )
 
 
-def build_classify_prompt(emails: list[dict[str, Any]], priorities: list[str]) -> str:
+def _context_block(context: UserContext | None) -> str:
+    if not context or not (context.address or context.role or context.correspondents):
+        return ""
+    lines = ["About the user:"]
+    if context.address:
+        lines.append(f"- address: {context.address}")
+    role = " ".join((context.role or "").split())[:MAX_ROLE_CHARS]
+    if role:
+        lines.append(f"- role, in their words: {role}")
+    people = context.correspondents[:MAX_CORRESPONDENTS]
+    if people:
+        lines.append("- people they write to most: " + "; ".join(
+            f"{clean_name(name)} <{addr}>" if clean_name(name) else addr for name, addr in people))
+    return "\n".join(lines) + "\n\n"
+
+
+def build_classify_prompt(emails: list[dict[str, Any]], priorities: list[str],
+                          context: UserContext | None = None) -> str:
     prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
-    blocks = "\n".join(_fmt_email(e, i + 1) for i, e in enumerate(emails))
+    me = context.address if context else ""
+    frequent = frozenset(a for _, a in context.correspondents[:MAX_CORRESPONDENTS]) if context else frozenset()
+    blocks = "\n".join(_fmt_email(e, i + 1, me, frequent) for i, e in enumerate(emails))
     return (
         f"Current date: {date.today().isoformat()}\n\n"
+        f"{_context_block(context)}"
         f"The user's active priorities right now:\n{prio}\n\n"
         f"Classify these {len(emails)} emails.\n\n{blocks}"
     )
@@ -247,8 +399,22 @@ def build_digest_prompt(
 ) -> str:
     prio = "\n".join(f"- {p}" for p in priorities) or "- (none set yet)"
     lines = []
+    today = date.today()
     for e in emails:
-        deadline = f" | due {e['deadline']}" if e.get("deadline") else ""
+        # The model is told how far off each deadline is, not only its date.
+        # Asking it to prefer "today or this week" while handing it bare ISO
+        # dates makes it do calendar arithmetic it is bad at, on the one field
+        # the instruction turns on.
+        deadline = ""
+        if e.get("deadline"):
+            try:
+                days = (date.fromisoformat(e["deadline"]) - today).days
+                when = ("due today" if days == 0
+                        else f"due in {days}d" if days > 0
+                        else f"{-days}d OVERDUE")
+                deadline = f" | {when} ({e['deadline']})"
+            except ValueError:
+                deadline = f" | due {e['deadline']}"
         lines.append(
             f"id: {e['id']}\n"
             f"[{e.get('bucket','fyi')}{deadline}] {e.get('subject','')} "
@@ -393,6 +559,13 @@ def parse_classifications(raw: str, expected_ids: list[str]) -> list[Classificat
                 continue
         bucket = str(item.get("bucket") or "").strip().lower()
         matched = item.get("matched") or []
+        # Validated against the taxonomy, not trusted. An unknown category is
+        # dropped to "" rather than kept, because a category the app does not
+        # know is a feature nothing will ever learn a weight for -- it would
+        # sit in the vector as a permanent zero and look like data.
+        category = str(item.get("category") or "").strip().lower()
+        if category not in relevance.CATEGORIES:
+            category = ""
         out.append(
             Classification(
                 email_id=email_id,
@@ -400,6 +573,8 @@ def parse_classifications(raw: str, expected_ids: list[str]) -> list[Classificat
                 deadline=_clean_deadline(item.get("deadline")),
                 rationale=str(item.get("rationale") or "")[:300],
                 matched=[str(m) for m in matched if m] if isinstance(matched, list) else [],
+                category=category,
+                summary=str(item.get("summary") or "").strip()[:300],
                 tasks=parse_tasks(item.get("tasks")),
             )
         )

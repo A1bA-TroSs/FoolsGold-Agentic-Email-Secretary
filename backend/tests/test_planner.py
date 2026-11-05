@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import sqlite3
+
 import pytest
 
 from app import db, planner
@@ -421,14 +423,22 @@ def test_the_deleted_at_column_is_added_to_an_existing_database(tmp_path, monkey
     ADD COLUMN IF NOT EXISTS, so this is exactly the shape of bug that ships."""
     monkeypatch.setattr(db, "DATA_DIR", tmp_path)
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "old.db")
-    with db.connect() as conn:
-        conn.execute(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, "
-            "due_date TEXT NOT NULL, note TEXT, status TEXT NOT NULL DEFAULT 'open', "
-            "created_at TEXT, completed_at TEXT)"
-        )
-        conn.execute("INSERT INTO tasks (title, due_date, status) VALUES ('Old row', '2026-08-27', 'open')")
-        conn.commit()
+
+    # Raw sqlite3, not db.connect(): the point is to produce a file written by
+    # an OLDER version of this app, and db.connect() now brings any database it
+    # opens up to the current schema -- which is the fix for the standalone
+    # scripts and would, here, quietly make the thing under test impossible to
+    # set up.
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    legacy = sqlite3.connect(tmp_path / "old.db")
+    legacy.execute(
+        "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, "
+        "due_date TEXT NOT NULL, note TEXT, status TEXT NOT NULL DEFAULT 'open', "
+        "created_at TEXT, completed_at TEXT)"
+    )
+    legacy.execute("INSERT INTO tasks (title, due_date, status) VALUES ('Old row', '2026-08-27', 'open')")
+    legacy.commit()
+    legacy.close()
 
     db.init_db()
 

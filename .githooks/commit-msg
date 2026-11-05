@@ -1,0 +1,10 @@
+#!/bin/sh
+# Rejects commit subjects that are not Conventional Commits. Merge and revert subjects pass.
+subject=$(sed -n '1p' "$1")
+case "$subject" in Merge\ *|Revert\ *|fixup!\ *|squash!\ *) exit 0;; esac
+if printf '%s' "$subject" | grep -Eq '^(feat|fix|refactor|docs|chore|test|perf|build|ci|style|revert)(\([^)]+\))?!?: .+'; then
+  exit 0
+fi
+echo "Commit subject must look like: feat(scope): what changed" >&2
+echo "Got: $subject" >&2
+exit 1

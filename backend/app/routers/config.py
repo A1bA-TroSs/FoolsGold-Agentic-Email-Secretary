@@ -8,11 +8,16 @@ from .. import db, pipeline, priority
 from ..config import DEFAULT_SETTINGS, SECRET_SETTINGS
 from ..llm.copilot_provider import CopilotProvider
 from ..llm import registry
+from .. import consent
 from ..llm.registry import get_provider, reset_cache
 from ..sources.registry import all_status, get_source
+from ..transports.registry import all_status as all_transport_status, get_transport
 from ..llm.base import ProviderUnavailable
 
 router = APIRouter(prefix="/api", tags=["config"])
+
+# What `db.all_settings()` returns in place of a saved secret.
+REDACTED = "********"
 
 
 # --------------------------------------------------------------------------
@@ -34,9 +39,50 @@ def patch_settings(body: SettingsPatch) -> dict:
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown settings: {', '.join(unknown)}")
     for key, value in body.values.items():
+        # `all_settings()` hands secrets to the UI as a mask, so a form that
+        # round-trips its fields would save the mask *as* the password -- and
+        # the next login would fail with the user certain they typed it
+        # correctly. Refusing the mask here closes that for every secret field,
+        # present and future, rather than trusting each form to remember.
+        if key in SECRET_SETTINGS and value == REDACTED:
+            continue
         db.set_setting(key, value)
     reset_cache()  # provider or model may have changed
     return db.all_settings()
+
+
+@router.get("/transports")
+def transports() -> dict:
+    """Every way out and whether it is usable, so Settings can say "SMTP: needs
+    a password" next to "Outlook: not connected".
+
+    Note what is *not* in this file: there is no endpoint that sends anything.
+    A message leaves this machine only through a call the user made after
+    seeing the message, and that route does not exist yet.
+    """
+    return {"current": db.get_setting("mail_transport", "none"), "statuses": all_transport_status()}
+
+
+class TransportTest(BaseModel):
+    name: str | None = None
+
+
+@router.post("/transports/test")
+def test_transport(body: TransportTest | None = None) -> dict:
+    """Prove the sending settings work before the user needs them to.
+
+    Logs in and finds the right mailbox; **sends nothing and writes nothing**.
+    A test that left a stray draft behind, or put a message in someone's inbox,
+    would be the first thing the user had to apologise for. Uses the saved
+    settings, so Settings must save before testing -- which is also what makes
+    the result true of the configuration that will actually be used.
+    """
+    transport = get_transport((body.name if body else None) or None)
+    try:
+        result = transport.check()
+    except Exception as exc:  # noqa: BLE001 - a test button must never 500
+        result = {"ok": False, "detail": f"{type(exc).__name__}: {exc}"}
+    return {"transport": transport.name, "mode": transport.mode, **result}
 
 
 @router.get("/sources")
@@ -47,14 +93,104 @@ def sources() -> dict:
     return {"current": current.name, "statuses": all_status()}
 
 
+class ConsentBody(BaseModel):
+    provider: str | None = None
+
+
+@router.get("/ai/consent")
+def ai_consent_status(provider: str | None = None) -> dict:
+    """What the consent dialog shows: whether the chosen provider would receive
+    mail, who that is, where, and whether the user has already agreed."""
+    return consent.status(provider or registry.configured_provider())
+
+
+@router.post("/ai/consent")
+def ai_consent_grant(body: ConsentBody) -> dict:
+    """Record an explicit yes. Only the dialog's Allow button calls this; the
+    generic settings endpoint cannot, so no form round-trip can forge one."""
+    result = consent.grant(body.provider or registry.configured_provider())
+    reset_cache()
+    return result
+
+
+@router.delete("/ai/consent")
+def ai_consent_withdraw(provider: str | None = None) -> dict:
+    closed = consent.withdraw(provider)
+    reset_cache()
+    return {"withdrawn": closed,
+            **consent.status(provider or registry.configured_provider())}
+
+
 @router.post("/settings/test-provider")
 async def test_provider() -> dict:
     try:
         provider = get_provider()
     except ProviderUnavailable as exc:
-        return {"ok": False, "detail": str(exc)}
-    ok, detail = await provider.check()
-    return {"ok": ok, "detail": detail, "provider": provider.name, "model": provider.model}
+        return {"ok": False, "detail": str(exc),
+                "detail_key": exc.key, "detail_vars": exc.vars}
+    result = await provider.check()
+    ok, detail = result
+    # A provider that has something structured to say says it; one that returns
+    # a plain tuple still works. The English `detail` stays as the fallback for
+    # failures nobody anticipated.
+    return {"ok": ok, "detail": detail,
+            "detail_key": getattr(result, "key", None),
+            "detail_vars": getattr(result, "vars", {}) or {},
+            "models": getattr(result, "models", []) or [],
+            "provider": provider.name, "model": provider.model}
+
+
+@router.get("/ollama/models")
+async def ollama_models() -> dict:
+    """What this Mac actually has.
+
+    The app shipped a default of `qwen3.5:9b` and offered a free-text box.
+    Someone who pulled `qwen3.5:4b` -- deliberately, because it is the one that
+    fits a laptop -- got "Ollama has no model called 'qwen3.5:9b'" and an
+    instruction to download six gigabytes they did not need.
+
+    The app should not guess a model name and it must not pick one either: the
+    same rule that stops it reaching for a credential stops it choosing what
+    runs on someone's machine. So it asks, shows, and lets the user click.
+    """
+    from ..llm.ollama_provider import OllamaProvider, model_matches
+
+    configured = db.get_setting("ollama_model", "") or ""
+    provider = OllamaProvider(configured, db.get_setting("ollama_host", "") or "")
+    names = await provider.installed()
+    installed = names or []
+    return {
+        "configured": configured,
+        # False when Ollama did not answer at all, so Settings can say
+        # "Ollama is not running" and link to the download page instead of
+        # offering a model download that cannot work.
+        "reachable": names is not None,
+        "installed": installed,
+        "matches": any(model_matches(configured, m) for m in installed),
+    }
+
+
+class PullIn(BaseModel):
+    model: str
+
+
+@router.post("/ollama/pull", status_code=202)
+async def ollama_pull_start(body: PullIn) -> dict:
+    """Start downloading a model on the configured Ollama host (roadmap F5).
+    Returns at once; poll GET for progress. Never changes `ollama_model`."""
+    from ..llm import ollama_pull
+    try:
+        return ollama_pull.start(db.get_setting("ollama_host", "") or "", body.model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/ollama/pull")
+def ollama_pull_state() -> dict:
+    from ..llm import ollama_pull
+    return {**ollama_pull.state(), "suggestions": ollama_pull.suggestions()}
 
 
 @router.get("/settings/copilot-status")

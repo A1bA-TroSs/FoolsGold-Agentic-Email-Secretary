@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "Fools Gold"
-VERSION = "1.0.0-dev"
+VERSION = "1.2.7"
 
 # All user state lives in one directory the user can inspect or delete.
 DATA_DIR = Path(os.environ.get("FOOLSGOLD_HOME", Path.home() / ".foolsgold"))
@@ -26,7 +26,7 @@ GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 GRAPH_SCOPES = ["User.Read", "Mail.Read"]
 
 # Settings keys that are encrypted at rest.
-SECRET_SETTINGS = {"anthropic_api_key", "openai_api_key"}
+SECRET_SETTINGS = {"anthropic_api_key", "openai_api_key", "smtp_password"}
 
 DEFAULT_SETTINGS = {
     "theme": "gold",
@@ -40,16 +40,72 @@ DEFAULT_SETTINGS = {
     # Your own address. Graph fills this in at sign-in; with Apple Mail you type
     # it, and it drives the strongest structural signal there is (To: you vs Cc:).
     "user_address": "",
+    # Optional. Goes in the From display name of anything you send; an empty
+    # one is fine and common.
+    "user_name": "",
+    # Optional, in the user's own words ("PhD student in CS at SNU"). Goes into
+    # the AI classify prompt so the model knows what is relevant to them.
+    "user_role": "",
+    # Whether the people the user writes to most go into the classify prompt.
+    # Only ever sent to a local model (Ollama); cloud providers never get them.
+    "share_correspondents": "1",
+    # "1" once the one-priority question (roadmap F4) was answered or skipped,
+    # at setup or on the main view; it is never asked again.
+    "setup_priority_asked": "",
     # No provider is preselected. The app must never reach for a credential the
     # user did not choose, and until they choose one it ranks mail on
     # structural signals -- which works, and says so.
     "llm_provider": "none",
     "copilot_model": "auto",
+    # The local model. Empty host means Ollama's default on this machine; the
+    # point of this provider is that the mail never leaves it.
+    "ollama_model": "qwen3.5:9b",
+    "ollama_host": "",
     "anthropic_model": "claude-sonnet-4-5",
     "openai_model": "gpt-4o-mini",
     # Anything speaking the OpenAI API: Azure, OpenRouter, a local server.
     "openai_base_url": "",
     "entra_client_id": "",
+    # How far ahead a deadline still counts as pressing, and how long the flat
+    # "maximally urgent" zone lasts. Both in days, both user-editable.
+    #
+    # 7 is a default, not a finding. The closest empirical number I could find
+    # is a p90 of 11 days to task completion from one small task-manager's
+    # published data -- suggestive, not evidence. The shape matters more than
+    # the number: a Gaussian decay has no cliff at the window edge, where a
+    # linear one drops to zero the moment you step outside it.
+    "deadline_horizon_days": "7",
+    "deadline_urgent_days": "2",
+    # --- sending ---------------------------------------------------------
+    # "auto" works out everything from the address a reply comes from, so a
+    # new user can answer mail without a settings screen. It is a safe default
+    # because nothing leaves without the user approving the exact message, and
+    # the first send from an address stops to ask for its password. The manual
+    # modes remain for accounts discovery gets wrong. An unrecognised value
+    # means "none", not a guess: sending through the wrong server is not
+    # recoverable.
+    "mail_transport": "auto",
+    "smtp_host": "",
+    "smtp_port": "587",
+    # starttls | ssl | plain. There is no automatic downgrade from starttls:
+    # the password goes over that socket.
+    "smtp_security": "starttls",
+    "smtp_username": "",
+    # IMAP is only used to file a copy in Sent, and reuses the SMTP credentials
+    # because every provider that offers both expects the same ones.
+    "imap_host": "",
+    "imap_port": "993",
+    # ssl (implicit TLS, 993) | starttls (143) | plain (local test servers).
+    "imap_security": "ssl",
+    # auto | skip. "auto" looks for the server's own copy first and uploads one
+    # only if there is none -- Gmail and Exchange file it themselves, and
+    # appending on top is how a Sent folder ends up with two of everything.
+    "sent_copy": "auto",
+    # Set these only when discovery gets it wrong; empty means RFC 6154 first,
+    # then folder names.
+    "sent_folder": "",
+    "drafts_folder": "",
+    "imap_username": "",
     "sync_days": "30",
     "sync_max_messages": "300",
     "classify_batch_size": "10",

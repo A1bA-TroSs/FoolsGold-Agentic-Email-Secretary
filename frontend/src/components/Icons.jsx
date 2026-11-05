@@ -102,3 +102,43 @@ export const BellIcon = () => (
 export const HighlightIcon = () => (
   <svg {...base}><path d="M12 3.2 14.6 9l6.4.6-4.8 4.2 1.4 6.2L12 16.8 6.4 20l1.4-6.2L3 9.6 9.4 9z" /></svg>
 );
+
+/* Not about me. A circle with a slash: the shape reads as "exclude this one",
+   which is what it does -- deliberately not the mute bell, because muting is a
+   standing decision about a correspondent and this is about one message. */
+export const IrrelevantIcon = () => (
+  <svg {...base}><circle cx="12" cy="12" r="8.4" /><path d="M6.1 17.9 17.9 6.1" /></svg>
+);
+
+
+/* The folder for decisions already made. A tray, not a filing cabinet: these
+   are things set down within reach, not archived away. */
+export const ArchiveIcon = () => (
+  <svg {...base}><path d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M2 4h20v4H2z" /><path d="M10 12h4" /></svg>
+);
+/* The pile. Three sheets, the top one squared off and the ones under it
+   peeking out -- mail that has stacked up while you were away, which is a
+   different thing from the inbox tray (everything) and from the agenda
+   (what to do). Those two icons are already taken by exactly those ideas. */
+export const PileIcon = () => (
+  <svg {...base}><path d="M4 7h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" /><path d="M6 4.5h12" /><path d="M8 2.5h8" /></svg>
+);
+export const ChevronDownIcon = () => (
+  <svg {...base} width="11" height="11" className="rail-chevron"><path d="m6 9 6 6 6-6" /></svg>
+);
+
+export const SendIcon = () => (
+  <svg {...sm}><path d="m22 2-7 20-4-9-9-4z" /><path d="M22 2 11 13" /></svg>
+);
+export const ReplyIcon = () => (
+  <svg {...sm}><path d="M9 17 4 12l5-5" /><path d="M20 18v-2a4 4 0 0 0-4-4H4" /></svg>
+);
+export const ReplyAllIcon = () => (
+  <svg {...sm}><path d="m7 17-5-5 5-5" /><path d="m12 17-5-5 5-5" /><path d="M22 18v-2a4 4 0 0 0-4-4H7" /></svg>
+);
+export const ForwardIcon = () => (
+  <svg {...sm}><path d="m15 17 5-5-5-5" /><path d="M4 18v-2a4 4 0 0 1 4-4h12" /></svg>
+);
+export const CloseIcon = () => (
+  <svg {...sm}><path d="M18 6 6 18M6 6l12 12" /></svg>
+);

@@ -33,9 +33,12 @@ import email.utils
 from email.parser import BytesHeaderParser
 import hashlib
 import json
+import unicodedata
+from urllib.parse import unquote
 import os
 import plistlib
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,18 +50,96 @@ from .base import MailSource, SourceError, SourceStatus
 MAIL_HOME = Path.home() / "Library" / "Mail"
 
 FULL_DISK_ACCESS_HINT = (
-    "macOS is blocking access to ~/Library/Mail. This is Full Disk Access, not a "
-    "missing mailbox. Open System Settings → Privacy & Security → Full Disk Access "
-    "and add the app you launched from — Terminal if you ran `npm start` there — "
-    "then QUIT AND REOPEN it. macOS never applies the change to a running process."
+    "macOS has not given FoolsGold access to your mail yet. Turn FoolsGold on in "
+    "System Settings > Privacy & Security > Full Disk Access, then restart FoolsGold."
 )
 
-# Mailboxes we never want in a priority inbox.
-EXCLUDED_MAILBOXES = {
-    "trash", "deleted messages", "deleted items", "junk", "junk e-mail", "spam",
-    "sent", "sent messages", "sent items", "drafts", "outbox", "archive",
-    "notes", "rss",
+
+def _launcher() -> str:
+    """Who macOS holds responsible for reading ~/Library/Mail -- which is who
+    needs Full Disk Access. A packaged build runs this backend frozen, as a child
+    of FoolsGold.app, so the answer is the app. A checkout runs it with Python
+    from the terminal that ran `npm start`, so the answer is that terminal, and
+    only a developer ever sees that case.
+
+    The UI words both; this only names which applies. The old hint told someone
+    who had downloaded the app to "add the app you launched from -- Terminal if
+    you ran `npm start`", which is a sentence written to a developer."""
+    return "app" if getattr(sys, "frozen", False) else "terminal"
+
+
+def _fda_status() -> "SourceStatus":
+    return SourceStatus(ready=False, needs_setup=True, detail=FULL_DISK_ACCESS_HINT,
+                        extra={"detail_key": "fdaNeeded",
+                               "detail_vars": {"launcher": _launcher()}})
+
+# Mailboxes we never want in a priority inbox, by kind. Apple Mail names the
+# standard mailboxes in the system language, and the folder name on disk is
+# that localised name (Danny's Mac, 2026-11-03: 받은 편지함, 정크 메일, 보낸 편지함).
+# An English-only list let 141 junk mails and 82 of his own sent mails into the
+# inbox views and hid his Sent folder from the correspondent walk.
+_MAILBOX_KINDS: dict[str, set[str]] = {
+    "junk": {"junk", "junk e-mail", "junk email", "spam", "bulk mail",
+             "정크 메일", "정크메일", "스팸", "스팸 메일", "迷惑メール", "迷惑メッセージ", "スパム",
+             "垃圾邮件", "垃圾郵件", "垃圾信件"},
+    "sent": {"sent", "sent messages", "sent items", "sent mail",
+             "보낸 편지함", "보낸편지함", "보낸 메일", "送信済み", "送信済みメール",
+             "送信済みメッセージ", "送信済みアイテム", "已发送", "已发送邮件", "已傳送",
+             "已傳送郵件", "寄件備份"},
+    "drafts": {"drafts", "draft", "임시 보관함", "임시보관함", "下書き", "草稿", "草稿箱"},
+    "trash": {"trash", "deleted messages", "deleted items", "bin", "휴지통", "지운 편지함",
+              "ゴミ箱", "削除済み", "削除済みアイテム", "废纸篓", "已删除", "已删除邮件",
+              "垃圾桶", "已刪除", "已刪除郵件"},
+    "archive": {"archive", "보관", "보관함", "아카이브", "アーカイブ", "归档", "歸檔", "封存"},
+    "outbox": {"outbox", "보낼 편지함", "送信トレイ", "送信箱", "发件箱", "寄件匣"},
+    "other": {"notes", "rss"},
 }
+# One list of localised Sent and Drafts names for the whole app: the IMAP
+# folder finder's lists are merged in rather than kept as a second copy.
+from ..transports.imap_folders import DRAFTS_NAMES as _IMAP_DRAFTS, SENT_NAMES as _IMAP_SENT  # noqa: E402
+_MAILBOX_KINDS["sent"] |= set(_IMAP_SENT)
+_MAILBOX_KINDS["drafts"] |= set(_IMAP_DRAFTS)
+_KIND_OF = {unicodedata.normalize("NFC", name).casefold(): kind
+            for kind, names in _MAILBOX_KINDS.items() for name in names}
+_INBOX_NAMES = {"inbox", "받은 편지함", "받은편지함", "受信", "受信トレイ", "受信箱",
+                "收件箱", "收件匣"}
+
+
+def _norm_name(name: str) -> str:
+    # macOS file names are often NFD; a Korean name read from disk does not
+    # equal the same name typed in source until both are NFC.
+    return " ".join(unicodedata.normalize("NFC", name or "").casefold().split())
+
+
+def mailbox_kind(name: str) -> str | None:
+    """"junk", "sent", "drafts", "trash", "archive", "outbox" (or "other" for
+    Notes and RSS) for a standard mailbox in any of the languages above;
+    None for the inbox and the user's own folders."""
+    return _KIND_OF.get(_norm_name(name))
+
+
+def excluded_kinds(chain: list[str]) -> set[str]:
+    """The excluded kinds a mailbox path falls under. Junk, Sent, Drafts,
+    Trash and Outbox anywhere in the path (Gmail nests them under [Gmail]);
+    Archive only as the account's top mailbox, so a user's own "Projects/보관"
+    folder is kept."""
+    kinds = set()
+    for depth, name in enumerate(chain):
+        kind = mailbox_kind(name)
+        # Archive, and the short English "bin", only as the account's top
+        # mailbox: a user's "Projects/보관" or "Recycling/Bin" folder is theirs.
+        top_only = kind == "archive" or _norm_name(name) == "bin"
+        if kind and (not top_only or depth == 0):
+            kinds.add(kind)
+    return kinds
+
+
+def is_inbox(name: str) -> bool:
+    return _norm_name(name) in _INBOX_NAMES
+
+
+# Kept for callers that test a single name; every kind is excluded.
+EXCLUDED_MAILBOXES = set(_KIND_OF)
 
 # Apple Mail's flags bitfield, as stored in the .emlx plist.
 FLAG_READ = 1 << 0
@@ -114,10 +195,10 @@ def _mailbox_chain(path: Path, root: Path) -> list[str]:
 def _wanted_mailbox(chain: list[str], inbox_only: bool) -> bool:
     if not chain:
         return False
-    if any(name.strip().lower() in EXCLUDED_MAILBOXES for name in chain):
+    if excluded_kinds(chain):
         return False
     if inbox_only:
-        return chain[0].strip().lower() == "inbox"
+        return is_inbox(chain[0])
     return True
 
 
@@ -383,12 +464,198 @@ def to_row(path: Path, mtime: float, chain: list[str]) -> dict[str, Any]:
         "has_attachments": 1 if parsed.attachment_count else 0,
         "importance": _importance(message),
         "web_link": "",                       # nothing to link to; it is a local file
-        "folder": "/".join(chain),
+        # macOS gives directory names in NFD: "보낸 편지함" arrives as decomposed
+        # jamo, which is a different string from the NFC "보낸 편지함" every
+        # constant in this codebase is written in. Sent-folder detection
+        # (compose/identity.py) matched nothing on a Korean mailbox because of
+        # it -- normalise once, here, where the filesystem is the source.
+        "folder": unicodedata.normalize("NFC", "/".join(chain)),
         "body_preview": (text or _HTML_TAG.sub(" ", html))[:200].replace("\n", " ").strip(),
         "body_text": text,
         "body_html": html,
+        # Kept so inline images can be served from the original file later.
+        "source_path": str(path),
         "synced_at": db.now_iso(),
     }
+
+
+# Inline images cap out here. A mail body is allowed to reference a picture;
+# it is not allowed to make the app read an arbitrary 200MB file into memory
+# because a header said it was a logo.
+MAX_INLINE_BYTES = 8 * 1024 * 1024
+INLINE_TYPES = ("image/",)
+
+
+def _normalise_cid(raw: str) -> str:
+    """RFC 2392: a `cid:` URL is the Content-ID with the angle brackets
+    removed and the value percent-encoded.
+
+    Both halves of that sentence are places to get this wrong, and both were
+    wrong here. `msg.get('Content-ID')` returns `<logo@example.com>` WITH the
+    brackets, while the HTML says `src="cid:logo@example.com"` without them --
+    so a naive equality check never matches and every inline image in the
+    mailbox renders as a broken icon. And characters illegal in a URL arrive
+    percent-encoded, so `cid:a%25b@h` is the header value `<a%b@h>`.
+    """
+    value = unquote((raw or "").strip())
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1]
+    return value.strip().lower()
+
+
+# Magic numbers, so a sidecar file is only served when it really is an image.
+# The declared Content-Type comes from the message; the bytes come from a
+# directory looked up by index. If the two disagree, the index was wrong.
+_IMAGE_MAGIC = (
+    b"\x89PNG\r\n\x1a\n",            # png
+    b"\xff\xd8\xff",                   # jpeg
+    b"GIF87a", b"GIF89a",               # gif
+    b"BM",                              # bmp
+    b"II*\x00", b"MM\x00*",             # tiff
+    b"<svg", b"<?xml",                  # svg
+)
+
+
+def _looks_like_image(blob: bytes) -> bool:
+    if not blob:
+        return False
+    if blob.startswith(b"RIFF") and blob[8:12] == b"WEBP":
+        return True
+    if blob[4:12] in (b"ftypavif", b"ftypheic", b"ftypheix", b"ftypmif1"):
+        return True
+    return blob.startswith(_IMAGE_MAGIC)
+
+
+def _numbered_parts(
+    message: email.message.Message, prefix: tuple[int, ...] = ()
+) -> Iterator[tuple[email.message.Message, tuple[int, ...]]]:
+    """Every leaf part, tagged with the number Apple Mail files it under.
+
+    Apple names each attachment directory after a dotted path of 1-based
+    child indices from the top-level message -- `2`, `1.3`, and so on. Two
+    details are easy to get wrong and both change the answer:
+
+    * *every* child consumes an index, including the text/plain and text/html
+      bodies, so an image is rarely part 1;
+    * a `message/rfc822` wrapper consumes an index but the message inside it
+      does not, so parts of a forwarded mail continue the wrapper's number
+      rather than nesting one level deeper.
+
+    Verified against mailsplit's `partNr`, which is what
+    qqilihq/partial-emlx-converter builds these paths from.
+    """
+    if message.get_content_type() == "message/rfc822":
+        payload = message.get_payload()
+        if isinstance(payload, list) and payload:
+            yield from _numbered_parts(payload[0], prefix)
+        return
+    if message.get_content_maintype() == "multipart":
+        payload = message.get_payload()
+        if isinstance(payload, list):
+            for index, child in enumerate(payload, start=1):
+                yield from _numbered_parts(child, prefix + (index,))
+        return
+    yield message, prefix
+
+
+def _attachment_dir(path: Path, part_nr: tuple[int, ...]) -> Path | None:
+    """`.../Messages/123.partial.emlx` -> `.../Attachments/123/1.3`."""
+    if not part_nr:
+        return None
+    stem = path.name.split(".", 1)[0]     # 123.partial.emlx -> 123, not 123.partial
+    if not stem:
+        return None
+    return path.parent.parent / "Attachments" / stem / ".".join(str(n) for n in part_nr)
+
+
+def _sidecar_bytes(
+    path: Path, part_nr: tuple[int, ...], part: email.message.Message
+) -> bytes | None:
+    """The real bytes for a part Apple left out of the .emlx file.
+
+    The filename inside the directory is not fixed: Mail uses a
+    *locale-specific* default ("Mail-Anhang.jpeg" on a German system) when the
+    part declares no filename. So try the declared name first and fall back to
+    reading the directory, which normally holds exactly one file.
+    """
+    directory = _attachment_dir(path, part_nr)
+    if directory is None:
+        return None
+    names: list[str] = []
+    declared = part.get_filename()
+    if declared:
+        names.append(declared)
+    try:
+        names.extend(
+            entry.name for entry in directory.iterdir()
+            if entry.is_file() and not entry.name.startswith(".")
+        )
+    except OSError:
+        pass
+    try:
+        root = directory.resolve()
+    except OSError:
+        return None
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            candidate = (directory / name).resolve()
+            if root not in candidate.parents:
+                continue              # a declared filename is attacker-controlled
+            if not candidate.is_file() or candidate.stat().st_size > MAX_INLINE_BYTES:
+                continue
+            blob = candidate.read_bytes()
+        except OSError:
+            continue
+        if _looks_like_image(blob):
+            return blob
+    return None
+
+
+def inline_parts(path: Path) -> dict[str, tuple[str, bytes]]:
+    """Every inline image in this message, keyed by normalised Content-ID.
+
+    Read on demand from the original file rather than stored: see the
+    `source_path` migration for why.
+
+    **The bytes are often not in the .emlx file.** A message whose attachments
+    Apple Mail left on the server is written as `.partial.emlx`: part headers
+    intact, payload replaced by a placeholder plus `X-Apple-Content-Length`.
+    Content-ID matches, payload is empty, image is broken -- and it looks
+    exactly like a lookup bug, which is how it has been reported more than
+    once. The bytes do exist, in a sibling `Attachments/<id>/<part-nr>/`
+    directory, so they are reassembled here rather than given up on.
+    """
+    out: dict[str, tuple[str, bytes]] = {}
+    try:
+        message = parse_emlx(path).message
+    except (OSError, SourceError):
+        return out
+    for part, part_nr in _numbered_parts(message):
+        cid = part.get("Content-ID") or part.get("Content-Id")
+        if not cid:
+            continue
+        ctype = (part.get_content_type() or "").lower()
+        if not ctype.startswith(INLINE_TYPES):
+            continue
+        detached = bool(part.get("X-Apple-Content-Length"))
+        payload = _sidecar_bytes(path, part_nr, part) if detached else None
+        if payload is None:
+            try:
+                blob = part.get_payload(decode=True)
+            except Exception:             # noqa: BLE001 - one bad part is not fatal
+                blob = None
+            # A detached part's inline payload is a placeholder, not an image,
+            # so it has to pass the magic check before it is trusted.
+            if blob and (not detached or _looks_like_image(blob)):
+                payload = blob
+        if not payload or len(payload) > MAX_INLINE_BYTES:
+            continue
+        out[_normalise_cid(cid)] = (ctype, payload)
+    return out
 
 
 def _importance(message: email.message.Message) -> str:
@@ -411,8 +678,8 @@ def _importance(message: email.message.Message) -> str:
 # correspondent affinity
 # --------------------------------------------------------------------------
 
-SENT_MAILBOXES = {"sent", "sent messages", "sent items"}
-_AFFINITY_CACHE: dict[str, tuple[float, dict[str, int]]] = {}
+SENT_MAILBOXES = _MAILBOX_KINDS["sent"]
+_AFFINITY_CACHE: dict[str, tuple[float, dict[str, int], tuple[int, float]]] = {}
 _AFFINITY_TTL_SECONDS = 6 * 3600
 _AFFINITY_LOOKBACK_DAYS = 365
 _AFFINITY_MAX_FILES = 3000
@@ -424,7 +691,7 @@ def _iter_sent_files(root: Path) -> Iterator[tuple[Path, float]]:
         if os.path.basename(dirpath) != "Messages":
             continue
         chain = _mailbox_chain(Path(dirpath), root)
-        if not chain or chain[0].strip().lower() not in SENT_MAILBOXES:
+        if not chain or not any(mailbox_kind(name) == "sent" for name in chain):
             continue
         for name in filenames:
             if name.endswith(".emlx"):
@@ -448,18 +715,22 @@ def build_correspondent_affinity(root: Path, force: bool = False) -> dict[str, i
     key = str(root)
     cached = _AFFINITY_CACHE.get(key)
     now = datetime.now(timezone.utc).timestamp()
-    if cached and not force and (now - cached[0]) < _AFFINITY_TTL_SECONDS:
-        return cached[1]
-
     cutoff = now - _AFFINITY_LOOKBACK_DAYS * 86400
-    counts: dict[str, int] = {}
+    # The stat walk is cheap; the header reads are not. Re-read only when the
+    # Sent folder changed, so a reply sent a minute ago reaches the sent log
+    # (and leaves To respond) on the next sync instead of hours later.
     try:
         files = [f for f in _iter_sent_files(root) if f[1] >= cutoff]
     except (PermissionError, OSError):
         files = []
+    stamp = (len(files), max((m for _, m in files), default=0.0))
+    if cached and not force and cached[2] == stamp and (now - cached[0]) < _AFFINITY_TTL_SECONDS:
+        return cached[1]
+    counts: dict[str, int] = {}
     files.sort(key=lambda f: f[1], reverse=True)
 
     parser = BytesHeaderParser(policy=email.policy.default)
+    sent: list[dict[str, Any]] = []
     for path, _mtime in files[:_AFFINITY_MAX_FILES]:
         try:
             with open(path, "rb") as handle:
@@ -472,14 +743,38 @@ def build_correspondent_affinity(root: Path, force: bool = False) -> dict[str, i
         try:
             headers = parser.parsebytes(head)
             values = headers.get_all("To", []) + headers.get_all("Cc", [])
+            recipients = []
             for _name, address in email.utils.getaddresses([str(v) for v in values]):
                 if address:
                     counts[address.lower()] = counts.get(address.lower(), 0) + 1
+                    recipients.append(address.lower())
+            sent.append({"key": str(path), "subject": str(headers.get("Subject") or ""),
+                         "sent_at": _header_iso(headers.get("Date"), _mtime),
+                         "recipients": recipients,
+                         "from_name": email.utils.parseaddr(str(headers.get("From") or ""))[0],
+                         "from_address": email.utils.parseaddr(str(headers.get("From") or ""))[1]})
         except Exception:  # noqa: BLE001
             continue
 
-    _AFFINITY_CACHE[key] = (now, counts)
+    # The same walk feeds the sent log (A1: a reply anywhere in a thread
+    # answers it). Only a hashed subject key, the time and the recipients are
+    # kept -- see db.record_sent.
+    try:
+        db.record_sent(sent)
+    except Exception:  # noqa: BLE001 - the log is a hint; affinity must not fail over it
+        pass
+    _AFFINITY_CACHE[key] = (now, counts, stamp)
     return counts
+
+
+def _header_iso(value: Any, fallback: float) -> str:
+    try:
+        dt = email.utils.parsedate_to_datetime(str(value))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    except Exception:  # noqa: BLE001
+        return datetime.fromtimestamp(fallback, timezone.utc).isoformat()
 
 
 class AppleMailSource(MailSource):
@@ -497,6 +792,60 @@ class AppleMailSource(MailSource):
     def _root(self) -> Path | None:
         return find_mail_root(db.get_setting("applemail_root", "").strip() or None)
 
+    # ------------------------------------------------------- back to the file
+
+    def _source_file(self, email_id: str) -> Path | None:
+        """The `.emlx` a row came from, or None.
+
+        **The containment check lives here and not in the router.** A stored
+        path is data. The first time anything other than this reader writes to
+        that column, an endpoint that takes an id from a URL and opens the file
+        it names becomes a path traversal -- so the check belongs beside the
+        only code that knows what a legitimate path looks like, where it cannot
+        be forgotten by a second caller.
+        """
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT source_path FROM emails WHERE id = ?", (email_id,)).fetchone()
+        if row is None or not row["source_path"]:
+            return None
+        path = Path(row["source_path"])
+        try:
+            root = self._root()
+            if root is None or not path.resolve().is_relative_to(Path(root).resolve()):
+                return None
+            # Regular files only. A named pipe inside the mail root would make
+            # the read below block forever, and this is reachable by id.
+            return path if path.is_file() else None
+        except (OSError, PermissionError):
+            return None
+
+    def inline_part(self, email_id: str, cid: str) -> tuple[str, bytes] | None:
+        path = self._source_file(email_id)
+        if path is None:
+            return None
+        return inline_parts(path).get(_normalise_cid(cid))
+
+    def parent_message(self, email_id: str):
+        """Every threading header, read back off disk.
+
+        No migration needed, and none wanted: `_stable_id` hashes `Message-ID`
+        into the row id on purpose, so it survives a re-sync. The file still has
+        the original, so the answer is to go and read it rather than to store a
+        second copy that can drift.
+        """
+        from ..compose import ParentMessage
+        path = self._source_file(email_id)
+        if path is None:
+            return None
+        try:
+            parsed = parse_emlx(path)
+        except (OSError, SourceError):
+            return None
+        text, html = extract_bodies(parsed.message)
+        return ParentMessage.from_headers(
+            parsed.message, body_text=text, body_html=html, raw=parsed.message.as_bytes())
+
     def status(self) -> SourceStatus:
         """Never raises. The base class promises this and the frontend relies on
         it -- /api/health calls it on every page load, so an exception here takes
@@ -505,7 +854,7 @@ class AppleMailSource(MailSource):
         try:
             return self._status()
         except PermissionError:
-            return SourceStatus(ready=False, needs_setup=True, detail=FULL_DISK_ACCESS_HINT)
+            return _fda_status()
         except OSError as exc:
             return SourceStatus(ready=False, needs_setup=True, detail=str(exc))
 
@@ -520,6 +869,7 @@ class AppleMailSource(MailSource):
                     ready=False,
                     needs_setup=True,
                     detail=f"The mail store path in Settings does not exist: {override}",
+                    extra={"detail_key": "mailRootMissing", "detail_vars": {"path": override}},
                 )
             if not MAIL_HOME.exists():
                 return SourceStatus(
@@ -529,11 +879,13 @@ class AppleMailSource(MailSource):
                         "No ~/Library/Mail directory found. Add your account to Apple Mail "
                         "and let it finish downloading, then hit refresh."
                     ),
+                    extra={"detail_key": "mailNotSetUp"},
                 )
             return SourceStatus(
                 ready=False,
                 needs_setup=True,
                 detail="Found ~/Library/Mail but no V<n> message store inside it.",
+                extra={"detail_key": "mailStoreEmpty"},
             )
         # PermissionError and OSError here are handled by status() above.
         next(iter(iter_message_files(root, inbox_only=False)), None)
@@ -558,6 +910,7 @@ class AppleMailSource(MailSource):
                 "or set the path manually in Settings."
             )
 
+        db.purge_excluded_folders()
         days = days if days is not None else int(db.get_setting("sync_days", "30") or 30)
         max_messages = max_messages if max_messages is not None else int(
             db.get_setting("sync_max_messages", "300") or 300
@@ -573,6 +926,35 @@ class AppleMailSource(MailSource):
                 candidates = list(iter_message_files(root, inbox_only=False))
         except PermissionError as exc:
             raise SourceError(FULL_DISK_ACCESS_HINT) from exc
+
+        # Nothing on disk has changed since the last look -- so do not read
+        # fourteen thousand files again to find that out.
+        #
+        # The poller runs every five minutes, forever. On a Mac where Mail.app
+        # is not running it had scanned 14,135 files **two hundred times in
+        # twenty-four hours**, nine seconds a go, to discover nothing each
+        # time. That is the number the "frozen" banner was counting. The walk
+        # above is cheap -- one stat per file -- and the expensive part is the
+        # header read on every candidate below, which is pure waste when the
+        # store is untouched.
+        #
+        # The fingerprint is the file count and the newest mtime. A new message
+        # is a new file, so it moves both; a deletion moves the count. It lives
+        # in settings rather than in memory because a five-minute poller in a
+        # desktop app is restarted often enough for an in-memory guard to miss
+        # most of what it is for.
+        fingerprint = f"{len(candidates)}:{max((m for _, m, _ in candidates), default=0.0):.0f}"
+        if db.get_setting("applemail_scan_fingerprint", "") == fingerprint and db.email_count():
+            # Reported as a real sync, not as nothing: the freshness banner is
+            # driven by what the mailbox contains, and a scan that correctly
+            # found no new mail is exactly as informative as one that parsed
+            # three hundred files to reach the same answer.
+            return {
+                "source": self.name, "root": str(root), "scanned": len(candidates),
+                "in_window": 0, "fetched": 0, "written": 0, "skipped": 0,
+                "unchanged": True,
+                "correspondents": len(build_correspondent_affinity(root)),
+            }
 
         # Two passes. mtime alone cannot be trusted for freshness (a first sync
         # stamps every file with today), but it is a valid lower bound, so use it
@@ -595,6 +977,12 @@ class AppleMailSource(MailSource):
                 skipped += 1
 
         written = db.upsert_emails(rows)
+
+        # Stamped only after a full pass has written what it found. Stamping
+        # before the parse would make a sync that died halfway look complete,
+        # and the next two hundred polls would skip the work it missed.
+        db.set_setting("applemail_scan_fingerprint", fingerprint)
+
         return {
             "source": self.name,
             "root": str(root),
