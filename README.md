@@ -1,6 +1,9 @@
-<img src="assets/logo.png" width="88" alt="Fools Gold logo: a cluster of gold crystals">
-
-# Fools Gold
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/banner-dark.png">
+    <img alt="Fools Gold" src="docs/readme/banner.png" width="100%">
+  </picture>
+</h1>
 
 A macOS email secretary that ranks your inbox and pulls out deadlines, with AI optional.
 
