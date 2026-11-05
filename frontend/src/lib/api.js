@@ -35,12 +35,13 @@ export const api = {
   login: (email) => request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email }) }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
 
-  listMail: ({ bucket, search, sort = 'priority', muted = false, verdict } = {}) => {
+  listMail: ({ bucket, search, sort = 'priority', muted = false, verdict, toRespond = false } = {}) => {
     const q = new URLSearchParams({ sort });
     if (bucket) q.set('bucket', bucket);
     if (search) q.set('search', search);
     if (muted) q.set('muted', 'true');
     if (verdict) q.set('verdict', verdict);
+    if (toRespond) q.set('to_respond', 'true');
     return request(`/api/mail?${q}`);
   },
 
@@ -67,7 +68,16 @@ export const api = {
     request(`/api/mail/${encodeURIComponent(id)}/feedback`, { method: 'DELETE' }),
   sync: () => request('/api/mail/sync', { method: 'POST' }),
   rescan: () => request('/api/mail/rescan', { method: 'POST' }),
-  digest: (force = false) => request(`/api/mail/digest/today?force=${force}`),
+  /* The recap is a pure read: it marks nothing read and moves no window.
+     `recapSeen` is the only call that closes the window, and it is wired
+     to the dismiss button alone -- never to rendering, never to opening a
+     mail from the card. */
+  recap: (force = false) => request(`/api/mail/recap?force=${force}`),
+  recapSeen: () => request('/api/mail/recap/seen', { method: 'POST' }),
+  /* F6: the morning report. A read, apart from noting today as a day it was
+     shown; `reportOpened` notes a day the user opened mail from it. */
+  report: () => request('/api/mail/report'),
+  reportOpened: () => request('/api/mail/report/opened', { method: 'POST' }),
 
   // --- writing mail -----------------------------------------------------
   // `sendDraft` takes a token and nothing else, mirroring the endpoint. There
@@ -94,6 +104,14 @@ export const api = {
   copilotStatus: () => request('/api/settings/copilot-status'),
   // What Ollama reports it has. Asked for by the Settings screen only.
   ollamaModels: () => request('/api/ollama/models'),
+  ollamaPull: (model) => request('/api/ollama/pull', { method: 'POST', body: JSON.stringify({ model }) }),
+  ollamaPullState: () => request('/api/ollama/pull'),
+  qualitySample: (n = 120) => request('/api/quality/sample', { method: 'POST', body: JSON.stringify({ n }) }),
+  qualityNext: () => request('/api/quality/next'),
+  qualityLabel: (label) => request('/api/quality/label', { method: 'POST', body: JSON.stringify(label) }),
+  qualityUndo: (emailId) => request('/api/quality/undo', { method: 'POST', body: JSON.stringify({ email_id: emailId }) }),
+  qualityScore: () => request('/api/quality/score'),
+  qualityExport: () => request('/api/quality/export'),
   // Cloud-AI permission. Granting happens only from the consent dialog.
   aiConsent: (provider) =>
     request(`/api/ai/consent${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),

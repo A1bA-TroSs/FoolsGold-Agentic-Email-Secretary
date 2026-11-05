@@ -116,6 +116,13 @@ export const IrrelevantIcon = () => (
 export const ArchiveIcon = () => (
   <svg {...base}><path d="M3 8h18v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M2 4h20v4H2z" /><path d="M10 12h4" /></svg>
 );
+/* The pile. Three sheets, the top one squared off and the ones under it
+   peeking out -- mail that has stacked up while you were away, which is a
+   different thing from the inbox tray (everything) and from the agenda
+   (what to do). Those two icons are already taken by exactly those ideas. */
+export const PileIcon = () => (
+  <svg {...base}><path d="M4 7h16v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z" /><path d="M6 4.5h12" /><path d="M8 2.5h8" /></svg>
+);
 export const ChevronDownIcon = () => (
   <svg {...base} width="11" height="11" className="rail-chevron"><path d="m6 9 6 6 6-6" /></svg>
 );

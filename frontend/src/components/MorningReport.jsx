@@ -1,10 +1,18 @@
 import { memo } from 'react';
-import { RefreshIcon } from './Icons.jsx';
+import { IrrelevantIcon } from './Icons.jsx';
 import { ThinkingNote } from './Loading.jsx';
+import Recap from './Recap.jsx';
 import { useT } from '../lib/i18n.js';
 import { dueChip } from '../lib/due.js';
 
-/* Today's briefing, as a checklist.
+/* The morning report (roadmap F6): one card where the briefing and the recap
+   used to be two. It leads with what the user research said gets lost --
+   replies put off and deadlines -- then important mail still unopened after a
+   day, then the rest of the pile since you last looked (the recap, minus
+   everything already shown above). Built without a model call, so it is the
+   same with AI off, on or failing, and it is never emailed.
+
+   The rows below are the briefing's checklist rows, kept as they were:
 
    It used to be a block of model-written markdown. That read well and did
    nothing: you could not open the email a line referred to, and you could not
@@ -16,13 +24,6 @@ import { dueChip } from '../lib/due.js';
 function Tick() {
   return <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5 6.2 12 13.5 4" /></svg>;
 }
-
-const PROVIDER_NAMES = {
-  copilot: 'GitHub Copilot',
-  anthropic: 'Claude',
-  openai: 'OpenAI',
-  ollama: 'Ollama',
-};
 
 const DUE_NOTE_KEYS = new Set(['dueToday', 'dueOn']);
 
@@ -89,97 +90,80 @@ const AgendaItem = memo(function AgendaItem({ it, t, delay, checked, active, onO
           {it.sender && <span className="agenda-sender">· {it.sender}</span>}
         </span>
       </button>
+
+      {/* Ticking is not the only honest answer to a briefing row. "This isn't
+          for me" is the other one, and a checklist that only offers "done"
+          makes the user lie to clear it -- or leaves the row sitting there.
+          Same verdict as the mail list's "not relevant", so the row leaves
+          and the next one in the queue comes up. */}
+      <button className="agenda-dismiss" onClick={() => onDone(it.email_id, 'not_relevant')}
+              title={t('notRelevant')} aria-label={`${t('notRelevant')}: ${it.subject}`}>
+        <IrrelevantIcon />
+      </button>
     </li>
   );
 });
 
-export default function Digest({ digest, loading, onRefresh, onOpen, onDone, selectedId, checkedIds, onOpenSettings }) {
-  const t = useT();
-  const items = digest?.items || [];
+/* One section of rows you act on. Hidden when empty: an empty heading is a
+   line that says nothing. */
+function Rows({ title, items, note, t, selectedId, checkedIds, onOpen, onDone }) {
+  if (!items.length) return null;
+  return (
+    <section className="recap-section report-section">
+      <h4>{title}<span className="recap-count">{items.length}</span></h4>
+      <ul className="agenda">
+        {items.map((it, i) => (
+          <AgendaItem
+            key={it.email_id}
+            it={{ ...it, ...note(it) }}
+            t={t}
+            delay={Math.min(i, 7) * 45}
+            checked={checkedIds?.has(it.email_id) ?? false}
+            active={it.email_id === selectedId}
+            onOpen={onOpen}
+            onDone={onDone}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
 
-  /* The structural path sends a translation key, the model sends a finished
-     sentence. Render whichever arrived. */
-  const say = (obj, literal) =>
-    (obj && typeof obj === 'object' && obj.key) ? t(obj.key, obj.vars) : (literal || '');
+/* "Replies owed 3 · Due soon 2": label then number, so no plural forms are
+   needed in any language, and a part that is zero is left out. */
+const PARTS = ['replies', 'due', 'missed', 'new'];
+function headline(h, t) {
+  if (h.key !== 'reportHeadline') return t(h.key, h.vars);
+  return PARTS.filter((k) => h.vars?.[k])
+    .map((k) => t(`reportPart_${k}`, { n: String(h.vars[k]) })).join(' · ');
+}
+
+export default function MorningReport({ report, loading, onOpen, onDone, onDismiss, selectedId, checkedIds }) {
+  const t = useT();
+  if (loading && !report) {
+    return <div className="digest"><ThinkingNote>{t('digestThinking')}</ThinkingNote></div>;
+  }
+  if (!report) return null;
+  const replies = report.replies?.items || [];
+  const due = report.deadlines?.items || [];
+  const missed = report.missed?.items || [];
+  const shared = { t, selectedId, checkedIds, onOpen, onDone };
 
   return (
-    <div className="digest">
-      <h3>
-        {t('digestTitle')}
-        <button className="btn ghost" onClick={onRefresh} disabled={loading}
-                title={t('digestRebuild')} aria-label={t('digestRebuild')}>
-          <RefreshIcon spinning={loading} />
-        </button>
-      </h3>
-
-      {loading && !digest ? (
-        <ThinkingNote>{t('digestThinking')}</ThinkingNote>
-      ) : (
-        <>
-          {digest?.headline && (
-            <p className="digest-headline">
-              {typeof digest.headline === 'string' ? digest.headline : say(digest.headline)}
-            </p>
-          )}
-
-          {items.length > 0 ? (
-            <ul className="agenda">
-              {items.map((it, i) => (
-                <AgendaItem
-                  key={it.email_id}
-                  it={it}
-                  t={t}
-                  delay={Math.min(i, 7) * 45}
-                  checked={(checkedIds?.has(it.email_id) ?? false) || it.verdict === 'done'}
-                  active={it.email_id === selectedId}
-                  onOpen={onOpen}
-                  onDone={onDone}
-                />
-              ))}
-            </ul>
-          ) : (
-            <p className="digest-empty">{t('digestEmpty')}</p>
-          )}
-        </>
-      )}
-
-      {digest?.model && digest.model !== 'none' && (
-        <div className="digest-foot">
-          {/* `digest.model` is "provider:model" -- an internal identifier.
-              "via copilot:auto" reads as a hardcoded string because "auto" is
-              not a model name; it is the app's own placeholder leaking into the
-              UI. Show the provider, which is the part that is both true and
-              meaningful to the reader. */}
-          {/* Not a bug report, an answer.
-
-              "briefing written by GitHub Copilot" was read as an error by a
-              user who believed he had stopped using Copilot. The string was
-              true -- his provider setting said copilot and Copilot really did
-              write it. The defect was that this footnote was the ONLY place in
-              the app where the active provider appeared, so the first time he
-              learned where his mail was going was from a caption.
-
-              For a product whose argument is that mail never leaves the
-              machine, "which provider is running" is not a footnote. A cloud
-              provider now says so, and says where to change it. */}
-          {digest.model === 'structural'
-            ? t('digestNoAi')
-            : (() => {
-                const id = digest.model.split(':')[0];
-                const name = PROVIDER_NAMES[id] || id;
-                return id === 'ollama'
-                  ? t('digestViaLocal', { model: name })
-                  : (
-                    <>
-                      {t('digestViaCloud', { model: name })}
-                      {onOpenSettings && (
-                        <button className="btn ghost" style={{ marginLeft: 8, padding: '1px 8px' }}
-                                onClick={onOpenSettings}>{t('openSettings')}</button>
-                      )}
-                    </>
-                  );
-              })()}
-        </div>
+    <div className="digest report">
+      <h3>{t('reportTitle')}</h3>
+      {report.headline && <p className="digest-headline">{headline(report.headline, t)}</p>}
+      <Rows title={t('reportReplies')} items={replies}
+            note={(it) => ({ note_key: `respondWhy_${it.reason}` })} {...shared} />
+      {/* No note on a deadline row: the due chip already says when. */}
+      <Rows title={t('reportDue')} items={due} note={() => ({})} {...shared} />
+      <Rows title={t('reportMissed')} items={missed}
+            note={() => ({ note_key: 'reportMissedNote' })} {...shared} />
+      {/* The pile is the recap card, unchanged, minus the mail shown above.
+          Its "mark as seen" still moves the window and nothing else does. */}
+      {report.pile && (
+        <Recap card={onDismiss ? report.pile : { ...report.pile, too_soon: false }}
+               selectedId={selectedId} onOpen={onOpen} onDismiss={onDismiss} />
       )}
     </div>
   );

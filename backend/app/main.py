@@ -21,6 +21,7 @@ from .config import APP_NAME, BACKEND_HOST, BACKEND_PORT, VERSION
 from .graph import auth as graph_auth
 from .routers import auth as auth_router
 from .routers import compose as compose_router
+from .routers import quality as quality_router
 from .routers import calendar as calendar_router
 from .routers import config as config_router
 from .routers import mail as mail_router
@@ -33,6 +34,12 @@ POLL_SECONDS = 300  # background refresh while the window is open
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    # Older versions cached Junk and Sent mail from Macs whose Mail folders are
+    # not in English; drop that copy (Mail itself is untouched).
+    try:
+        db.purge_excluded_folders()
+    except Exception:  # noqa: BLE001 - a cleanup must never stop the app starting
+        pass
     task = asyncio.create_task(_poller())
     try:
         yield
@@ -92,6 +99,7 @@ app.include_router(calendar_router.router)
 app.include_router(config_router.router)
 app.include_router(ranking_router.router)
 app.include_router(compose_router.router)
+app.include_router(quality_router.router)
 
 
 @app.get("/api/health")

@@ -22,6 +22,12 @@ import Login from './Login.jsx';
 export default function Connect({ source, settings, onSettings, onReady, onOpenSettings, lang, onLanguage }) {
   const t = useT();
   const [address, setAddress] = useState(settings?.user_address || '');
+  const [role, setRole] = useState(settings?.user_role || '');
+  // One priority, asked once at setup and skippable (roadmap F4; Danny,
+  // 2026-11-02). Without one, topic match -- the largest day-one relevance
+  // term -- is zero for every email.
+  const [topic, setTopic] = useState('');
+  const [skipTopic, setSkipTopic] = useState(false);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
@@ -36,7 +42,14 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
     setSaving(true);
     setError('');
     try {
-      onSettings(await api.patchSettings({ user_address: address.trim() }));
+      onSettings(await api.patchSettings({ user_address: address.trim(), user_role: role.trim() }));
+      if (!skipTopic && topic.trim()) {
+        await api.addPriority({ topic: topic.trim(), status: 'active', weight: 10 });
+        setTopic('');
+      }
+      if (skipTopic || topic.trim()) {
+        onSettings(await api.patchSettings({ setup_priority_asked: '1' }));
+      }
       await recheck();
     } catch (e) {
       setError(e.message);
@@ -131,6 +144,11 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
           <div className="setup-callout" role="status">
             <b>{t('fdaTitle')}</b>
             <p>{fromTerminal ? t('fdaBodyTerminal') : t('fdaBody')}</p>
+            {/* Until the app is signed with a Developer ID, macOS may list it twice:
+                once by bundle (the gold icon, which is the one people turn on) and
+                once by the executable's path (a plain black icon) -- and the path
+                entry is the one it actually checks. Seen on the first DMG run. */}
+            {!fromTerminal && <p className="setup-still">{t('fdaTwoEntries')}</p>}
             {stillBlocked && <p className="setup-still">{t('fdaStillBlocked')}</p>}
             {canRelaunch() && (
               <div className="setup-actions">
@@ -152,6 +170,29 @@ export default function Connect({ source, settings, onSettings, onReady, onOpenS
                  value={address} onChange={(e) => setAddress(e.target.value)}
                  onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
         </div>
+
+        <div className="field">
+          <label htmlFor="role">{t('yourRole')}</label>
+          <input id="role" className="input" maxLength={120} placeholder={t('yourRolePlaceholder')}
+                 value={role} onChange={(e) => setRole(e.target.value)}
+                 onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
+          <p className="hint" style={{ marginTop: 4 }}>{t('yourRoleHelp')}</p>
+        </div>
+
+        {!skipTopic && (
+          <div className="field">
+            <label htmlFor="topic">{t('setupPriorityLabel')}</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input id="topic" className="input" style={{ flex: 1 }} maxLength={80}
+                     placeholder={t('addPriorityPlaceholder')}
+                     value={topic} onChange={(e) => setTopic(e.target.value)}
+                     onKeyDown={(e) => e.key === 'Enter' && saveAndCheck()} />
+              <button type="button" className="btn ghost"
+                      onClick={() => { setTopic(''); setSkipTopic(true); }}>{t('setupPrioritySkip')}</button>
+            </div>
+            <p className="hint" style={{ marginTop: 4 }}>{t('setupPriorityHelp')}</p>
+          </div>
+        )}
 
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn primary" style={{ flex: 1 }}

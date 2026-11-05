@@ -4,7 +4,8 @@ import { useEvent } from './lib/useEvent.js';
 import { reuseUnchanged } from './lib/reconcile.js';
 import { I18nContext, translator } from './lib/i18n.js';
 import Connect from './components/Connect.jsx';
-import Digest from './components/Digest.jsx';
+import FirstPriority from './components/FirstPriority.jsx';
+import MorningReport from './components/MorningReport.jsx';
 import MailDetail from './components/MailDetail.jsx';
 import MailList from './components/MailList.jsx';
 import ConfirmMute from './components/ConfirmMute.jsx';
@@ -17,7 +18,7 @@ import Calendar, { DayPanel, useCalendar, todayIso } from './components/Calendar
 import Splash from './components/Splash.jsx';
 import LogoMenu from './components/LogoMenu.jsx';
 import { SkeletonList, Sweep, SyncStep, ThinkingNote } from './components/Loading.jsx';
-import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, RefreshIcon, UndoIcon } from './components/Icons.jsx';
+import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDownIcon, GearIcon, InboxIcon, IrrelevantIcon, MuteIcon, PileIcon, RefreshIcon, ReplyIcon, UndoIcon } from './components/Icons.jsx';
 
 /* Views are a flat list including Settings, not a modal on top of everything
    else. Settings used to be a boolean overlay, which meant clicking a sidebar
@@ -35,6 +36,18 @@ import { AgendaIcon, ArchiveIcon, BackIcon, CalendarIcon, CheckIcon, ChevronDown
    onto is a checklist for today, which is what that icon has always said. */
 const VIEWS = [
   { id: 'priority', key: 'viewPriority', hintKey: 'viewPriorityHint', short: 'railPriority', icon: AgendaIcon },
+  /* Replies you owe (A1): direct asks from people, not yet answered, from the
+     last two weeks. Apple Mail clears a row when you reply; Outlook rows stay
+     until you mark them done. */
+  { id: 'respond',  key: 'viewRespond',  hintKey: 'viewRespondHint',  short: 'railRespond',  icon: ReplyIcon },
+  /* The pile, and it is a different room from either neighbour -- which is
+     the test the removed Today view failed. Priority ranks what to do next
+     and shows seven rows; All is the mailbox in date order; this is what
+     arrived while you were gone, sectioned by what it is about, including the
+     fyi and bulk mail neither of the others puts in front of you. Without a
+     door it would be reachable only in the two-hour window after new mail
+     lands, which is not a feature, it is a coincidence. */
+  { id: 'recap',    key: 'viewRecap',    hintKey: 'viewRecapHint',    short: 'railRecap',    icon: PileIcon },
   { id: 'all',      key: 'viewAll',      hintKey: 'viewAllHint',      short: 'railAll',      icon: InboxIcon },
   { id: 'calendar', key: 'viewCalendar', hintKey: 'viewCalendarHint', short: 'railCalendar', icon: CalendarIcon },
 ];
@@ -125,6 +138,15 @@ function Notice({ id, onDismiss, dismissLabel, children }) {
   );
 }
 
+/* Shorten text for a one-line notice without cutting a word in half. */
+function clipAtWord(text, max) {
+  const s = String(text || '').trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const at = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf(' '));
+  return `${cut.slice(0, at > max * 0.6 ? at : max).trimEnd()}…`;
+}
+
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [source, setSource] = useState({ name: 'applemail', label: '', ready: false });
@@ -165,21 +187,29 @@ export default function App() {
      until this existed, a source that had stopped producing looked identical
      to a quiet week. */
   const [syncState, setSyncState] = useState(null);
+  /* 'recovering': every recent sync failed on macOS's permission, but the
+     source reads fine now (access granted, app restarted). Sync once straight
+     away so the failure count clears, instead of waiting for the poller. */
+  const recoveredOnce = useRef(false);
+  useEffect(() => {
+    if (syncState?.state === 'recovering' && !recoveredOnce.current) {
+      recoveredOnce.current = true;
+      sync();
+    }
+  }, [syncState?.state]); // eslint-disable-line react-hooks/exhaustive-deps
   const [selectedId, setSelectedId] = useState(null);
   const [cursorId, setCursorId] = useState(null);
   const [bucketFilter, setBucketFilter] = useState(null);
   const [search, setSearch] = useState('');
   const [listLoading, setListLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
-  const [digest, setDigestState] = useState(null);
-  /* The briefing is one entry per actionable email, so on a full mailbox it is
-     the same size as the list and re-renders for the same reason. */
-  const setDigest = useCallback((next) => setDigestState((prev) => {
-    if (!next || !prev) return next;
-    const items = reuseUnchanged(prev.items, next.items);
-    return items === prev.items ? { ...next, items: prev.items } : { ...next, items };
-  }), []);
-  const [digestLoading, setDigestLoading] = useState(false);
+  /* The morning report (F6): replies owed, what is due, what was missed, then
+     the pile since you last looked. One payload for the card on top and for
+     the rail view. Loading it writes nothing except today's "shown" day for
+     the local open rate; only `dismissRecap` moves the window. */
+  const [report, setReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const reloadReport = useCallback(() => api.report().then(setReport).catch(() => {}), [setReport]);
   const [banner, setBanner] = useState('');
   const [leaving, setLeaving] = useState(null);   // { id, kind } while a row plays out
   const [undo, setUndo] = useState(null);
@@ -307,13 +337,14 @@ export default function App() {
       const data = await api.listMail({
         // The muted box hides the bucket chips, so applying a filter the user
         // cannot see (or clear) would silently shrink it.
-        bucket: (view === 'muted' || view === 'done' || view === 'dismissed') ? null : bucketFilter,
+        bucket: (view === 'muted' || view === 'done' || view === 'dismissed' || view === 'respond') ? null : bucketFilter,
         search: search.trim() || undefined,
         sort: view === 'all' ? 'date' : (view === 'done' || view === 'dismissed') ? 'decided' : 'priority',
         muted: view === 'muted',
         // Sorted by the decision, newest first: the tick you want back is the
         // one you just made.
         verdict: view === 'done' ? 'done' : view === 'dismissed' ? 'not_relevant' : undefined,
+        toRespond: view === 'respond',
       });
       /* Not `setMail(data.items)`. Reusing the row objects that did not
          change is what lets the memoised rows stay put through a reload --
@@ -358,7 +389,14 @@ export default function App() {
      nobody is looking at. */
   useEffect(() => {
     if (!source.ready) return undefined;
-    const tick = () => { if (!document.hidden) loadMail(); };
+    /* Both panes, not just the list: the briefing is cached for the day but
+       served with current verdicts and refilled from the queue, so re-reading
+       it is cheap and keeps it moving with the mailbox. */
+    const tick = () => {
+      if (document.hidden) return;
+      loadMail();
+      reloadReport();
+    };
     const timer = setInterval(tick, 90_000);
     window.addEventListener('focus', tick);
     document.addEventListener('visibilitychange', tick);
@@ -400,14 +438,24 @@ export default function App() {
 
   useEffect(() => {
     if (!source.ready) return;
-    setDigestLoading(true);
-    api.digest(false).then(setDigest).catch(() => {}).finally(() => setDigestLoading(false));
+    setReportLoading(true);
+    reloadReport().finally(() => setReportLoading(false));
   }, [source.ready]);
 
-  async function refreshDigest() {
-    setDigestLoading(true);
-    try { setDigest(await api.digest(true)); } finally { setDigestLoading(false); }
+  /* The one place the absence window closes.
+
+     Not on render, not on opening a mail from the card. Someone who opens the
+     app to check one thing has not read their mail, and spending the window
+     there would leave tomorrow's card empty about the forty they never saw.
+     The card hides immediately rather than waiting for the refetch, because
+     the server will now answer `too_soon` and the component renders nothing
+     for it anyway. */
+  async function dismissRecap() {
+    setReport((r) => (r ? { ...r, pile: null } : r));
+    try { await api.recapSeen(); } catch { /* the window stays open; try again next time */ }
+    reloadReport();
   }
+
 
   /* A sync against a small or already-current mailbox can finish in under a
      tenth of a second. Without a floor the progress sweep flashes for two
@@ -423,6 +471,7 @@ export default function App() {
       await api.sync();
       setLastSync(new Date().toISOString());
       await loadMail();
+      reloadReport();
     } catch (e) {
       setBanner(e.status === 401 ? t('sessionExpired') : e.message);
       if (e.status === 401 || e.status === 428) {
@@ -535,6 +584,16 @@ export default function App() {
       return next;
     });
     if (exits) setLeaving({ id, kind });
+    /* The briefing is a checklist, so a settled row leaves it -- after the
+       tick has had time to draw -- without waiting on the server. The refetch
+       below brings up the next row from the queue. Undo puts it back (the
+       refetch after an undo re-joins it). */
+    if (['done', 'not_relevant', 'snoozed'].includes(verdict)) {
+      const drop = (sec) => (sec ? { ...sec, items: sec.items.filter((x) => x.email_id !== id) } : sec);
+      setTimeout(() => setReport((r) => (r
+        ? { ...r, replies: drop(r.replies), deadlines: drop(r.deadlines), missed: drop(r.missed) } : r)),
+      verdict === 'done' ? 650 : 250);
+    }
 
     clearTimeout(undoTimer.current);
     setUndo({ id, previous, verdict });
@@ -549,9 +608,8 @@ export default function App() {
       setTimeout(() => {
         setLeaving(null);
         loadMail();
-        // Cheap: today's digest is cached, so this only re-reads the verdicts
-        // that were just joined onto it.
-        api.digest(false).then(setDigest).catch(() => {});
+        // The report is SQL and rules, no model call, so re-reading it is cheap.
+        reloadReport();
       }, settle);
     } catch (e) {
       setBanner(e.message);
@@ -715,6 +773,18 @@ export default function App() {
      email or change view entirely. */
   const closeEmail = useCallback(() => setSelectedId(null), []);
 
+  /* Opening mail from the report is what counts as the report being read,
+     once per day, on this machine only (A5's export shows the numbers). */
+  const openedToday = useRef('');
+  const openFromReport = useCallback((id) => {
+    const day = new Date().toDateString();
+    if (openedToday.current !== day) {
+      openedToday.current = day;
+      api.reportOpened().catch(() => { openedToday.current = ''; });
+    }
+    openEmail(id);
+  }, [openEmail]);
+
   const calendar = useCalendar(loadMail, view === 'calendar');
   useEffect(() => { calendarRef.current = calendar.reload; }, [calendar.reload]);
 
@@ -817,8 +887,13 @@ export default function App() {
     if (syncState?.state === 'failing') {
       out.push({
         id: 'sync-failing',
+        /* A recognised failure is worded in the reader's language; anything
+           else is shown whole (up to a sentence boundary), never cut mid-word
+           -- "Privacy & Security > Full" was the tail of a sentence the user
+           needed. */
         body: `${t('syncFailing', { arg: String(syncState.consecutive_failures || 1) })}`
-          + (syncState.error ? ` — ${syncState.error.slice(0, 120)}` : ''),
+          + (syncState.error_key ? ` — ${t(syncState.error_key)}`
+            : syncState.error ? ` — ${clipAtWord(syncState.error, 240)}` : ''),
       });
     }
     if (syncState?.state === 'frozen') {
@@ -875,6 +950,7 @@ export default function App() {
         <Titlebar title={t('appName')} sub={t('notConnected')} />
         <div className="app">
           <Rail view={view} setView={setView} counts={counts} t={t}
+              recapCount={report?.pile?.lines || 0}
                 putAwayOpen={putAwayOpen} setPutAwayOpen={setPutAwayOpen}
                 logoOpen={logoOpen} onLogo={() => setLogoOpen((v) => !v)} />
           <div className="pane-detail">
@@ -939,7 +1015,7 @@ export default function App() {
                 </button>
               </div>
 
-              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && <div className="filters">
+              {view !== 'muted' && view !== 'calendar' && view !== 'done' && view !== 'dismissed' && view !== 'recap' && view !== 'respond' && <div className="filters">
                 {[
                   { id: null, label: `${t('filterAll')} ${visible.length ? `(${visible.length})` : ''}` },
                   { id: 'action', label: `${t('filterAction')} ${counts.action ? `(${counts.action})` : ''}` },
@@ -966,6 +1042,16 @@ export default function App() {
                   />
                 ) : (
                   <>
+                    {/* The recap is the LIST here, for the same reason the
+                        briefing is: it lives in the left column so the reading
+                        pane stays free for whatever line you click. The
+                        briefing filling the reading pane itself is what once
+                        made its rows look dead on click. */}
+                    {view === 'recap' && (
+                      <MorningReport report={report} loading={reportLoading}
+                                     selectedId={selectedId} checkedIds={doneIds}
+                                     onOpen={openFromReport} onDone={applyFeedback} />
+                    )}
                     {view === 'muted' && <>
                       <MutedBox senders={mutedSenders} onUnmute={unmute} />
                       <HighlightBox items={highlighted} onHighlight={setHighlight} />
@@ -975,7 +1061,14 @@ export default function App() {
                         onPurge={(it) => actOnRemoved(it, () => api.purgeEntry(it.kind, it.id))}
                       />
                     </>}
-                    {listLoading && !mail.length
+                    {/* ...and nothing else. The first cut left the ranked list
+                        rendering underneath the card, so the pile and the inbox
+                        were stacked in one column saying different things about
+                        the same mail -- the exact confusion the removed Today
+                        view was deleted for. */}
+                    {view === 'priority' && <FirstPriority settings={settings} onSettings={setSettings} />}
+                    {view === 'respond' && <p className="hint" style={{ margin: '4px 12px 8px' }}>{t('respondHelp')}</p>}
+                    {view === 'recap' ? null : listLoading && !mail.length
                       ? <SkeletonList />
                       : <MailList items={visible} selectedId={selectedId} cursorId={cursorId}
                                   leaving={leaving} mutedView={view === 'muted'}
@@ -1045,6 +1138,7 @@ export default function App() {
                     <button className="btn ghost" onClick={closeEmail}>
                       <BackIcon />
                       {t(view === 'calendar' ? 'backToCalendar'
+                        : view === 'recap' ? 'backToRecap'
                         : view === 'priority' ? 'backToChecklist' : 'backToList')}
                     </button>
                     <span className="detail-back-hint"><kbd>esc</kbd></span>
@@ -1066,12 +1160,14 @@ export default function App() {
                 </div>
               ) : (
                 <div className="scroll">
-                  <Digest
-                    digest={digest} loading={digestLoading} onRefresh={refreshDigest}
-                    selectedId={selectedId} checkedIds={doneIds}
-                    onOpen={openEmail} onDone={applyFeedback}
-                    onOpenSettings={() => setView('settings')}
-                  />
+                  {/* One card where the briefing and the recap used to be two
+                      (F6). Opens with replies owed and what is due. */}
+                  {view !== 'recap' && (
+                    <MorningReport report={report} loading={reportLoading}
+                                   selectedId={selectedId} checkedIds={doneIds}
+                                   onOpen={openFromReport} onDone={applyFeedback}
+                                   onDismiss={dismissRecap} />
+                  )}
                   <div className="empty">
                     {listLoading ? <ThinkingNote>{t('thinking')}</ThinkingNote> : t('selectEmail')}
                   </div>
@@ -1127,7 +1223,7 @@ function Titlebar({ title, sub, right }) {
   );
 }
 
-function Rail({ view, setView, counts, logoOpen, onLogo, t, putAwayOpen, setPutAwayOpen }) {
+function Rail({ view, setView, counts, recapCount, logoOpen, onLogo, t, putAwayOpen, setPutAwayOpen }) {
   return (
     <nav className="rail">
       <img className={`logo brand-mark ${logoOpen ? 'open' : ''}`} src="./logo.png"
@@ -1145,8 +1241,11 @@ function Rail({ view, setView, counts, logoOpen, onLogo, t, putAwayOpen, setPutA
           <span className="rail-glyph">
             <Icon />
             {id === 'priority' && counts.action ? <span className="badge" /> : null}
+            {id === 'recap' && recapCount ? <span className="badge" /> : null}
           </span>
-          <span className="rail-label">{t(short)}</span>
+          <span className="rail-label">
+            {t(short)}{id === 'respond' && counts.to_respond ? ` ${counts.to_respond}` : ''}
+          </span>
         </button>
       ))}
 

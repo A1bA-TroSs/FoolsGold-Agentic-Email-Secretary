@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 
-from .. import db, dedup, pipeline
+from .. import db, dedup, pipeline, recap
 from ..sources.base import SourceError
 from ..sources.registry import get_source
 
@@ -40,9 +40,20 @@ def list_mail(
     sort: str = Query("priority", pattern="^(priority|date|decided)$"),
     muted: bool = Query(False, description="show only mail from muted senders"),
     verdict: str | None = Query(None, description="show only mail carrying this verdict"),
+    to_respond: bool = Query(False, description="show only replies the user owes (A1)"),
     limit: int = Query(200, le=1000),
 ) -> dict:
     where, params = [], []
+    from .. import to_respond as owed_mod
+    owed = owed_mod.owed()
+    reasons = {o["id"]: o["reason"] for o in owed}
+    if to_respond:
+        # The same rows as GET /to-respond, in the list's own shape so the
+        # mail list, the reading pane and the done / not relevant actions
+        # work unchanged.
+        where.append(f"e.id IN ({','.join('?' * len(reasons)) or 'NULL'})")
+        params.extend(reasons)
+        sort = "date"
     # A verdict filter is a view of the user's own decisions, so it is the one
     # place the mute filter does not apply. Muting a correspondent tomorrow must
     # not erase the fact that you finished something of theirs today -- the
@@ -97,11 +108,15 @@ def list_mail(
             ).fetchall()
         }
 
+    counts["to_respond"] = len(owed)
+
     now = datetime.now(timezone.utc)
     items = []
     for row in rows:
         item = dict(row)
         item["matched"] = [m for m in (item.get("matched") or "").split(",") if m]
+        if to_respond and item["id"] in reasons:
+            item["respond_reason"] = reasons[item["id"]]
         # A snooze that has expired is no longer a snooze.
         if item.get("verdict") == "snoozed" and item.get("snooze_until"):
             try:
@@ -120,7 +135,7 @@ def list_mail(
     # and would quietly lose rows. The ranked list is the one surface whose job
     # is "what should I look at", and there a second copy of an announcement
     # answers nothing the first did not.
-    if sort == "priority" and not search and not muted and verdict is None:
+    if sort == "priority" and not search and not muted and verdict is None and not to_respond:
         items = dedup.collapse(
             items,
             eligible=lambda r: (r.get("verdict") or "") in ("", "pinned"),
@@ -129,6 +144,15 @@ def list_mail(
 
     return {"items": items, "counts": counts, "ai": pipeline.ai_status(),
             "sync": sync_state()}
+
+
+@router.get("/to-respond")
+def to_respond() -> dict:
+    """Replies the user owes (roadmap A1): direct asks from people, not yet
+    answered, from the last two weeks. A view only; ranking is unchanged."""
+    from .. import to_respond as owed
+    items = owed.owed()
+    return {"items": items, "count": len(items), "window_days": owed.WINDOW_DAYS}
 
 
 @router.get("/{email_id}/part/{cid}")
@@ -270,6 +294,49 @@ def clear_feedback(email_id: str) -> dict:
     return {"email_id": email_id, "verdict": None}
 
 
+@router.get("/report")
+def morning_report() -> dict:
+    """The morning report (F6): replies owed, what is due, what was missed,
+    then the rest of the pile. No model call, nothing sent."""
+    from .. import report
+    return report.build()
+
+
+@router.post("/report/opened")
+def morning_report_opened() -> dict:
+    """The user opened mail from the report today; counted once per day,
+    kept on this machine, and shown only as numbers in the quality export."""
+    from .. import report
+    return report.mark_opened()
+
+
+# Declared above `/{email_id}` on purpose: FastAPI matches in declaration order,
+# and a single-segment path registered after it would be swallowed as an email
+# id. `/digest/today` escapes that by having two segments; this one does not.
+@router.get("/recap")
+def recap_card(force: bool = False) -> dict:
+    """What piled up since the user last looked.
+
+    A read with no writes: it does not mark anything read and it does not move
+    the window. Both of those would make the card consume its own input.
+
+    `force=true` comes from the rail entry, where the user asked for the card
+    by name. The quiet period after a dismissal exists to stop the card
+    VOLUNTEERING itself; it has no business refusing someone who walked over
+    and asked. The window does not move either way."""
+    return recap.build(force=force)
+
+
+@router.post("/recap/seen")
+def recap_seen() -> dict:
+    """The only caller that moves the window.
+
+    The frontend calls this when the card is DISMISSED -- not when it renders,
+    not when an email is opened from it. Opening one thing from the summary
+    must not spend the summary."""
+    return {"since": recap.mark_seen()}
+
+
 @router.get("/{email_id}")
 def get_mail(email_id: str) -> dict:
     with db.connect() as conn:
@@ -331,6 +398,17 @@ async def sync(classify: bool = True) -> dict:
     return result
 
 
+def _sync_error_key(error: str) -> str | None:
+    """Name a sync failure the UI can word, when we recognise it. The error text
+    is stored in English (it goes to logs and the diagnostic tail), and pasting
+    it into a Korean banner is the bug this replaces."""
+    e = (error or "").lower()
+    if ("full disk access" in e or "permissionerror" in e
+            or "operation not permitted" in e or "not given foolsgold access" in e):
+        return "fdaNeeded"
+    return None
+
+
 def sync_state() -> dict:
     """What the UI needs to tell "nothing arrived" from "this is broken".
 
@@ -351,8 +429,20 @@ def sync_state() -> dict:
             state = "frozen"
         else:
             state = "ok"
+    error_key = _sync_error_key(last["error"]) if last and not last["ok"] else None
+    if state == "failing" and error_key == "fdaNeeded":
+        # The failures were macOS refusing access. If the source reads fine NOW
+        # -- permission granted and the app restarted -- those failures are
+        # history, and repeating "no access" to someone who just granted it
+        # reads as "your fix didn't work". The next sync clears the count.
+        try:
+            if get_source().status().ready:
+                state = "recovering"
+        except Exception:  # noqa: BLE001 - a status probe must not break the list
+            pass
     return {
         "state": state,
+        "error_key": error_key,
         "at": last["finished_at"] if last else None,
         "trigger": last["trigger"] if last else None,
         "error": last["error"] if last else "",

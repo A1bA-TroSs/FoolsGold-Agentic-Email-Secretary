@@ -19,6 +19,9 @@ from app.llm.base import Classification, ExtractedTask
 
 TOPIC = "CO-OP"
 BARE_PRIOR = 0.4013          # sigmoid(PRIOR_BIAS): what R is when nothing fires
+# Every fixture here is addressed To: me, and direct address is a day-one prior
+# (relevance.PRIOR_DIRECT), so with the topic gone R falls to bias + direct.
+DIRECT_ONLY = 0.5498         # sigmoid(PRIOR_BIAS + PRIOR_DIRECT)
 
 
 def _email(eid, subject, body, **over):
@@ -102,7 +105,7 @@ def test_deleting_the_priority_lowers_relevance_and_calls_no_model(store, monkey
 
     after = _row("c1")["relevance"]
     assert after < before, f"{before} -> {after}: deleting the priority changed nothing"
-    assert after == pytest.approx(BARE_PRIOR, abs=1e-3), after
+    assert after == pytest.approx(DIRECT_ONLY, abs=1e-3), after
 
 
 def test_the_stored_model_opinion_cannot_resurrect_a_deleted_topic(store):
